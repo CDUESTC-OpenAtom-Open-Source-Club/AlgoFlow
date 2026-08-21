@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#f4f7f5">
+    <title>AlgoFlow 工作台</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">AF</div>
+          <div><strong>AlgoFlow</strong><span>算法随想</span></div>
+        </div>
+        <div class="sync-controls">
+          <span id="deviceLabel" class="device-label">Web 本地工作区</span>
+          <button id="networkToggle" class="icon-button" type="button" title="切换本地联网状态" aria-label="切换本地联网状态">●</button>
+          <button id="syncButton" class="primary-button" type="button">同步</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="draft-rail" aria-label="草稿列表">
+          <div class="rail-heading">
+            <div><span class="section-label">工作区</span><h1>我的草稿</h1></div>
+            <button id="newDraftButton" class="icon-button new-button" type="button" title="新建草稿" aria-label="新建草稿">+</button>
+          </div>
+          <label class="search-field">
+            <span class="visually-hidden">搜索草稿</span>
+            <input id="searchInput" type="search" placeholder="搜索标题或思路">
+          </label>
+          <div id="draftList" class="draft-list"></div>
+        </aside>
+
+        <section class="editor-panel" aria-label="草稿编辑器">
+          <div id="emptyState" class="empty-state" hidden>
+            <p>还没有草稿</p>
+            <button id="emptyCreateButton" class="primary-button" type="button">新建思路</button>
+          </div>
+          <div id="editorContent">
+            <div class="editor-heading">
+              <input id="titleInput" class="title-input" maxlength="160" aria-label="草稿标题">
+              <div class="status-line"><span id="syncDot" class="status-dot"></span><span id="syncStatus"></span><span id="saveStatus"></span></div>
+            </div>
+            <label class="field-block source-track">
+              <span>思路片段</span>
+              <textarea id="ideaInput" rows="7" placeholder="每行记录一个可以被 AI 引用的思路步骤"></textarea>
+            </label>
+            <label class="field-block code-field">
+              <span>C++ 短代码</span>
+              <textarea id="codeInput" rows="14" spellcheck="false" placeholder="// 用短代码表达当前思路"></textarea>
+            </label>
+            <div class="editor-actions">
+              <button id="deleteButton" class="danger-button" type="button">删除草稿</button>
+              <span>更改会自动保存到本机</span>
+            </div>
+          </div>
+        </section>
+
+        <aside class="inspector" aria-label="AI 与复写">
+          <section class="mode-section">
+            <span class="section-label">AI 模式</span>
+            <div id="modeTabs" class="mode-tabs" role="tablist" aria-label="AI 模式">
+              <button type="button" data-mode="faithful_transform" class="active">忠实转换</button>
+              <button type="button" data-mode="feasibility_analysis">可行性</button>
+              <button type="button" data-mode="progressive_hint">渐进提示</button>
+              <button type="button" data-mode="full_solution">完整解题</button>
+            </div>
+          </section>
+          <section class="ai-state">
+            <div><span class="status-dot muted"></span><strong>AI 未启用</strong></div>
+            <p>未配置模型服务。草稿编辑、复写和同步仍可使用。</p>
+            <button id="artifactToggle" class="secondary-button" type="button">隐藏 AI 区域</button>
+          </section>
+          <section id="artifactSection" class="artifact-section">
+            <div class="source-map-heading"><span>来源轨道</span><span id="segmentCount">0 个片段</span></div>
+            <ol id="sourceMap" class="source-map"></ol>
+          </section>
+          <label class="field-block rewrite-field">
+            <span>我的独立复写</span>
+            <textarea id="rewriteInput" rows="9" placeholder="隐藏 AI 结果后，在这里独立复写"></textarea>
+          </label>
+          <div id="differenceSummary" class="difference-summary"></div>
+        </aside>
+      </main>
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </div>
+    <script type="module" src="./src/app.mjs"></script>
+  </body>
+</html>

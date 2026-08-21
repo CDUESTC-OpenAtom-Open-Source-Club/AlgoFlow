@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://algoflow.local/contracts/domain.schema.json",
+  "title": "AlgoFlow domain contracts",
+  "$defs": {
+    "syncStatus": {
+      "type": "string",
+      "enum": ["local_only", "syncing", "synced", "conflict", "failed"]
+    },
+    "aiMode": {
+      "type": "string",
+      "enum": ["faithful_transform", "feasibility_analysis", "progressive_hint", "full_solution"]
+    },
+    "entityMetadata": {
+      "type": "object",
+      "required": ["id", "version", "created_at", "updated_at", "deleted", "last_modified_client_id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "integer", "minimum": 0 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "deleted": { "type": "boolean" },
+        "last_modified_client_id": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "ideaSegment": {
+      "allOf": [
+        { "$ref": "#/$defs/entityMetadata" },
+        {
+          "type": "object",
+          "required": ["draft_id", "position", "content"],
+          "properties": {
+            "draft_id": { "type": "string", "minLength": 1 },
+            "position": { "type": "integer", "minimum": 0 },
+            "content": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "draft": {
+      "allOf": [
+        { "$ref": "#/$defs/entityMetadata" },
+        {
+          "type": "object",
+          "required": ["workspace_id", "title", "language", "idea_segments", "sync_status"],
+          "properties": {
+            "workspace_id": { "type": "string", "minLength": 1 },
+            "title": { "type": "string", "maxLength": 160 },
+            "language": { "type": "string", "enum": ["cpp"] },
+            "idea_segments": { "type": "array", "items": { "$ref": "#/$defs/ideaSegment" } },
+            "sync_status": { "$ref": "#/$defs/syncStatus" },
+            "code": { "type": "string", "maxLength": 20000 }
+          }
+        }
+      ]
+    }
+  }
+}

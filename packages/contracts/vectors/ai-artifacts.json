@@ -1,0 +1,50 @@
+[
+  {
+    "name": "faithful artifact with mapped steps",
+    "valid": true,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": null,
+      "assumptions": [],
+      "missing_information": ["Equal endpoints are not specified"],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "provider-disabled",
+      "rule_version": "1.0.0"
+    }
+  },
+  {
+    "name": "faithful artifact cannot add algorithm steps",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": null,
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": ["Use a proof not present in the draft"],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0"
+    }
+  },
+  {
+    "name": "every step needs source references",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "step": "Select an interval", "source_refs": [] }],
+      "code_snippet": null,
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0"
+    }
+  }
+]
