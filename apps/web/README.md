@@ -1,10 +1,13 @@
-# Web 工作台起步框架
+# AlgoFlow Web 工作台
 
-这是无构建工具、无第三方依赖的浏览器工作台。它使用 `localStorage` 保存草稿和待同步操作，并通过本地同步服务连接 `services/sync-api`。
+当前 Web 工作台使用 React + Vite + TypeScript，构建结果是可静态托管的浏览器应用。它不会改变 OpenHarmony 手机端的 ArkTS/ArkUI 原生边界。
 
 ```powershell
-python -m http.server 4173 --directory apps/web
-node services/sync-api/src/server.mjs
+npm install
+npm run dev
+npm run build
 ```
 
-浏览器打开 `http://127.0.0.1:4173`。没有启动同步服务时，编辑、离线队列和复写仍可工作；“同步”会明确提示服务不可用。
+UI 方向与 Web/ArkUI 对齐说明见 `docs/WEB_UI_GUIDE.md`。
+
+目前为 UI 重写阶段：同步和 AI 适配仍应遵守 `packages/contracts/schemas`，未配置 AI 时必须显示“AI 未启用”。
