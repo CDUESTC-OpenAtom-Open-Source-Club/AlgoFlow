@@ -1,4 +1,6 @@
 /node_modules
+**/node_modules
+**/dist
 /oh_modules
 /local.properties
 /.idea
@@ -10,4 +12,5 @@
 /.clang-tidy
 **/.test
 /.appanalyzer
-/docs
+/docs/*
+!/docs/WEB_UI_GUIDE.md
