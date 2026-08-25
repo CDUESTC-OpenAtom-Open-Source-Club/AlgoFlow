@@ -4,15 +4,19 @@
     "valid": true,
     "artifact": {
       "mode": "faithful_transform",
-      "pseudocode": [{ "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
       "code_snippet": null,
+      "code_mappings": [],
       "assumptions": [],
       "missing_information": ["Equal endpoints are not specified"],
       "risk_flags": [],
       "added_algorithm_steps": [],
       "source_draft_version": 1,
       "model_id": "provider-disabled",
-      "rule_version": "1.0.0"
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "template_id": null
     }
   },
   {
@@ -20,15 +24,19 @@
     "valid": false,
     "artifact": {
       "mode": "faithful_transform",
-      "pseudocode": [{ "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
       "code_snippet": null,
+      "code_mappings": [],
       "assumptions": [],
       "missing_information": [],
       "risk_flags": [],
       "added_algorithm_steps": ["Use a proof not present in the draft"],
       "source_draft_version": 1,
       "model_id": "example",
-      "rule_version": "1.0.0"
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "template_id": null
     }
   },
   {
@@ -36,15 +44,59 @@
     "valid": false,
     "artifact": {
       "mode": "faithful_transform",
-      "pseudocode": [{ "step": "Select an interval", "source_refs": [] }],
+      "pseudocode": [{ "id": "step_1", "step": "Select an interval", "source_refs": [] }],
       "code_snippet": null,
+      "code_mappings": [],
       "assumptions": [],
       "missing_information": [],
       "risk_flags": [],
       "added_algorithm_steps": [],
       "source_draft_version": 1,
       "model_id": "example",
-      "rule_version": "1.0.0"
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "template_id": null
+    }
+  },
+  {
+    "name": "bounded code fragment maps lines to faithful pseudocode",
+    "valid": true,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": "void sortIntervals() {\n  sort(intervals.begin(), intervals.end(), byRight);\n}",
+      "code_mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 3 }],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "code_snippet",
+      "visibility": "hidden",
+      "template_id": "interval-sort-fragment"
+    }
+  },
+  {
+    "name": "faithful code output cannot be a complete submission program",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Print a result", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": "int main() { return 0; }",
+      "code_mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 1 }],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "code_snippet",
+      "visibility": "visible",
+      "template_id": null
     }
   }
 ]
