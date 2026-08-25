@@ -11,6 +11,14 @@
       "type": "string",
       "enum": ["faithful_transform", "feasibility_analysis", "progressive_hint", "full_solution"]
     },
+    "aiOutputKind": {
+      "type": "string",
+      "enum": ["pseudocode", "code_snippet"]
+    },
+    "aiVisibility": {
+      "type": "string",
+      "enum": ["visible", "hidden"]
+    },
     "entityMetadata": {
       "type": "object",
       "required": ["id", "version", "created_at", "updated_at", "deleted", "last_modified_client_id"],
