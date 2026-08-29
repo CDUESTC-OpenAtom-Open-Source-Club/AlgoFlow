@@ -1,0 +1,123 @@
+[
+  {
+    "name": "valid faithful request",
+    "valid": true,
+    "request": {
+      "mode": "faithful_transform", "draft_id": "draft-1", "draft_version": 1, "language": "cpp",
+      "rule_version": "1.0.0", "idea_segments": [{ "id": "idea_segment_1", "content": "按右端点排序" }]
+    }
+  },
+  {
+    "name": "valid full_solution request",
+    "valid": true,
+    "request": {
+      "mode": "full_solution", "draft_id": "draft-2", "draft_version": 3, "language": "cpp",
+      "rule_version": "1.0.0", "idea_segments": [{ "id": "idea_segment_1", "content": "贪心选区间" }]
+    }
+  },
+  {
+    "name": "valid request with multiple stable segment ids",
+    "valid": true,
+    "request": {
+      "mode": "faithful_transform", "draft_id": "draft-3", "draft_version": 0, "language": "cpp",
+      "rule_version": "1.0.0",
+      "idea_segments": [
+        { "id": "idea_segment_1", "content": "先排序" },
+        { "id": "idea_segment_2", "content": "再贪心选择" }
+      ]
+    }
+  },
+  {
+    "name": "missing mode",
+    "valid": false,
+    "request": {
+      "draft_id": "draft-1", "draft_version": 1, "language": "cpp",
+      "rule_version": "1.0.0", "idea_segments": [{ "id": "idea_segment_1", "content": "按右端点排序" }]
+    }
+  },
+  {
+    "name": "invalid mode string",
+    "valid": false,
+    "request": {
+      "mode": "auto_solve", "draft_id": "draft-1", "draft_version": 1, "language": "cpp",
+      "rule_version": "1.0.0", "idea_segments": [{ "id": "idea_segment_1", "content": "按右端点排序" }]
+    }
+  },
+  {
+    "name": "missing draft_id",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform", "draft_version": 1, "language": "cpp",
+      "rule_version": "1.0.0", "idea_segments": [{ "id": "idea_segment_1", "content": "按右端点排序" }]
+    }
+  },
+  {
+    "name": "negative draft_version",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform", "draft_id": "draft-1", "draft_version": -1, "language": "cpp",
+      "rule_version": "1.0.0", "idea_segments": [{ "id": "idea_segment_1", "content": "按右端点排序" }]
+    }
+  },
+  {
+    "name": "non-integer draft_version",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform", "draft_id": "draft-1", "draft_version": 1.5, "language": "cpp",
+      "rule_version": "1.0.0", "idea_segments": [{ "id": "idea_segment_1", "content": "按右端点排序" }]
+    }
+  },
+  {
+    "name": "missing rule_version",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform", "draft_id": "draft-1", "draft_version": 1, "language": "cpp",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "按右端点排序" }]
+    }
+  },
+  {
+    "name": "unsupported language",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform", "draft_id": "draft-1", "draft_version": 1, "language": "python",
+      "rule_version": "1.0.0", "idea_segments": [{ "id": "idea_segment_1", "content": "按右端点排序" }]
+    }
+  },
+  {
+    "name": "empty idea_segments",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform", "draft_id": "draft-1", "draft_version": 1, "language": "cpp",
+      "rule_version": "1.0.0", "idea_segments": []
+    }
+  },
+  {
+    "name": "segment missing id",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform", "draft_id": "draft-1", "draft_version": 1, "language": "cpp",
+      "rule_version": "1.0.0", "idea_segments": [{ "content": "按右端点排序" }]
+    }
+  },
+  {
+    "name": "segment missing content",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform", "draft_id": "draft-1", "draft_version": 1, "language": "cpp",
+      "rule_version": "1.0.0", "idea_segments": [{ "id": "idea_segment_1" }]
+    }
+  },
+  {
+    "name": "null request body",
+    "valid": false,
+    "request": null
+  },
+  {
+    "name": "idea_segments not an array",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform", "draft_id": "draft-1", "draft_version": 1, "language": "cpp",
+      "rule_version": "1.0.0", "idea_segments": "not-an-array"
+    }
+  }
+]

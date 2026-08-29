@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://algoflow.local/contracts/sync.schema.json",
+  "title": "AlgoFlow sync contracts",
+  "$defs": {
+    "operation": {
+      "type": "object",
+      "required": ["operation_id", "entity_type", "entity_id", "operation_type", "base_version", "client_id", "occurred_at", "payload"],
+      "properties": {
+        "operation_id": { "type": "string", "minLength": 1 },
+        "entity_type": { "type": "string", "enum": ["draft", "code_document", "ai_artifact"] },
+        "entity_id": { "type": "string", "minLength": 1 },
+        "operation_type": { "type": "string", "enum": ["upsert", "delete"] },
+        "base_version": { "type": "integer", "minimum": 0 },
+        "client_id": { "type": "string", "minLength": 1 },
+        "occurred_at": { "type": "string", "format": "date-time" },
+        "payload": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": ["operation_id", "status"],
+      "properties": {
+        "operation_id": { "type": "string" },
+        "status": { "type": "string", "enum": ["applied", "duplicate", "conflict", "rejected"] },
+        "version": { "type": "integer", "minimum": 1 },
+        "server_entity": { "type": ["object", "null"] },
+        "error_code": { "type": "string", "enum": ["INVALID_REQUEST", "VERSION_CONFLICT", "OUT_OF_ORDER"] }
+      }
+    }
+  }
+}

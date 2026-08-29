@@ -1,0 +1,28 @@
+[
+  {
+    "name": "create draft",
+    "operation": {
+      "operation_id": "op-create-1",
+      "entity_type": "draft",
+      "entity_id": "draft-1",
+      "operation_type": "upsert",
+      "base_version": 0,
+      "client_id": "web-local",
+      "occurred_at": "2026-08-21T00:00:00.000Z",
+      "payload": { "title": "Interval notes", "deleted": false }
+    }
+  },
+  {
+    "name": "delete draft with tombstone",
+    "operation": {
+      "operation_id": "op-delete-1",
+      "entity_type": "draft",
+      "entity_id": "draft-1",
+      "operation_type": "delete",
+      "base_version": 1,
+      "client_id": "phone-local",
+      "occurred_at": "2026-08-21T00:01:00.000Z",
+      "payload": { "deleted": true }
+    }
+  }
+]
