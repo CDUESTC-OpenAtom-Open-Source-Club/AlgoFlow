@@ -131,6 +131,57 @@ input:focus-visible {
   background: var(--md-primary);
 }
 
+.sync-label.sync-syncing i {
+  background: #c58a43;
+}
+
+.sync-label.sync-conflict i,
+.sync-label.sync-failed i {
+  background: var(--md-error);
+}
+
+.sync-conflict-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 10px 18px;
+  border-bottom: 1px solid #d9b6a8;
+  background: #fff5f0;
+  color: #713d2c;
+  font-size: 12px;
+}
+
+.sync-conflict-banner strong,
+.sync-conflict-banner span {
+  display: block;
+}
+
+.sync-conflict-banner span {
+  margin-top: 3px;
+  color: #8f6253;
+}
+
+.conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.conflict-actions button {
+  padding: 6px 10px;
+  border: 1px solid #c98e79;
+  border-radius: 999px;
+  background: transparent;
+  color: #713d2c;
+  font-size: 11px;
+}
+
+.conflict-actions button:first-child {
+  background: #b5674d;
+  color: #fffaf7;
+}
+
 .sync-button {
   display: inline-flex;
   align-items: center;
@@ -547,6 +598,14 @@ h2 {
   display: block;
   min-height: 0;
   overflow: hidden;
+}
+
+.ide-shell.has-conflict {
+  grid-template-rows: 46px auto minmax(0, 1fr);
+}
+
+.ide-shell.has-conflict > main {
+  grid-row: 3;
 }
 
 .code-editor .cm-editor {

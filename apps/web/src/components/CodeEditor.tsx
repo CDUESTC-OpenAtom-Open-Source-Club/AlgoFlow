@@ -48,6 +48,7 @@ export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, on
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const saveRef = useRef(onSave);
+  const externalUpdateRef = useRef(false);
   saveRef.current = onSave;
 
   useEffect(() => {
@@ -67,7 +68,7 @@ export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, on
         { key: 'Tab', run: acceptCompletion }, indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap,
       ]),
       EditorView.updateListener.of((update) => {
-        if (update.docChanged) onChange(update.state.doc.toString());
+        if (update.docChanged && !externalUpdateRef.current) onChange(update.state.doc.toString());
         if (update.docChanged || update.selectionSet || update.focusChanged) {
           const position = update.state.selection.main.head;
           const line = update.state.doc.lineAt(position);
@@ -87,7 +88,9 @@ export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, on
   useEffect(() => {
     const view = viewRef.current;
     if (!view || view.state.doc.toString() === value) return;
+    externalUpdateRef.current = true;
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
+    externalUpdateRef.current = false;
     const position = view.state.selection.main.head;
     const line = view.state.doc.lineAt(position);
     onCursorChange?.(line.number, position - line.from + 1);
