@@ -87,7 +87,7 @@ MVP 不引入 CMP、Flutter、React Native 或桌面原生壳。白皮书用于�
 ```text
 apps/
 ├── openharmony/       # DevEco 工程、ArkUI、RDB、服务卡片
-└── web/               # 浏览器桌面工作台
+└── web/               # React + Vite 浏览器桌面工作台
 packages/
 └── contracts/         # 可生成或复用的 API Schema、枚举、测试向量
 services/
@@ -98,6 +98,52 @@ services/
 若初期采用单仓库中的不同目录，公共契约仍必须有唯一事实来源。ArkTS 和 Web 类型可从 Schema 生成，或通过契约测试保持一致；禁止人工维护两套含义不同的枚举。
 
 依赖方向：UI 依赖应用用例，应用用例依赖领域接口，平台和云实现适配这些接口。领域规则不得依赖 ArkUI、浏览器 DOM、数据库驱动或具体模型 SDK。
+
+### 3.1 Web 代码组织基线
+
+当前 Web 工作台使用 React + Vite + TypeScript，源码位于 `apps/web/src`：
+
+```text
+src/
+├── App.tsx                 # 页面状态与区域编排
+├── data.ts                 # 文件、模式和演示文档数据
+├── types.ts                # Web 层严格类型定义
+├── icon-assets.ts          # Game Icon Pack 资源映射
+├── components/
+│   ├── ActivityBar.tsx     # 左侧工具栏
+│   ├── WorkspaceSidebar.tsx # 工作区文件、搜索、来源、AI、版本面板
+│   ├── EditorStage.tsx     # 文件路径栏、底部面板和状态栏
+│   ├── CodeEditor.tsx      # 文本编辑、行号、当前行和滚动同步
+│   ├── InspectorPanel.tsx  # 思路检查侧栏
+│   ├── TopBar.tsx          # 顶部品牌与保存/同步状态
+│   └── Icon.tsx            # 统一图标渲染
+└── styles.css              # MD3 令牌和分区样式
+```
+
+- Web 组件不得使用 `any` 绕过 TypeScript 检查；跨组件数据优先通过 `types.ts` 中的联合类型和记录类型约束。
+- 当前 Web 是 UI 重写阶段，文档状态保存在 React 内存中；`storage.mjs`、`sync-client.mjs` 与 `packages/contracts/schemas` 是后续接入本地持久化和同步协议的边界，不能把演示状态描述为已完成跨端同步。
+- `apps/web/package.json` 保持 React、React DOM、Vite、TypeScript 与已核验的 CodeMirror 6 编辑器依赖。新增 npm 包前必须核验包名、官方仓库、许可证和包体积，并说明用途；小功能优先使用浏览器或 React 原生能力。当前 CodeMirror 依赖均为 MIT 许可证并已执行 `npm audit`。
+- UI 使用本地 `assets/game-icons` 资源和 `icon-assets.ts` 语义映射；不得改用未确认来源的图标库或用字母/仿制图形替代指定资源。界面字体目标为 `max32002/maruko-gothic`，代码编辑区必须使用等宽字体。
+- CSS 必须保持分区、多行和可读格式；不得重新提交压缩成单行的整文件样式。视觉令牌、布局和 Web/ArkUI 映射以 `docs/WEB_UI_GUIDE.md` 为共同参考。
+
+### 3.2 OpenHarmony 手机端代码组织基线
+
+当前手机端源码位于 `entry/src/main/ets`：
+
+```text
+ets/
+├── pages/Index.ets                         # 手机 IDE 页面与工具面板编排
+├── application/DraftWorkspaceViewModel.ets # 草稿、版本、思路片段和模式状态用例
+├── domain/Models.ets                        # Draft、IdeaSegment、AIMode、SyncStatus
+├── domain/DraftRepository.ets               # 草稿仓储端口
+└── platform/InMemoryDraftRepository.ets     # 当前会话级占位适配器
+```
+
+- 手机端首屏主体是可阅读、可编辑的 `main.cpp`，不是草稿表单或 AI 结果页。
+- 草稿、思路片段、独立短代码、AI 模式、独立复写和保存/同步状态通过底部工具菜单按需展开；工具面板关闭时，代码编辑区恢复为主体区域。
+- `Draft.code` 表示主 `main.cpp`，`Draft.shortCode` 表示独立的 C++ 短代码片段；二者不得混用或互相覆盖。
+- `IdeaSegment` 为思路行提供稳定 ID、内容和位置；页面展示来源标识，后续 AI 请求必须使用这些稳定 ID 生成 `source_refs`。
+- `InMemoryDraftRepository` 只保证当前应用会话内的数据流转，不得描述为数据库持久化、离线队列或跨端同步已完成。
 
 ## 4. AI 模式契约
 
@@ -110,15 +156,23 @@ services/
   "mode": "faithful_transform",
   "pseudocode": [
     {
+      "id": "step_1",
       "step": "string",
       "source_refs": ["idea_segment_1"]
     }
   ],
   "code_snippet": "string or null",
+  "code_mappings": [],
   "assumptions": ["string"],
   "missing_information": ["string"],
   "risk_flags": ["string"],
-  "added_algorithm_steps": []
+  "added_algorithm_steps": [],
+  "source_draft_version": 1,
+  "model_id": "provider-model-id",
+  "rule_version": "1.0.0",
+  "output_kind": "pseudocode",
+  "visibility": "visible",
+  "template_id": null
 }
 ```
 
@@ -130,6 +184,14 @@ services/
 - `added_algorithm_steps` 在忠实模式应为空；非空时响应判定为越界并阻止正式保存。
 - 不用“修复语病”作为补充算法步骤的理由。
 - 代码片段首先支持 C++，并限制长度、文件数量和输出类型。
+
+当前公共契约和 AI Gateway 已落实以下边界：
+
+- 请求必须包含 `problem_context`、`mode`、`draft_id`、`draft_version`、`language`、`rule_version`、`idea_segments`、`output_kind` 和 `visibility`；`problem_context` 只提供题目上下文，不授权 AI 替换用户思路。
+- `idea_segments[].id` 必须是非空且在请求内唯一的稳定标识。artifact 的每个 pseudocode 节点还必须有稳定 `id`，其 `source_refs` 只能引用本次请求中的用户思路片段。
+- artifact 必须记录 `source_draft_version`、`model_id`、`rule_version`、`template_id`、`output_kind` 和 `visibility`；响应元数据必须与请求匹配。
+- `output_kind=pseudocode` 时不得返回代码；`output_kind=code_snippet` 时必须返回有 pseudocode 步骤映射的 C++ 局部片段。片段最多 4000 字符，禁止包含 `main`，不得伪装成可直接提交的完整题解。
+- `code_mappings` 使用 `step_id/start_line/end_line` 将局部代码行映射回 pseudocode 节点；模板只能通过服务端配置的 `template_id` 标识，客户端不得携带模板实现或供应商密钥。
 
 ### 4.2 模式隔离
 
@@ -144,11 +206,14 @@ full_solution        完整解题
 - 用户必须主动选择 `full_solution`，不能通过模型自动升级。
 - 不同模式结果分别保存，均记录来源草稿版本、模型标识和规则版本。
 - 提示或完整解题结果不得回写为用户原思路。
+- 当前 AI Gateway 默认只启用 `faithful_transform`；`progressive_hint`、`full_solution` 和其他未配置模式必须返回 `AI_MODE_NOT_AVAILABLE`，不能因枚举存在而宣称功能已完成。
 
 ### 4.3 模型供应商
 
 - 通过 `AIProvider` 端口适配供应商，不在 UI、领域模型或数据库字段名中绑定品牌。
 - 未配置默认模型时返回明确的“AI 未启用”，不得使用 Mock 冒充真实结果。
+- Gateway 只接受注入的 `AIProvider.generate({ request, templates })`，并在保存/返回前重新校验 provider artifact；provider 异常返回分类错误，不向客户端透传密钥或模型原始日志。
+- 当前 HTTP 状态约定为：未配置 provider 返回 `AI_NOT_ENABLED`，provider 异常返回 `AI_PROVIDER_ERROR`，输出不符合契约或来源映射时返回 `INVALID_AI_ARTIFACT`。
 - 团队密钥只保存在华为云受控配置中，不进入客户端、GitHub、文档或日志。
 - 用户自带 API 的密钥保存方式未评审前，不实现明文持久化。
 - 外部模型调用意味着内容发送给用户选择的服务，隐私文案必须与真实数据流一致。
@@ -164,6 +229,8 @@ full_solution        完整解题
 - `AIArtifact`
 - `SyncOperation`
 - `ConflictRecord`
+
+手机端当前 `Draft` 最小实现还包含：主代码 `code`、独立短代码 `shortCode`、思路原文 `idea`、稳定思路片段 `ideaSegments`、复写 `rewrite`、当前 AI 模式 `aiMode` 和 AI 区域显示状态 `artifactHidden`。这些字段仍由应用用例统一读写，页面不得直接操作仓储。
 
 所有跨端实体至少包含：稳定 ID、`version`、`created_at`、`updated_at`、删除标记和最后修改设备/客户端标识。时间统一使用 UTC 存储，UI 按本地时区展示。
 
@@ -197,6 +264,9 @@ full_solution        完整解题
 - 页面入口、普通组件、ViewModel、领域用例和平台适配器职责分离。
 - 状态管理语法只使用当前 SDK 支持的同一代方案。
 - 长代码区必须有稳定尺寸、滚动、选择、复制和输入法适配，不能因文本变化导致布局跳动。
+- 手机 IDE 的主代码区使用固定行高的等宽 `TextArea`，左侧显示两位行号；通过 `onTextSelectionChange` 计算当前行，并显示从编辑区左侧到右侧的整行描边。通过 `onContentScroll` 同步行号和当前行高亮，不能把每一行拆成独立输入框。
+- `main.cpp` 编辑区必须优先占据可用高度；草稿、思路、短代码、AI、复写和同步入口使用底部工具菜单，不能重新退化为“草稿 + 伪代码 + 雷达图”主页面。
+- 主代码编辑器保留原生选择、粘贴、撤销/重做和输入法能力；新增当前行或滚动视觉反馈不得覆盖编辑事件。
 - 异步操作提供加载、取消或失败恢复；底层错误转换为用户可操作信息。
 - 日志统一使用 `[AlgoFlow]` 前缀并脱敏。
 
@@ -218,7 +288,11 @@ full_solution        完整解题
 ### 7.1 Web 工作台
 
 - 首版优先使用浏览器，不提前封装 Electron/Tauri 等桌面壳。
-- 编辑器必须支持键盘、撤销/重做、搜索、长文本、稳定滚动和未保存提示。
+- 当前实现命令为 `npm install`、`npm run dev` 和 `npm run build`，工作目录为 `apps/web`；`npm run build` 执行应用/Node TypeScript 检查后生成 Vite 静态产物。
+- Vite 产物可部署到静态文件托管，不要求 Web 服务器持续运行；同步 API 和 AI Gateway 仍按第 7.2 节单独部署，不能把静态 Web 托管与云端服务混为一谈。
+- 编辑器 UI 已拆分为 `ActivityBar`、`WorkspaceSidebar`、`EditorStage`、`CodeEditor` 和 `InspectorPanel` 等组件。新增交互应放入对应组件，`App.tsx` 只负责页面状态和区域编排。
+- 编辑器必须支持键盘、撤销/重做、搜索、长文本、稳定滚动和未保存提示。当前 Web 使用 CodeMirror 6 的 C++ 语言包、语法高亮、括号匹配、自动补括号、缩进、搜索、折叠、诊断和补全扩展；补全菜单使用 `Tab` 接受，`Enter` 保持换行语义。CodeMirror 仅负责编辑体验，不改变同步和领域边界。
+- 当前本地补全包含 C++ 关键字、常用 STL 类型、代码片段和少量悬浮说明；Inspector 与 CodeMirror gutter 使用同一组基础审查结果。`clangd`、`clang-tidy`、本地编译和语义级补全尚未接入，不得描述为编译器诊断。
 - 网络断开时保存到本地队列，恢复后按同步协议提交。
 - 不在浏览器中暴露团队模型密钥、数据库凭据或管理接口。
 
@@ -229,6 +303,7 @@ full_solution        完整解题
 - API 使用认证、授权、限流、输入验证、超时和审计 ID。
 - 日志只记录请求 ID、状态、耗时、版本和错误类别，不记录完整代码与思路。
 - 云端代码执行属于 P1，高风险功能未完成容器隔离、禁网、资源限制、临时目录回收和并发配额前禁止开放。
+- AI Gateway 当前只负责请求/产物契约校验、Provider 调度和来源/版本门禁；没有 `/execute` 编译执行端点。隐藏 artifact 只是工作流/展示标志，不是安全边界；“用户不可见但可编译”必须由单独的服务端存储和隔离执行服务实现。
 
 ## 8. 测试门禁
 
@@ -236,10 +311,13 @@ full_solution        完整解题
 
 - 领域规则：模式切换、来源映射、复写对比、状态枚举。
 - AI 契约：至少 40 条，覆盖错误思路、缺失步骤、越权补解、注入、格式错误、超时和供应商异常。
+- AI Gateway 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；最近一次验证为 `35` 条通过。新增或修改契约后必须重新运行并报告实际结果。
 - 同步：离线编辑、重复请求、乱序、并发更新、删除传播、冲突副本和断点恢复。
 - 数据库：首次建库、逐版本迁移、异常恢复和关联删除。
 - OpenHarmony：不同尺寸、输入法、后台恢复、权限拒绝、卡片刷新与跳转。
+- OpenHarmony IDE：行号与代码滚动同步、光标所在整行描边、长代码稳定滚动、工具面板展开/关闭后编辑区尺寸恢复。
 - Web：主流浏览器、键盘操作、离线队列、长代码和未保存离开。
+- Web 工程基线：在 `apps/web` 执行 `npx tsc -p tsconfig.app.json --noEmit`、`npx tsc -p tsconfig.node.json --noEmit` 和 `npm run build`；没有实际执行的命令不得写成已通过。
 - 发布：Release 构建、Mock 关闭、密钥扫描、权限清单、日志脱敏和安装验证。
 
 AI 完成任务后必须报告实际运行的命令、环境和结果。没有执行的测试必须明确说明，不能写成“已通过”。
