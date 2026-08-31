@@ -1,4 +1,3 @@
-import { useMemo } from 'react';
 import { fileLabels } from '../data';
 import type { FileId, Mode } from '../types';
 import { CodeEditor } from './CodeEditor';
@@ -12,6 +11,10 @@ interface EditorStageProps {
   saved: boolean;
   onBottomToggle: () => void;
   onChange: (value: string) => void;
+  onSave?: () => void;
+  jumpToLine?: number;
+  onCursorChange?: (line: number, column: number) => void;
+  cursorPosition?: { line: number; column: number };
   onFileChange: (file: FileId) => void;
 }
 
@@ -29,9 +32,12 @@ export function EditorStage({
   saved,
   onBottomToggle,
   onChange,
+  onSave,
+  jumpToLine,
+  onCursorChange,
+  cursorPosition = { line: 1, column: 1 },
   onFileChange,
 }: EditorStageProps) {
-  const lineCount = useMemo(() => code.split('\n').length, [code]);
   const modeLabel = getModeLabel(mode);
 
   return (
@@ -45,12 +51,13 @@ export function EditorStage({
         saved={saved}
         onBottomToggle={onBottomToggle}
         onFileChange={onFileChange}
+        onSaveFile={() => downloadFile(activeFile, code)}
       />
-      <CodeEditor activeFile={activeFile} value={code} onChange={onChange} />
+      <CodeEditor activeFile={activeFile} value={code} onChange={onChange} onSave={onSave} jumpToLine={jumpToLine} onCursorChange={onCursorChange} />
       {bottomOpen && <BottomPanel />}
       <footer className="statusbar">
         <span><i className="status-ok" /> {activeFile}</span>
-        <span>Ln {lineCount}, Col 1</span>
+        <span>Ln {cursorPosition.line}, Col {cursorPosition.column}</span>
         <span>UTF-8</span>
         <span>{fileLabels[activeFile]}</span>
         <span className="status-spacer" />
@@ -77,6 +84,7 @@ interface EditorBreadcrumbProps {
   saved: boolean;
   onBottomToggle: () => void;
   onFileChange: (file: FileId) => void;
+  onSaveFile: () => void;
 }
 
 function EditorBreadcrumb({
@@ -85,6 +93,7 @@ function EditorBreadcrumb({
   saved,
   onBottomToggle,
   onFileChange,
+  onSaveFile,
 }: EditorBreadcrumbProps) {
   return (
     <div className="breadcrumb">
@@ -114,8 +123,21 @@ function EditorBreadcrumb({
         <Icon name="panel" />
         {bottomOpen ? '收起面板' : '问题与同步'}
       </button>
+      <button type="button" className="editor-tool" onClick={onSaveFile} title="保存当前文件到本地">
+        保存文件
+      </button>
     </div>
   );
+}
+
+function downloadFile(file: FileId, content: string): void {
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = file;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 function BottomPanel() {

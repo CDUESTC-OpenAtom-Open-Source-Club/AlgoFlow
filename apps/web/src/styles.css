@@ -13,7 +13,7 @@
   --md-on-surface: #252a26;
   --md-on-surface-variant: #5e645d;
   --md-error: #b5674d;
-  --md-code: #202522;
+  --md-code: #252735;
 }
 
 * {
@@ -470,7 +470,7 @@ h2 {
   min-width: 0;
   padding: 0 17px;
   border-bottom: 1px solid #3a403c;
-  background: #282d2a;
+  background: #202230;
   color: #aeb7ae;
   font-size: 11px;
 }
@@ -544,15 +544,18 @@ h2 {
 
 .code-editor {
   position: relative;
-  display: grid;
+  display: block;
   min-height: 0;
-  grid-template-columns: 54px minmax(0, 1fr);
   overflow: hidden;
+}
+
+.code-editor .cm-editor {
+  height: 100%;
 }
 
 .line-numbers {
   z-index: 1;
-  overflow: hidden;
+  overflow: visible;
   padding: 21px 11px 20px 0;
   color: #68736b;
   text-align: right;
@@ -592,6 +595,35 @@ h2 {
   color: #e6ebe3;
   font: 13px/22px Consolas, "Cascadia Code", monospace;
   tab-size: 2;
+  color: transparent;
+  caret-color: #e6ebe3;
+}
+
+.code-highlight {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  height: max-content;
+  min-height: 100%;
+  left: 54px;
+  margin: 0;
+  padding: 21px 24px 20px 0;
+  overflow: visible;
+  color: #e6ebe3;
+  font: 13px/22px Consolas, "Cascadia Code", monospace;
+  white-space: pre;
+  pointer-events: none;
+}
+
+.tok-comment { color: #788f7c; }
+.tok-string { color: #d4b879; }
+.tok-keyword { color: #9fc4d2; }
+.tok-number { color: #c7a8d8; }
+.tok-bracket-match {
+  color: #f5d58a;
+  background: rgba(213, 175, 100, .25);
+  outline: 1px solid rgba(213, 175, 100, .65);
 }
 
 .bottom-panel {
@@ -683,6 +715,10 @@ h2 {
   font-size: 12px;
 }
 
+.check-symbol.warning {
+  background: var(--md-error);
+}
+
 .check-state strong,
 .check-state p {
   display: block;
@@ -758,6 +794,19 @@ h2 {
   margin: 0;
   font-size: 11px;
 }
+
+.issue-link {
+  display: block;
+  width: 100%;
+  padding: 2px 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-size: inherit;
+}
+
+.issue-link:hover { color: var(--md-primary); text-decoration: underline; }
+.cm-tooltip-cpp { padding: 6px 9px; color: #e9e6f3; background: #303348; border: 1px solid #565b78; border-radius: 4px; font: 12px/1.4 "Maruko Gothic", sans-serif; }
 
 .warning-card p {
   margin-top: 6px;

@@ -1,12 +1,16 @@
 import { Icon } from './Icon';
+import type { ReviewIssue } from '../code-review';
 
 interface InspectorPanelProps {
   hidden: boolean;
   onHide: () => void;
   onShow: () => void;
+  issues: ReviewIssue[];
+  onJumpToLine: (line: number) => void;
 }
 
-export function InspectorPanel({ hidden, onHide, onShow }: InspectorPanelProps) {
+export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine }: InspectorPanelProps) {
+  const errors = issues.filter((issue) => issue.severity === 'error').length;
   return (
     <>
       <aside className={hidden ? 'inspector hidden' : 'inspector'} aria-label="AI 检查侧栏">
@@ -20,10 +24,10 @@ export function InspectorPanel({ hidden, onHide, onShow }: InspectorPanelProps) 
           </button>
         </div>
         <div className="check-state">
-          <span className="check-symbol">✓</span>
+          <span className={errors ? 'check-symbol warning' : 'check-symbol'}>{errors ? '!' : '✓'}</span>
           <div>
-            <strong>结构已保留</strong>
-            <p>当前代码仍对应你的 2 个思路片段。</p>
+            <strong>{errors ? `${errors} 个基础问题` : '基础检查通过'}</strong>
+            <p>{issues.length ? issues.map((issue) => <button key={`${issue.line}-${issue.message}`} type="button" className="issue-link" onClick={() => onJumpToLine(issue.line)}>第 {issue.line} 行：{issue.message}</button>) : '未发现括号、入口或头文件基础问题。'}</p>
           </div>
         </div>
         <SourceTrack />
