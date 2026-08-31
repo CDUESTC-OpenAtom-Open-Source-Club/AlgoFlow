@@ -31,6 +31,16 @@ class CompletionItem {
   }
 }
 
+class SyntaxToken {
+  text: string;
+  color: string;
+
+  constructor(text: string, color: string) {
+    this.text = text;
+    this.color = color;
+  }
+}
+
 class BracketEntry {
   char: string;
   line: number;
@@ -172,9 +182,12 @@ struct Index {
     const safeEnd = Math.max(safeStart, Math.min(selectionEnd, value.length));
     this.updateSelection(safeStart, safeEnd);
     setTimeout(() => {
-      this.editorController.setTextSelection(safeStart, safeEnd);
-      this.editorController.caretPosition(safeEnd);
-    }, 60);
+      if (safeStart === safeEnd) {
+        this.editorController.caretPosition(safeStart);
+      } else {
+        this.editorController.setTextSelection(safeStart, safeEnd);
+      }
+    }, 180);
   }
 
   private updateSelection(start: number, end: number = start): void {
@@ -222,6 +235,66 @@ struct Index {
       return true;
     }
     return false;
+  }
+
+  private handleWillInsert(info: InsertValue): boolean {
+    if (!this.isCppFile() || this.selectionStart !== this.selectionEnd) return true;
+    const value = this.currentValue();
+    const offset = Math.max(0, Math.min(info.insertOffset, value.length));
+    const inserted = info.insertValue;
+    const pairs: Record<string, string> = { '(': ')', '[': ']', '{': '}' };
+    const closing = pairs[inserted];
+    if (closing !== undefined) {
+      this.applyEditorTransaction(offset, offset, `${inserted}${closing}`, offset + 1);
+      return false;
+    }
+    if (inserted === ')' || inserted === ']' || inserted === '}') {
+      if (value.substring(offset, offset + 1) === inserted) {
+        this.moveCaret(offset + 1);
+        return false;
+      }
+      return true;
+    }
+    if (inserted === '\n') {
+      this.insertIndentedNewline(offset);
+      return false;
+    }
+    return true;
+  }
+
+  private applyEditorTransaction(start: number, end: number, insertion: string, caret: number): void {
+    const value = this.currentValue();
+    const safeStart = Math.max(0, Math.min(start, value.length));
+    const safeEnd = Math.max(safeStart, Math.min(end, value.length));
+    const nextValue = `${value.substring(0, safeStart)}${insertion}${value.substring(safeEnd)}`;
+    this.updateDocument(nextValue);
+    this.moveCaret(caret);
+  }
+
+  private insertIndentedNewline(offset: number): void {
+    const value = this.currentValue();
+    const lineStart = value.lastIndexOf('\n', Math.max(0, offset - 1)) + 1;
+    const beforeCaret = value.substring(lineStart, offset);
+    const indentMatch = beforeCaret.match(/^\s*/);
+    const baseIndent = indentMatch === null ? '' : indentMatch[0];
+    const trimmedBefore = beforeCaret.trimEnd();
+    const opener = trimmedBefore.length === 0 ? '' : trimmedBefore.substring(trimmedBefore.length - 1);
+    const expectedClose = opener === '{' ? '}' : opener === '[' ? ']' : opener === '(' ? ')' : '';
+    const nextCharacter = value.substring(offset, offset + 1);
+    if (expectedClose.length > 0 && nextCharacter === expectedClose) {
+      const innerIndent = `${baseIndent}  `;
+      const insertion = `\n${innerIndent}\n${baseIndent}`;
+      this.applyEditorTransaction(offset, offset, insertion, offset + 1 + innerIndent.length);
+      return;
+    }
+    const nextIndent = opener === '{' ? `${baseIndent}  ` : baseIndent;
+    const insertion = `\n${nextIndent}`;
+    this.applyEditorTransaction(offset, offset, insertion, offset + insertion.length);
+  }
+
+  private highlightedTokens(): SyntaxToken[] {
+    if (!this.isCppFile()) return [new SyntaxToken(this.currentValue(), '#E8ECE9')];
+    return tokenizeCpp(this.currentValue());
   }
 
   private duplicateLine(): void {
@@ -441,16 +514,31 @@ struct Index {
           .backgroundColor('#2A332D').margin({ right: 8 })
       }.width('100%').height(22).position({ x: 0, y: 12 + this.activeLine * 22 - this.scrollY })
 
+      if (this.currentValue().length > 0) {
+        Row() {
+          Blank().width(40).height('100%')
+          Text() {
+            ForEach(this.highlightedTokens(), (token: SyntaxToken) => {
+              Span(token.text).fontColor(token.color)
+            }, (token: SyntaxToken, index: number) => `${index}-${token.color}-${token.text}`)
+          }.layoutWeight(1).padding({ top: 12, bottom: 12, left: 0, right: 8 })
+            .fontSize(13).lineHeight(22).fontFamily('monospace').fontColor('#E8ECE9')
+            .textAlign(TextAlign.Start).translate({ y: -this.scrollY }).hitTestBehavior(HitTestMode.Transparent)
+        }.width('100%').height('100%').alignItems(VerticalAlign.Top).hitTestBehavior(HitTestMode.Transparent)
+      }
+
       Row() {
         Blank().width(40).height('100%')
         TextArea({ text: this.currentValue(), placeholder: this.placeholder(), controller: this.editorController })
           .layoutWeight(1).height('100%').padding({ top: 12, bottom: 12, left: 0, right: 8 })
-          .fontSize(13).lineHeight(22).fontFamily('monospace').fontColor('#E8ECE9')
+          .fontSize(13).lineHeight(22).fontFamily('monospace').fontColor(Color.Transparent)
+          .placeholderColor('#7B857E')
           .caretColor('#E8ECE9').selectedBackgroundColor('#46594D')
           .backgroundColor(Color.Transparent).border({ width: 0 }).borderRadius(0)
           .onTextSelectionChange((start: number, end: number) => this.updateSelection(start, end))
           .onContentScroll((_offsetX: number, offsetY: number) => { this.scrollY = this.getUIContext().px2vp(offsetY); })
           .onKeyEvent((event: KeyEvent) => this.handleEditorKey(event))
+          .onWillInsert((info: InsertValue) => this.handleWillInsert(info))
           .onChange((value: string) => this.updateDocument(value))
       }.width('100%').height('100%')
 
@@ -735,4 +823,98 @@ function reviewCpp(source: string): ReviewIssue[] {
   stack.forEach((entry: BracketEntry) => issues.push(new ReviewIssue(entry.line, 'error', `未闭合括号：${entry.char}`)));
   if (blockComment) issues.push(new ReviewIssue(lines.length, 'warning', '块注释未闭合'));
   return issues.sort((left: ReviewIssue, right: ReviewIssue) => left.line - right.line);
+}
+
+function tokenizeCpp(source: string): SyntaxToken[] {
+  const tokens: SyntaxToken[] = [];
+  const lines = source.split('\n');
+  let inBlockComment = false;
+  lines.forEach((line: string, lineIndex: number) => {
+    let index = 0;
+    while (index < line.length) {
+      if (inBlockComment) {
+        const end = line.indexOf('*/', index);
+        if (end < 0) {
+          tokens.push(new SyntaxToken(line.substring(index), '#6A9955'));
+          index = line.length;
+          continue;
+        }
+        tokens.push(new SyntaxToken(line.substring(index, end + 2), '#6A9955'));
+        index = end + 2;
+        inBlockComment = false;
+        continue;
+      }
+      const pair = line.substring(index, index + 2);
+      if (pair === '//') {
+        tokens.push(new SyntaxToken(line.substring(index), '#6A9955'));
+        index = line.length;
+        continue;
+      }
+      if (pair === '/*') {
+        const end = line.indexOf('*/', index + 2);
+        if (end < 0) {
+          tokens.push(new SyntaxToken(line.substring(index), '#6A9955'));
+          inBlockComment = true;
+          index = line.length;
+          continue;
+        }
+        tokens.push(new SyntaxToken(line.substring(index, end + 2), '#6A9955'));
+        index = end + 2;
+        continue;
+      }
+      const char = line[index];
+      if (char === '"' || char === "'") {
+        const quote = char;
+        let end = index + 1;
+        while (end < line.length) {
+          if (line[end] === quote && line[end - 1] !== '\\') {
+            end += 1;
+            break;
+          }
+          end += 1;
+        }
+        tokens.push(new SyntaxToken(line.substring(index, end), '#CE9178'));
+        index = end;
+        continue;
+      }
+      if (/\s/.test(char)) {
+        let end = index + 1;
+        while (end < line.length && /\s/.test(line[end])) end += 1;
+        tokens.push(new SyntaxToken(line.substring(index, end), '#E8ECE9'));
+        index = end;
+        continue;
+      }
+      if (/[A-Za-z_]/.test(char)) {
+        let end = index + 1;
+        while (end < line.length && /[A-Za-z0-9_]/.test(line[end])) end += 1;
+        const word = line.substring(index, end);
+        tokens.push(new SyntaxToken(word, cppWordColor(word)));
+        index = end;
+        continue;
+      }
+      if (/\d/.test(char)) {
+        let end = index + 1;
+        while (end < line.length && /[0-9A-Fa-fxX.]/.test(line[end])) end += 1;
+        tokens.push(new SyntaxToken(line.substring(index, end), '#B5CEA8'));
+        index = end;
+        continue;
+      }
+      const color = char === '#' ? '#C586C0' : '#D4D4D4';
+      tokens.push(new SyntaxToken(char, color));
+      index += 1;
+    }
+    if (lineIndex < lines.length - 1) tokens.push(new SyntaxToken('\n', '#E8ECE9'));
+  });
+  return tokens.length === 0 ? [new SyntaxToken('', '#E8ECE9')] : tokens;
+}
+
+function cppWordColor(word: string): string {
+  if (/^(alignas|auto|bool|break|case|catch|char|class|const|continue|default|delete|double|else|false|float|for|if|include|int|long|namespace|nullptr|return|short|sizeof|static|struct|switch|template|this|throw|true|try|using|void|while)$/.test(word)) {
+    return '#C586C0';
+  }
+  if (/^(array|deque|map|pair|queue|set|stack|string|tuple|unordered_map|unordered_set|vector)$/.test(word)) {
+    return '#4EC9B0';
+  }
+  if (word === 'std') return '#4EC9B0';
+  return '#9CDCFE';
 }
