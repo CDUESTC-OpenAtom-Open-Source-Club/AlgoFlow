@@ -11,6 +11,22 @@
     {
       "name": "EntryAbility_label",
       "value": "label"
+    },
+    {
+      "name": "EntryFormAbility_desc",
+      "value": "AlgoFlow recent draft service card"
+    },
+    {
+      "name": "EntryFormAbility_label",
+      "value": "AlgoFlow card"
+    },
+    {
+      "name": "widget_display_name",
+      "value": "AlgoFlow"
+    },
+    {
+      "name": "widget_desc",
+      "value": "Recent draft and sync status"
     }
   ]
 }

@@ -101,6 +101,28 @@ export function App() {
     if (navigator.onLine) void flushQueue();
   }
 
+  function syncNow() {
+    if (!saved) {
+      saveWorkspace();
+      return;
+    }
+    void flushQueue();
+  }
+
+  function selectDraft(draftId: string) {
+    if (!saved) saveWorkspace();
+    const state = repository.load();
+    const draft = state.drafts.find((item) => item.id === draftId);
+    if (!draft) return;
+    const next = { ...state, selected_id: draftId };
+    repository.save(next);
+    setWorkspace(next);
+    setDocuments(draftToDocuments(draft));
+    setMode(draft.ai_mode);
+    setSaved(true);
+    setSyncState(draft.sync_status);
+  }
+
   function keepConflictCopy() {
     if (!conflict) return;
     const state = repository.load();
@@ -140,7 +162,7 @@ export function App() {
 
   return (
     <div className={conflict ? 'ide-shell has-conflict' : 'ide-shell'}>
-      <TopBar saved={saved} syncState={syncState} onSync={() => void flushQueue()} />
+      <TopBar saved={saved} syncState={syncState} onSync={syncNow} />
       {conflict && (
         <div className="sync-conflict-banner" role="alert">
           <div>
@@ -158,9 +180,12 @@ export function App() {
         <WorkspaceSidebar
           activeFile={activeFile}
           activePanel={activePanel}
+          drafts={workspace.drafts}
+          selectedDraftId={workspace.selected_id}
           mode={mode}
           query={query}
           saved={saved}
+          onDraftChange={selectDraft}
           onFileChange={setActiveFile}
           onModeChange={setMode}
           onQueryChange={setQuery}

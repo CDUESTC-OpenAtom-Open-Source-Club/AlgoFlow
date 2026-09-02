@@ -1,13 +1,16 @@
 import { files, modes } from '../data';
-import type { FileId, Mode, Panel } from '../types';
+import type { Draft, FileId, Mode, Panel } from '../types';
 import { Icon } from './Icon';
 
 interface WorkspaceSidebarProps {
   activeFile: FileId;
   activePanel: Panel;
+  drafts: Draft[];
+  selectedDraftId: string;
   mode: Mode;
   query: string;
   saved: boolean;
+  onDraftChange: (draftId: string) => void;
   onFileChange: (file: FileId) => void;
   onModeChange: (mode: Mode) => void;
   onQueryChange: (query: string) => void;
@@ -16,9 +19,12 @@ interface WorkspaceSidebarProps {
 export function WorkspaceSidebar({
   activeFile,
   activePanel,
+  drafts,
+  selectedDraftId,
   mode,
   query,
   saved,
+  onDraftChange,
   onFileChange,
   onModeChange,
   onQueryChange,
@@ -35,7 +41,8 @@ export function WorkspaceSidebar({
         </button>
       </div>
       {activePanel === 'files' && (
-        <FilesPanel activeFile={activeFile} saved={saved} onFileChange={onFileChange} />
+        <FilesPanel activeFile={activeFile} saved={saved} drafts={drafts} selectedDraftId={selectedDraftId}
+          onDraftChange={onDraftChange} onFileChange={onFileChange} />
       )}
       {activePanel === 'search' && (
         <SearchPanel query={query} onQueryChange={onQueryChange} />
@@ -50,12 +57,26 @@ export function WorkspaceSidebar({
 interface FilesPanelProps {
   activeFile: FileId;
   saved: boolean;
+  drafts: Draft[];
+  selectedDraftId: string;
+  onDraftChange: (draftId: string) => void;
   onFileChange: (file: FileId) => void;
 }
 
-function FilesPanel({ activeFile, saved, onFileChange }: FilesPanelProps) {
+function FilesPanel({ activeFile, saved, drafts, selectedDraftId, onDraftChange, onFileChange }: FilesPanelProps) {
   return (
     <>
+      <div className="panel-section-title"><span>草稿</span></div>
+      <div className="file-tree draft-tree">
+        {drafts.filter((draft) => !draft.deleted).map((draft) => (
+          <button key={draft.id} className={draft.id === selectedDraftId ? 'tree-item active' : 'tree-item'}
+            onClick={() => onDraftChange(draft.id)} type="button" title={draft.id}>
+            <Icon name="note" />
+            {draft.title || draft.id}
+            <span className="draft-version">v{draft.version}</span>
+          </button>
+        ))}
+      </div>
       <div className="panel-section-title">
         <span>文件</span>
         <button type="button" className="quiet-button" aria-label="新建文件">

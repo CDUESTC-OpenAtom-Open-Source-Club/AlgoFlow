@@ -166,6 +166,96 @@ test('Web sync does not advance its cursor when pull fails', async () => {
   assert.equal(result.state.cursor, '7');
 });
 
+test('Web selects a published phone draft instead of leaving the blank placeholder selected', async (context) => {
+  const server = createSyncServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+  const phoneDraft = makeDraft('phone-draft-1', 'phone code', 'phone-local');
+  const phoneOperation = {
+    operation_id: 'phone-op-1', entity_type: 'draft', entity_id: phoneDraft.id, operation_type: 'upsert',
+    base_version: 0, client_id: 'phone-local', occurred_at: '2026-09-01T00:00:00.000Z', payload: phoneDraft
+  };
+  assert.equal((await client.push(phoneOperation)).status, 'applied');
+
+  const webState = makeWorkspace('web-local', makeDraft('draft-local', '', 'web-local'));
+  const result = await synchronizeWorkspace(webState, client);
+  assert.equal(result.status, 'synced');
+  assert.equal(result.state.selected_id, 'phone-draft-1');
+  assert.equal(result.state.drafts.find((draft) => draft.id === 'phone-draft-1')?.code, 'phone code');
+});
+
+test('Web replays the change stream when an old placeholder-only state already advanced its cursor', async (context) => {
+  const server = createSyncServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+  const phoneDraft = makeDraft('phone-draft-replay', 'replayed phone code', 'phone-local');
+  assert.equal((await client.push({
+    operation_id: 'phone-replay-1', entity_type: 'draft', entity_id: phoneDraft.id, operation_type: 'upsert',
+    base_version: 0, client_id: 'phone-local', occurred_at: '2026-09-01T00:00:00.000Z', payload: phoneDraft
+  })).status, 'applied');
+
+  const stalePlaceholder = makeWorkspace('web-local', makeDraft('draft-local', '', 'web-local'));
+  stalePlaceholder.cursor = '1';
+  const result = await synchronizeWorkspace(stalePlaceholder, client);
+  assert.equal(result.state.selected_id, 'phone-draft-replay');
+  assert.equal(result.state.drafts.find((draft) => draft.id === 'phone-draft-replay')?.code, 'replayed phone code');
+});
+
+test('repeated starter edits keep one shared draft entity', () => {
+  const store = new SyncStore();
+  const starter = makeDraft('draft-local', 'phone code', 'phone-local');
+  const first = store.apply({
+    operation_id: 'phone-starter-1', entity_type: 'draft', entity_id: 'draft-local', operation_type: 'upsert',
+    base_version: 0, client_id: 'phone-local', occurred_at: '2026-09-01T00:00:00.000Z', payload: starter
+  });
+  const second = store.apply({
+    operation_id: 'phone-starter-2', entity_type: 'draft', entity_id: 'draft-local', operation_type: 'upsert',
+    base_version: first.version, client_id: 'phone-local', occurred_at: '2026-09-01T00:00:01.000Z',
+    payload: { ...starter, version: first.version, code: 'phone code v2' }
+  });
+  assert.equal(second.status, 'applied');
+  assert.equal(store.pull('0').changes.map((change) => change.entity.id).every((id) => id === 'draft-local'), true);
+});
+
+test('a Web edit updates the same starter draft for the phone pull path', async (context) => {
+  const server = createSyncServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+
+  const phoneDraft = makeDraft('draft-local', 'phone capture', 'phone-local');
+  assert.equal((await client.push({
+    operation_id: 'phone-starter', entity_type: 'draft', entity_id: 'draft-local', operation_type: 'upsert',
+    base_version: 0, client_id: 'phone-local', occurred_at: '2026-09-01T00:00:00.000Z', payload: phoneDraft
+  })).status, 'applied');
+
+  const webState = makeWorkspace('web-local', makeDraft('draft-local', '', 'web-local'));
+  const pulled = await synchronizeWorkspace(webState, client);
+  assert.equal(pulled.state.selected_id, 'draft-local');
+  assert.equal(pulled.state.drafts[0].code, 'phone capture');
+
+  const edit = { ...pulled.state.drafts[0], code: 'web continuation', updated_at: '2026-09-01T00:00:01.000Z' };
+  queueUpsert(pulled.state, edit);
+  const pushed = await synchronizeWorkspace(pulled.state, client);
+  assert.equal(pushed.status, 'synced');
+  assert.equal(pushed.state.drafts.find((draft) => draft.id === 'draft-local')?.code, 'web continuation');
+  assert.equal(pushed.state.drafts.find((draft) => draft.id === 'draft-local')?.version, 2);
+
+  const phoneChanges = await client.pull('1');
+  assert.equal(phoneChanges.changes.length, 1);
+  assert.equal(phoneChanges.changes[0].entity.id, 'draft-local');
+  assert.equal(phoneChanges.changes[0].entity.code, 'web continuation');
+  assert.equal(phoneChanges.next_cursor, '2');
+});
+
 function makeDraft(id, code, clientId) {
   return {
     id,

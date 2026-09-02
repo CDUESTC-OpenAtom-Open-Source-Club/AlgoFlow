@@ -27,14 +27,17 @@ export class IdeaSegment {
 
 export class Draft {
   id: string;
+  workspaceId: string;
   title: string;
   idea: string;
   code: string;
   shortCode: string;
   rewrite: string;
   version: number;
+  createdAt: string;
   updatedAt: string;
   deleted: boolean;
+  lastModifiedClientId: string;
   syncStatus: SyncStatus;
   aiMode: AIMode;
   artifactHidden: boolean;
@@ -42,14 +45,17 @@ export class Draft {
 
   constructor(id: string, title: string) {
     this.id = id;
+    this.workspaceId = 'workspace-local';
     this.title = title;
     this.idea = '';
     this.code = '';
     this.shortCode = '';
     this.rewrite = '';
     this.version = 0;
-    this.updatedAt = new Date().toISOString();
+    this.createdAt = new Date().toISOString();
+    this.updatedAt = this.createdAt;
     this.deleted = false;
+    this.lastModifiedClientId = '';
     this.syncStatus = SyncStatus.LOCAL_ONLY;
     this.aiMode = AIMode.FAITHFUL_TRANSFORM;
     this.artifactHidden = false;

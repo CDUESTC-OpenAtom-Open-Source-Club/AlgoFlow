@@ -78,13 +78,19 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
 
   if (!hadFailure) {
     try {
-      const pull = await client.pull(next.cursor);
+      const pullCursor = shouldReplayForPlaceholder(next) ? '0' : next.cursor;
+      const pull = await client.pull(pullCursor);
       const merged = applyPulledChanges(next, pull.changes, next.client_id);
       next = { ...merged, cursor: pull.next_cursor };
     } catch {
       hadFailure = true;
     }
   }
+
+  // A fresh Web workspace starts on the local placeholder draft. If the phone
+  // has already published another stable draft, make that draft visible after
+  // pull instead of reporting success while the editor still shows blank data.
+  next = selectRemoteDraftWhenPlaceholder(next);
 
   if (hadConflict || next.conflicts.some((conflict) => !conflict.resolved)) return { state: next, status: 'conflict' };
   if (hadFailure) return { state: next, status: 'failed' };
@@ -116,6 +122,32 @@ function applyPulledChanges(state, changes, clientId) {
     }
   }
   return next;
+}
+
+/** @param {import('./types').WorkspaceState} state */
+function selectRemoteDraftWhenPlaceholder(state) {
+  const selected = state.drafts.find((draft) => draft.id === state.selected_id);
+  if (!selected || selected.id !== 'draft-local' || selected.version > 0 || selected.code || selected.idea || selected.cases) {
+    return state;
+  }
+  if (state.operations.some((operation) => operation.entity_id === selected.id)) return state;
+
+  const remote = state.drafts
+    .filter((draft) => draft.id !== selected.id && draft.sync_status === 'synced' && !draft.deleted)
+    .filter((draft) => draft.version > 0 || draft.code || draft.idea || draft.cases)
+    .sort((left, right) => right.updated_at.localeCompare(left.updated_at))[0];
+  return remote ? { ...state, selected_id: remote.id } : state;
+}
+
+/** @param {import('./types').WorkspaceState} state */
+function shouldReplayForPlaceholder(state) {
+  const selected = state.drafts.find((draft) => draft.id === state.selected_id);
+  if (!selected || selected.id !== 'draft-local' || selected.version > 0 || selected.code || selected.idea || selected.cases) {
+    return false;
+  }
+  if (state.operations.some((operation) => operation.entity_id === selected.id)) return false;
+  return !state.drafts.some((draft) => draft.id !== selected.id && draft.sync_status === 'synced' && !draft.deleted &&
+    (draft.version > 0 || draft.code || draft.idea || draft.cases));
 }
 
 /** @param {import('./types').Draft} draft @param {string} clientId @param {string} copyId */

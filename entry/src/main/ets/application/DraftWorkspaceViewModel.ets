@@ -1,13 +1,35 @@
 import { DraftRepository } from '../domain/DraftRepository';
 import { AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { SyncRepository } from '../domain/SyncRepository';
+import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
 
 export class DraftWorkspaceViewModel {
   private repository: DraftRepository;
+  private syncRepository?: SyncRepository;
   private sequence: number = 1;
   private segmentSequence: number = 1;
 
-  constructor(repository: DraftRepository) {
+  constructor(repository: DraftRepository, syncRepository?: SyncRepository) {
     this.repository = repository;
+    this.syncRepository = syncRepository;
+  }
+
+  async initialize(): Promise<void> {
+    await this.repository.initialize();
+  }
+
+  async synchronize(): Promise<SyncRunResult | undefined> {
+    if (this.syncRepository === undefined || this.syncRepository.listPendingOperations === undefined) return undefined;
+    await this.repository.flush();
+    return await new PhoneSyncService(this.syncRepository).synchronize();
+  }
+
+  getSyncBaseUrl(): string {
+    return this.syncRepository?.getBaseUrl() ?? '';
+  }
+
+  setSyncBaseUrl(baseUrl: string): void {
+    this.syncRepository?.setBaseUrl(baseUrl);
   }
 
   ensureStarterDraft(): string {
@@ -17,7 +39,8 @@ export class DraftWorkspaceViewModel {
   }
 
   createDraft(): string {
-    const id = `phone-draft-${Date.now()}-${this.sequence++}`;
+    const id = this.repository.list().length === 0
+      ? 'draft-local' : `phone-draft-${Date.now()}-${this.sequence++}`;
     this.repository.save(new Draft(id, '未命名思路'));
     return id;
   }
@@ -34,7 +57,6 @@ export class DraftWorkspaceViewModel {
     draft.shortCode = shortCode;
     draft.rewrite = rewrite;
     draft.ideaSegments = this.buildIdeaSegments(draft, idea);
-    draft.version += 1;
     draft.updatedAt = new Date().toISOString();
     draft.syncStatus = SyncStatus.LOCAL_ONLY;
     this.repository.save(draft);
@@ -60,7 +82,6 @@ export class DraftWorkspaceViewModel {
     const draft = this.repository.get(id);
     if (draft === undefined) return;
     draft.aiMode = mode;
-    draft.version += 1;
     draft.updatedAt = new Date().toISOString();
     draft.syncStatus = SyncStatus.LOCAL_ONLY;
     this.repository.save(draft);
@@ -70,7 +91,6 @@ export class DraftWorkspaceViewModel {
     const draft = this.repository.get(id);
     if (draft === undefined) return;
     draft.artifactHidden = !draft.artifactHidden;
-    draft.version += 1;
     draft.updatedAt = new Date().toISOString();
     draft.syncStatus = SyncStatus.LOCAL_ONLY;
     this.repository.save(draft);

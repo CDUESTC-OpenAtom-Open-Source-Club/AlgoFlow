@@ -41,7 +41,7 @@ export class SyncStore {
   }
 }
 
-function validateOperation(operation) {
+export function validateOperation(operation) {
   if (!operation || typeof operation !== 'object') return 'operation is required';
   if (!operation.operation_id || !operation.entity_id || !operation.client_id) return 'stable identifiers are required';
   if (typeof operation.occurred_at !== 'string' || !operation.occurred_at.endsWith('Z') || Number.isNaN(Date.parse(operation.occurred_at))) return 'occurred_at must be a UTC timestamp';

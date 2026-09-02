@@ -82,12 +82,25 @@ function initialState(clientId = null) {
 function readOperations(clientId, legacyOperations) {
   try {
     const value = JSON.parse(localStorage.getItem(`${QUEUE_KEY_PREFIX}${clientId}`) ?? 'null');
-    if (Array.isArray(value)) return /** @type {import('./types').SyncOperation[]} */ (value);
+    if (Array.isArray(value)) {
+      return /** @type {import('./types').SyncOperation[]} */ (value.filter((item) => !isEmptyPlaceholderOperation(item)));
+    }
   } catch {
     // Fall through to a one-time migration from the original shared queue.
   }
   if (Array.isArray(legacyOperations) && legacyOperations.every((item) => item?.client_id === clientId)) {
-    return /** @type {import('./types').SyncOperation[]} */ (legacyOperations);
+    return /** @type {import('./types').SyncOperation[]} */ (legacyOperations.filter((item) => !isEmptyPlaceholderOperation(item)));
   }
   return [];
+}
+
+/** @param {unknown} operation */
+function isEmptyPlaceholderOperation(operation) {
+  const item = /** @type {import('./types').SyncOperation | null} */ (operation && typeof operation === 'object' ? operation : null);
+  if (!item || item.operation_type !== 'upsert' || item.base_version !== 0) return false;
+  const payload = item.payload;
+  if (!payload || typeof payload !== 'object') return false;
+  const value = /** @type {Record<string, unknown>} */ (payload);
+  return value.title === '未命名思路' && value.idea === '' && value.code === '' &&
+    value.short_code === '' && value.rewrite === '';
 }

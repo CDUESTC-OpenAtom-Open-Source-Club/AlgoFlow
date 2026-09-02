@@ -24,7 +24,7 @@ export function TopBar({ saved, syncState = 'local_only', onSync }: TopBarProps)
         </span>
         <button className="sync-button" type="button" onClick={onSync}>
           <Icon name="refresh" />
-          同步
+          {saved ? '同步' : '保存并同步'}
         </button>
         <button className="avatar" type="button" aria-label="用户菜单">
           <Icon name="user" />
