@@ -1,6 +1,8 @@
 import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
 import { AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
-import { InMemoryDraftRepository } from '../platform/InMemoryDraftRepository';
+import { RdbDraftRepository } from '../platform/RdbDraftRepository';
+import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
+import { saveCardSnapshot } from '../platform/CardSnapshot';
 
 enum WorkspaceTool {
   NONE = 'none', FILES = 'files', IDEA = 'idea', SNIPPET = 'snippet', AI = 'ai',
@@ -76,7 +78,7 @@ const CPP_COMPLETIONS: CompletionItem[] = [
 @Entry
 @Component
 struct Index {
-  private viewModel: DraftWorkspaceViewModel = new DraftWorkspaceViewModel(new InMemoryDraftRepository());
+  private viewModel: DraftWorkspaceViewModel = new DraftWorkspaceViewModel(new RdbDraftRepository(getContext(this)));
   private editorController: TextAreaController = new TextAreaController();
 
   @State drafts: Draft[] = [];
@@ -103,10 +105,31 @@ struct Index {
   @State reviewIssues: ReviewIssue[] = [];
   @State searchQuery: string = '';
   @State searchCount: number = 0;
+  @State syncBaseUrl: string = 'http://127.0.0.1:8787';
+  @State syncMessage: string = '';
 
   aboutToAppear(): void {
-    this.selectedId = this.viewModel.ensureStarterDraft();
-    this.loadSelectedDraft();
+    this.initializeWorkspace();
+  }
+
+  private async initializeWorkspace(): Promise<void> {
+    try {
+      const repository = new RdbDraftRepository(getContext(this));
+      this.viewModel = new DraftWorkspaceViewModel(repository, repository);
+      await this.viewModel.initialize();
+      const routedDraftId = AppStorage.get<string>('routeDraftId');
+      const resolvedRouteId = routedDraftId === 'latest' ? this.viewModel.ensureStarterDraft() : routedDraftId;
+      this.selectedId = resolvedRouteId !== undefined && this.viewModel.getDraft(resolvedRouteId) !== undefined
+        ? resolvedRouteId : this.viewModel.ensureStarterDraft();
+      const configuredBaseUrl = this.viewModel.getSyncBaseUrl();
+      if (configuredBaseUrl.length > 0) this.syncBaseUrl = configuredBaseUrl;
+      if (routedDraftId !== undefined) AppStorage.setOrCreate<string>('routeDraftId', '');
+      this.loadSelectedDraft();
+    } catch (error) {
+      console.error(`[AlgoFlow] RDB initialization failed: ${error instanceof Error ? error.message : 'unknown'}`);
+      this.syncStatus = SyncStatus.FAILED;
+      this.saved = false;
+    }
   }
 
   private loadSelectedDraft(): void {
@@ -122,6 +145,7 @@ struct Index {
     this.artifactHidden = draft.artifactHidden;
     this.syncStatus = draft.syncStatus;
     this.segments = draft.ideaSegments;
+    saveCardSnapshot(getContext(this), draft);
     this.saved = true;
     this.resetEditorPosition();
     this.refreshEditorFeatures();
@@ -409,6 +433,58 @@ struct Index {
     this.drafts = this.viewModel.listDrafts();
     this.syncStatus = SyncStatus.LOCAL_ONLY;
     this.saved = true;
+    if (draft !== undefined) saveCardSnapshot(getContext(this), draft);
+  }
+
+  private async synchronize(): Promise<void> {
+    this.viewModel.setSyncBaseUrl(this.syncBaseUrl);
+    this.syncStatus = SyncStatus.SYNCING;
+    this.syncMessage = '正在连接 sync-api...';
+    let result: SyncRunResult | undefined;
+    try {
+      result = await this.viewModel.synchronize();
+    } catch (error) {
+      this.syncStatus = SyncStatus.FAILED;
+      this.syncMessage = error instanceof Error ? error.message : '同步请求失败';
+      return;
+    }
+    if (result === undefined) {
+      this.syncStatus = SyncStatus.LOCAL_ONLY;
+      this.syncMessage = '当前仓储未启用同步';
+      return;
+    }
+    if (result.status === SyncRunStatus.SYNCED) this.syncStatus = SyncStatus.SYNCED;
+    else if (result.status === SyncRunStatus.CONFLICT) this.syncStatus = SyncStatus.CONFLICT;
+    else if (result.status === SyncRunStatus.FAILED) this.syncStatus = SyncStatus.FAILED;
+    else this.syncStatus = SyncStatus.LOCAL_ONLY;
+    this.syncMessage = result.message;
+    this.drafts = this.viewModel.listDrafts();
+    this.selectRemoteDraftIfPlaceholder();
+    const draft = this.viewModel.getDraft(this.selectedId);
+    if (draft !== undefined) {
+      this.title = draft.title;
+      this.idea = draft.idea;
+      this.code = draft.code;
+      this.shortCode = draft.shortCode;
+      this.rewrite = draft.rewrite;
+      this.segments = draft.ideaSegments;
+      saveCardSnapshot(getContext(this), draft);
+    }
+  }
+
+  private selectRemoteDraftIfPlaceholder(): void {
+    const selected = this.viewModel.getDraft(this.selectedId);
+    if (selected === undefined || selected.version > 0 || selected.code.length > 0 ||
+      selected.idea.length > 0 || selected.shortCode.length > 0 || selected.rewrite.length > 0) return;
+    const remote = this.drafts
+      .filter((draft: Draft) => draft.id !== selected.id && draft.syncStatus === SyncStatus.SYNCED && !draft.deleted)
+      .filter((draft: Draft) => draft.version > 0 || draft.code.length > 0 || draft.idea.length > 0 ||
+        draft.shortCode.length > 0 || draft.rewrite.length > 0)
+      .sort((left: Draft, right: Draft) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    if (remote !== undefined) {
+      this.selectedId = remote.id;
+      this.loadSelectedDraft();
+    }
   }
 
   private chooseMode(nextMode: AIMode): void {
@@ -564,6 +640,8 @@ struct Index {
         Button('新建').height(30).fontSize(10).fontColor('#FFFFFF').backgroundColor('#4F6F5A').borderRadius(4).onClick(() => this.createDraft())
         Button('删除').height(30).fontSize(10).fontColor('#9B4F42').backgroundColor('#F4E5DF').borderRadius(4).margin({ left: 7 }).onClick(() => this.deleteDraft())
       }.width('100%')
+      Text(this.syncMessage).fontSize(10).lineHeight(16).fontColor(this.syncStatus === SyncStatus.FAILED ? '#9B4F42' : '#657069')
+        .margin({ top: 7 })
       Scroll() {
         Column({ space: 5 }) {
           ForEach(this.drafts, (draft: Draft) => {
@@ -689,7 +767,10 @@ struct Index {
   SyncPanel() {
     Column() {
       Text('保存与同步').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#263129')
-      Text('当前仓储只保证应用会话内保存，数据库和跨端同步尚未接入。').fontSize(10).lineHeight(17).fontColor('#657069').margin({ top: 5, bottom: 10 })
+      Text('本地 RDB 保存离线副本；同步连接局域网 sync-api。').fontSize(10).lineHeight(17).fontColor('#657069').margin({ top: 5, bottom: 10 })
+      TextInput({ text: this.syncBaseUrl, placeholder: 'http://电脑局域网IP:8787' }).width('100%').height(34).fontSize(10)
+        .backgroundColor('#FFFFFF').border({ width: 1, color: '#C7CEC9' }).borderRadius(4)
+        .onChange((value: string) => { this.syncBaseUrl = value; this.viewModel.setSyncBaseUrl(value); })
       Row() {
         Text(this.statusLabel()).fontSize(11).fontWeight(FontWeight.Bold).fontColor(this.saved ? '#4F6F5A' : '#9B4F42')
         Blank()
@@ -697,6 +778,8 @@ struct Index {
       }.width('100%')
       Button('保存当前内容').width('100%').height(36).fontSize(11).fontColor('#FFFFFF')
         .backgroundColor('#4F6F5A').borderRadius(4).margin({ top: 12 }).onClick(() => this.saveDraft())
+      Button('立即同步').width('100%').height(36).fontSize(11).fontColor('#385443')
+        .backgroundColor('#DCE8DF').borderRadius(4).margin({ top: 7 }).onClick(() => this.synchronize())
     }.width('100%')
   }
 

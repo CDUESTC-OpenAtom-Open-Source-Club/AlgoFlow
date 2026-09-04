@@ -108,6 +108,8 @@ src/
 ├── App.tsx                 # 页面状态与区域编排
 ├── data.ts                 # 文件、模式和演示文档数据
 ├── types.ts                # Web 层严格类型定义
+├── storage.mjs             # localStorage 工作区、客户端队列和游标仓储
+├── sync-client.mjs         # sync-api push/pull 与冲突批处理
 ├── icon-assets.ts          # Game Icon Pack 资源映射
 ├── components/
 │   ├── ActivityBar.tsx     # 左侧工具栏
@@ -121,7 +123,11 @@ src/
 ```
 
 - Web 组件不得使用 `any` 绕过 TypeScript 检查；跨组件数据优先通过 `types.ts` 中的联合类型和记录类型约束。
-- 当前 Web 是 UI 重写阶段，文档状态保存在 React 内存中；`storage.mjs`、`sync-client.mjs` 与 `packages/contracts/schemas` 是后续接入本地持久化和同步协议的边界，不能把演示状态描述为已完成跨端同步。
+- 当前 Web 文档状态由 `BrowserWorkspaceRepository` 写入 `localStorage`；共享草稿、未解决冲突记录、每个浏览器客户端的离线操作队列和同步游标均可在刷新后恢复。客户端 ID 保存在标签页级 `sessionStorage`，并发验收必须使用两个独立打开的标签页，不能通过复制标签页复用同一客户端 ID。
+- 保存时通过 `queueUpsert` 生成或复用 `operation_id`，同一草稿未提交期间的重复保存还必须保留首次 `base_version`。`LocalSyncClient` 默认连接本机 `http://127.0.0.1:8787`，可通过 `VITE_SYNC_API_BASE` 覆盖；生产 API 地址、认证和云端部署仍未完成。
+- Web 已能将离线队列 push 到本地 sync-api、pull 服务端变更并应用到当前选中的草稿。保存未提交内容时，顶部操作会先写入队列再同步；409 冲突必须保留服务器版本和本地冲突副本，由用户选择采用服务器版本或继续提交冲突副本；pull 的 `next_cursor` 只能在整批变更应用成功后持久化。
+- OpenHarmony 端已使用 `RdbDraftRepository` 作为 `DraftRepository`/同步仓储适配器，并通过 `HttpSyncClient` 和 `PhoneSyncService` 接入同一 `/v1/sync/operations`、`/v1/sync/changes` 契约。两端首个工作草稿统一使用 `draft-local`；空白的本地占位草稿不会上传，历史遗留的空占位操作会在启动迁移时移除但不删除草稿数据。
+- 当前 sync-api 仍为进程内存储，只适合局域网联调；该链路可以验收手机与 Web 的普通 HTTP 双向同步，但不得描述为生产云同步或 OpenHarmony 分布式能力已完成。真机不能使用 `127.0.0.1`，应配置运行 sync-api 电脑的局域网地址。
 - `apps/web/package.json` 保持 React、React DOM、Vite、TypeScript 与已核验的 CodeMirror 6 编辑器依赖。新增 npm 包前必须核验包名、官方仓库、许可证和包体积，并说明用途；小功能优先使用浏览器或 React 原生能力。当前 CodeMirror 依赖均为 MIT 许可证并已执行 `npm audit`。
 - UI 使用本地 `assets/game-icons` 资源和 `icon-assets.ts` 语义映射；不得改用未确认来源的图标库或用字母/仿制图形替代指定资源。界面字体目标为 `max32002/maruko-gothic`，代码编辑区必须使用等宽字体。
 - CSS 必须保持分区、多行和可读格式；不得重新提交压缩成单行的整文件样式。视觉令牌、布局和 Web/ArkUI 映射以 `docs/WEB_UI_GUIDE.md` 为共同参考。
@@ -136,14 +142,17 @@ ets/
 ├── application/DraftWorkspaceViewModel.ets # 草稿、版本、思路片段和模式状态用例
 ├── domain/Models.ets                        # Draft、IdeaSegment、AIMode、SyncStatus
 ├── domain/DraftRepository.ets               # 草稿仓储端口
-└── platform/InMemoryDraftRepository.ets     # 当前会话级占位适配器
+├── domain/SyncModels.ets                     # 同步 Schema 对应的实体、操作和结果模型
+├── domain/SyncRepository.ets                 # 同步仓储端口
+└── platform/RdbDraftRepository.ets           # RDB 离线副本、迁移和操作队列适配器
 ```
 
 - 手机端首屏主体是可阅读、可编辑的 `main.cpp`，不是草稿表单或 AI 结果页。
 - 草稿、思路片段、独立短代码、AI 模式、独立复写和保存/同步状态通过底部工具菜单按需展开；工具面板关闭时，代码编辑区恢复为主体区域。
 - `Draft.code` 表示主 `main.cpp`，`Draft.shortCode` 表示独立的 C++ 短代码片段；二者不得混用或互相覆盖。
 - `IdeaSegment` 为思路行提供稳定 ID、内容和位置；页面展示来源标识，后续 AI 请求必须使用这些稳定 ID 生成 `source_refs`。
-- `InMemoryDraftRepository` 只保证当前应用会话内的数据流转，不得描述为数据库持久化、离线队列或跨端同步已完成。
+- `RdbDraftRepository` 负责显式建库/迁移、草稿持久化、离线操作队列和同步游标；`HttpSyncClient` 只使用 `packages/contracts/schemas/sync.schema.json` 定义的字段命名和枚举，禁止手机端另造同步契约。`PhoneSyncService` 在 push 后 pull，并在应用服务端版本后更新本地 `Draft.code`（对应 `main.cpp`）。
+- 空白首个草稿仅作为本地编辑入口；只有用户实际保存内容后才生成可上传的 `upsert` 操作。同步失败保留队列和本地草稿，不能把 HTTP 成功或空队列单独解释为两端当前内容一致。
 
 ## 4. AI 模式契约
 
@@ -293,7 +302,8 @@ full_solution        完整解题
 - 编辑器 UI 已拆分为 `ActivityBar`、`WorkspaceSidebar`、`EditorStage`、`CodeEditor` 和 `InspectorPanel` 等组件。新增交互应放入对应组件，`App.tsx` 只负责页面状态和区域编排。
 - 编辑器必须支持键盘、撤销/重做、搜索、长文本、稳定滚动和未保存提示。当前 Web 使用 CodeMirror 6 的 C++ 语言包、语法高亮、括号匹配、自动补括号、缩进、搜索、折叠、诊断和补全扩展；补全菜单使用 `Tab` 接受，`Enter` 保持换行语义。CodeMirror 仅负责编辑体验，不改变同步和领域边界。
 - 当前本地补全包含 C++ 关键字、常用 STL 类型、代码片段和少量悬浮说明；Inspector 与 CodeMirror gutter 使用同一组基础审查结果。`clangd`、`clang-tidy`、本地编译和语义级补全尚未接入，不得描述为编译器诊断。
-- 网络断开时保存到本地队列，恢复后按同步协议提交。
+- 网络断开时保存到当前客户端的本地队列并显示 `local_only`；恢复网络或用户主动同步后提交。同步 UI 严格显示 `local_only`、`syncing`、`synced`、`conflict`、`failed` 五种状态。
+- 两个独立浏览器标签页可作为两个 Web 客户端对同一稳定草稿 ID 做本地并发验收：先提交的一方成功，后提交的陈旧版本收到 409 并生成冲突副本。该验收只证明 Web 与本地 sync-api 的协议链路，不证明 OpenHarmony 或云端链路已完成。
 - 不在浏览器中暴露团队模型密钥、数据库凭据或管理接口。
 
 ### 7.2 华为云
@@ -311,7 +321,7 @@ full_solution        完整解题
 
 - 领域规则：模式切换、来源映射、复写对比、状态枚举。
 - AI 契约：至少 40 条，覆盖错误思路、缺失步骤、越权补解、注入、格式错误、超时和供应商异常。
-- AI Gateway 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；最近一次验证为 `35` 条通过。新增或修改契约后必须重新运行并报告实际结果。
+- AI Gateway 与 sync-api 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；2026-08-31 最近一次验证为 `38` 条通过，包含双 Web 客户端并发冲突、离线队列恢复和 pull 失败不推进 cursor。新增或修改契约后必须重新运行并报告实际结果。
 - 同步：离线编辑、重复请求、乱序、并发更新、删除传播、冲突副本和断点恢复。
 - 数据库：首次建库、逐版本迁移、异常恢复和关联删除。
 - OpenHarmony：不同尺寸、输入法、后台恢复、权限拒绝、卡片刷新与跳转。
