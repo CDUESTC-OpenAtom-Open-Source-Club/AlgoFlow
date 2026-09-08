@@ -14,7 +14,7 @@
 | 搜索与匹配高亮 | 可以 | `@codemirror/search` 扩展；工作区搜索仍由 React 面板负责。 |
 | 折叠、矩形选择、多光标、行复制/删除/移动 | 可以 | CodeMirror commands 与本项目快捷键。 |
 | 基础括号/入口/include 规则审查 | 可以 | `@codemirror/lint` 调用本项目 `reviewCpp`；不是编译器诊断。 |
-| ArkUI 底部工具菜单、草稿仓储、AI 模式、同步队列 | 不可以直接复现 | 属于 React/领域/平台能力，继续由应用层实现。 |
+| ArkUI 底部浮动工具胶囊、左侧抽屉、草稿仓储、AI 模式、同步队列 | 不可以直接复现 | 属于 ArkUI/领域/平台能力，Web 端继续由 React/应用层实现；两端共享状态语义，不共享 UI。 |
 | OpenHarmony 服务卡片、生命周期、权限、RDB | 不可以 | 必须保留 ArkTS/ArkUI 和 OpenHarmony 平台适配。 |
 
 ## 边界
