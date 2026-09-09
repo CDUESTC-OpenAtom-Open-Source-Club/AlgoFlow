@@ -27,7 +27,7 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, TAG, '[AlgoFlow] Ability onWindowStageCreate');
 
     if (this.launchDraftId.length > 0) AppStorage.setOrCreate<string>('routeDraftId', this.launchDraftId);
-    windowStage.loadContent('pages/Index', (err) => {
+    windowStage.loadContent('pages/Home', (err) => {
       if (err.code) {
         hilog.error(DOMAIN, TAG, '[AlgoFlow] Failed to load content. Cause: %{public}s', JSON.stringify(err));
         return;
