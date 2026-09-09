@@ -138,7 +138,7 @@ src/
 
 ```text
 ets/
-├── pages/Index.ets                         # 手机 IDE 页面与工具面板编排
+├── pages/Index.ets                         # 手机 IDE 页面、抽屉和工具面板编排
 ├── application/DraftWorkspaceViewModel.ets # 草稿、版本、思路片段和模式状态用例
 ├── domain/Models.ets                        # Draft、IdeaSegment、AIMode、SyncStatus
 ├── domain/DraftRepository.ets               # 草稿仓储端口
@@ -148,7 +148,7 @@ ets/
 ```
 
 - 手机端首屏主体是可阅读、可编辑的 `main.cpp`，不是草稿表单或 AI 结果页。
-- 草稿、思路片段、独立短代码、AI 模式、独立复写和保存/同步状态通过底部工具菜单按需展开；工具面板关闭时，代码编辑区恢复为主体区域。
+- 顶部导航承载当前草稿、文件和同步状态；底部浮动工具胶囊承载高频入口，左侧抽屉承载草稿、文件、AI 模式、工具和同步摘要。抽屉使用灰黑遮罩，选中项使用灰色边框和高亮字体；工具面板关闭时，代码编辑区恢复为主体区域。
 - `Draft.code` 表示主 `main.cpp`，`Draft.shortCode` 表示独立的 C++ 短代码片段；二者不得混用或互相覆盖。
 - `IdeaSegment` 为思路行提供稳定 ID、内容和位置；页面展示来源标识，后续 AI 请求必须使用这些稳定 ID 生成 `source_refs`。
 - `RdbDraftRepository` 负责显式建库/迁移、草稿持久化、离线操作队列和同步游标；`HttpSyncClient` 只使用 `packages/contracts/schemas/sync.schema.json` 定义的字段命名和枚举，禁止手机端另造同步契约。`PhoneSyncService` 在 push 后 pull，并在应用服务端版本后更新本地 `Draft.code`（对应 `main.cpp`）。
@@ -274,7 +274,7 @@ full_solution        完整解题
 - 状态管理语法只使用当前 SDK 支持的同一代方案。
 - 长代码区必须有稳定尺寸、滚动、选择、复制和输入法适配，不能因文本变化导致布局跳动。
 - 手机 IDE 的主代码区使用固定行高的等宽 `TextArea`，左侧显示两位行号；通过 `onTextSelectionChange` 计算当前行，并显示从编辑区左侧到右侧的整行描边。通过 `onContentScroll` 同步行号和当前行高亮，不能把每一行拆成独立输入框。
-- `main.cpp` 编辑区必须优先占据可用高度；草稿、思路、短代码、AI、复写和同步入口使用底部工具菜单，不能重新退化为“草稿 + 伪代码 + 雷达图”主页面。
+- `main.cpp` 编辑区必须优先占据可用高度；草稿、思路、短代码、AI、复写和同步入口通过左侧抽屉与底部浮动工具胶囊按需展开，不能重新退化为“草稿 + 伪代码 + 雷达图”主页面。
 - 主代码编辑器保留原生选择、粘贴、撤销/重做和输入法能力；新增当前行或滚动视觉反馈不得覆盖编辑事件。
 - 异步操作提供加载、取消或失败恢复；底层错误转换为用户可操作信息。
 - 日志统一使用 `[AlgoFlow]` 前缀并脱敏。
@@ -325,7 +325,7 @@ full_solution        完整解题
 - 同步：离线编辑、重复请求、乱序、并发更新、删除传播、冲突副本和断点恢复。
 - 数据库：首次建库、逐版本迁移、异常恢复和关联删除。
 - OpenHarmony：不同尺寸、输入法、后台恢复、权限拒绝、卡片刷新与跳转。
-- OpenHarmony IDE：行号与代码滚动同步、光标所在整行描边、长代码稳定滚动、工具面板展开/关闭后编辑区尺寸恢复。
+- OpenHarmony IDE：行号与代码滚动同步、光标所在整行描边、长代码稳定滚动、左侧抽屉灰黑遮罩与灰色选中态、底部浮动工具胶囊，以及工具面板展开/关闭后编辑区尺寸恢复。
 - Web：主流浏览器、键盘操作、离线队列、长代码和未保存离开。
 - Web 工程基线：在 `apps/web` 执行 `npx tsc -p tsconfig.app.json --noEmit`、`npx tsc -p tsconfig.node.json --noEmit` 和 `npm run build`；没有实际执行的命令不得写成已通过。
 - 发布：Release 构建、Mock 关闭、密钥扫描、权限清单、日志脱敏和安装验证。

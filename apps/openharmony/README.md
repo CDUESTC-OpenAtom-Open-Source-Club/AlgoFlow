@@ -6,9 +6,9 @@
 
 - `entry/src/main/ets/domain`：领域模型和仓储端口
 - `entry/src/main/ets/application`：草稿工作区 ViewModel
-- `entry/src/main/ets/platform`：当前内存适配器，占位待替换为已验证的 RDB 适配器
+- `entry/src/main/ets/platform`：`RdbDraftRepository`、`HttpSyncClient`、`PhoneSyncService` 等平台适配器
 - `entry/src/main/ets/pages/Home.ets`：ArkUI 工作区首页、草稿概览和入口路由
-- `entry/src/main/ets/pages/Index.ets`：ArkUI IDE 编辑页面
+- `entry/src/main/ets/pages/Index.ets`：ArkUI IDE 工作区页面、左侧抽屉和工具面板
 - `entry/src/main/ets/pages/Placeholder.ets`：未完成能力的统一预留页面
 
-在没有 API 文档、迁移测试和设备证据前，不得把内存适配器或 Previewer 结果描述为持久化/设备完成。
+当前已完成 API 20 环境下的 Debug HAP 构建，RDB 适配器和同步调用链已接入工程；仍未完成真机/设备级视觉验证，不得把 Previewer 或构建结果描述为设备完成。

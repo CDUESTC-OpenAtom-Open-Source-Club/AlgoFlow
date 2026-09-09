@@ -1,7 +1,7 @@
 # AlgoFlow Web / ArkUI UI 对齐指南
 
-版本：0.1（Web IDE 重写基线）  
-状态：Web UI 原型；ArkUI 映射待实现
+版本：0.2（Web IDE / ArkUI IDE 对齐基线）
+状态：Web UI 原型；ArkUI IDE 参考布局已确认，主页面映射待设计
 
 ## 1. 目标
 
@@ -30,11 +30,32 @@ Web 是电脑端工作流：键盘优先、代码编辑区占据绝大部分、A
 
 这些颜色是 MD3 角色的项目映射，不代表引入 Material UI 组件库。
 
+### ArkUI IDE 深色映射
+
+ArkUI IDE 根据已确认的参考 HTML 使用独立的深色表面映射；Web 端现有浅色令牌不因此改为深色主题。
+
+| 角色 | 值 | 用途 |
+| --- | --- | --- |
+| `ideBackground` | `#0A0A0C` | IDE 与主代码编辑区背景 |
+| `ideSurface` | `#161618` | 顶部导航、工具面板和工作区抽屉 |
+| `ideSurfaceRaised` | `#1E1E20` | 状态胶囊、浮动工具胶囊和次级控件 |
+| `ideOutline` | `#3A3A3D` | 胶囊、输入框和活动区域边界 |
+| `ideDrawerSelectionOutline` | `#5A5A5F` | 抽屉选中项的灰色边框，不使用绿色选中边框 |
+| `ideScrim` | `#99000000` | 左侧抽屉打开时的灰黑遮罩 |
+| `ideOnSurface` | `#ECECED` | 深色表面主文字 |
+| `ideOnSurfaceMuted` | `#8E8E93` | 行号、说明和状态元信息 |
+| `ideSuccess` | `#30D158` | 已同步、选中模式和主要操作 |
+| `ideWarning` | `#FF9F0A` | 未保存、冲突和思路片段强调 |
+| `ideError` | `#FF453A` | 同步失败和错误状态 |
+
+深色映射只改变 ArkUI IDE 的视觉表现，不改变公共同步状态、AI 模式枚举或 Web/OH 数据契约。
+
 ## 3. 字体与图标资产
 
 - 界面字体目标：[`max32002/maruko-gothic`](https://github.com/max32002/maruko-gothic)，接入前需确认许可证、字体文件和 Web 字体加载方式。
 - 图标目标：[`Nieobie/Game-Icon-Pack`](https://github.com/Nieobie/Game-Icon-Pack)，接入前需确认具体图标文件名、许可证和是否允许 Web 发布。
 - 图标接入边界位于 `apps/web/src/icon-assets.ts`。必须先核验 `Nieobie/Game-Icon-Pack` 的实际文件名、许可证和发布方式，再将本地资源映射到语义名：`files`、`search`、`source`、`spark`、`history`、`code`、`note`、`panel`、`more`、`cpp`、`md`、`test`。在资源未核验前不使用字母或仿制图形冒充指定图标库。
+- OH 端复用已核验的 Game Icon Pack SVG，并复制到 `entry/src/main/resources/base/media`，由 `Index.ets` 的 `WorkspaceIcon` 映射用于文件标签、草稿、思路来源、AI 模式、搜索、保存和同步操作。图标包当前没有 `eye`、`settings` 资源，这两处保留文字标签，不使用错误语义的替代图形。
 - 代码区必须使用等宽字体，不能使用圆体，以保证缩进、括号和行号可读。
 
 ## 4. Web 信息架构
@@ -54,15 +75,23 @@ Web 是电脑端工作流：键盘优先、代码编辑区占据绝大部分、A
 
 | Web | ArkUI 手机端 |
 | --- | --- |
-| 顶部文件标签 | 页面标题 + 文件/草稿切换入口 |
-| 左侧工具栏 | 底部导航或顶部工具菜单 |
-| 左侧文件面板 | 草稿/文档抽屉 |
-| 中心代码编辑区 | `Scroll` + 稳定高度代码阅读/短编辑区 |
-| 右侧检查栏 | 独立检查页面或底部抽屉 |
-| 底部同步日志 | 同步状态页面/弹层 |
+| 顶部品牌/文件标签 | 顶部导航栏：菜单入口、当前文件名/草稿标题和同步状态胶囊 |
+| 左侧工具栏 | 底部浮动工具胶囊；保持单手可达，工具仍通过 `WorkspaceTool` 切换 |
+| 左侧文件面板 | 左侧滑动抽屉 + 遮罩；承载草稿、文件入口、AI 模式和同步摘要 |
+| 中心代码编辑区 | `TextArea` 原生编辑器 + 独立行号栏；代码区优先占据可用高度 |
+| 当前行/代码滚动 | 保留选区、光标、当前行描边和 `onContentScroll` 行号同步，不拆分为逐行输入框 |
+| 右侧检查栏 | 手机端改为工具抽屉/底部面板，不覆盖主代码编辑区 |
+| 底部同步日志 | 同步状态工具面板或弹层；状态使用公共契约枚举 |
 | 来源轨道 | 思路片段列表与代码行来源标识 |
 
-### 5.1 ArkUI 工作区首页
+### 5.1 IDE 参考布局边界
+
+- ArkUI IDE 使用参考 HTML 的顶部导航、深色代码区、底部浮动工具胶囊和左侧抽屉；HTML/Tailwind 实现不直接移植到 ArkUI。
+- 抽屉打开时使用灰黑遮罩；抽屉选中项使用 `#5A5A5F` 灰色边框和 `#ECECED` 高亮字体，绿色只用于同步成功、选中模式和主要操作。
+- 主代码区继续使用原生 `TextArea`，保留复制、粘贴、撤销/重做、输入法、选区、光标跳转和长文本滚动能力。
+- 抽屉、工具胶囊和面板只是 UI 入口变化，不改变 `DraftWorkspaceViewModel`、RDB 离线副本、操作队列或 `PhoneSyncService` 的调用语义。
+
+### 5.2 ArkUI 工作区首页
 
 OH 端首页使用独立的 `pages/Home` 路由，入口页不重构现有 `pages/Index` IDE。首页只负责工作区概览和导航：统计当前本地草稿状态、创建草稿、打开最近草稿，以及进入尚未完成能力的预留页面。打开草稿时通过 `routeDraftId` 交给现有 IDE 页面，保持 `main.cpp` 编辑、选择、滚动和工具面板逻辑不变。
 
