@@ -11,6 +11,11 @@ enum WorkspaceTool {
 
 enum EditorFile { MAIN = 'main.cpp', IDEA = 'idea.md', REWRITE = 'rewrite.cpp' }
 
+enum WorkspaceIcon {
+  MENU = 'menu', FILES = 'files', SOURCE = 'source', AI = 'ai', SEARCH = 'search',
+  DOCUMENT = 'document', REFRESH = 'refresh', CROSS = 'cross', PLUS = 'plus', CODE = 'code'
+}
+
 class ReviewIssue {
   line: number;
   severity: string;
@@ -94,6 +99,7 @@ struct Index {
   @State segments: IdeaSegment[] = [];
   @State activeFile: EditorFile = EditorFile.MAIN;
   @State activeTool: WorkspaceTool = WorkspaceTool.NONE;
+  @State drawerOpen: boolean = false;
   @State saved: boolean = true;
   @State selectionStart: number = 0;
   @State selectionEnd: number = 0;
@@ -408,6 +414,21 @@ struct Index {
     this.completionVisible = false;
   }
 
+  private openDrawer(): void {
+    this.drawerOpen = true;
+    this.completionVisible = false;
+  }
+
+  private closeDrawer(): void {
+    this.drawerOpen = false;
+  }
+
+  private openTool(tool: WorkspaceTool): void {
+    this.activeTool = tool;
+    this.drawerOpen = false;
+    this.completionVisible = false;
+  }
+
   private createDraft(): void {
     this.selectedId = this.viewModel.createDraft();
     this.activeFile = EditorFile.MAIN;
@@ -529,47 +550,198 @@ struct Index {
     return '仅本地';
   }
 
+  private statusColor(): string {
+    if (!this.saved || this.syncStatus === SyncStatus.CONFLICT) return '#FF9F0A';
+    if (this.syncStatus === SyncStatus.FAILED) return '#FF453A';
+    if (this.syncStatus === SyncStatus.SYNCING) return '#79C0FF';
+    if (this.syncStatus === SyncStatus.SYNCED) return '#30D158';
+    return '#8E8E93';
+  }
+
+  private fileIcon(file: EditorFile): WorkspaceIcon {
+    if (file === EditorFile.IDEA) return WorkspaceIcon.SOURCE;
+    if (file === EditorFile.REWRITE) return WorkspaceIcon.CODE;
+    return WorkspaceIcon.FILES;
+  }
+
+  private toolIcon(tool: WorkspaceTool): WorkspaceIcon {
+    if (tool === WorkspaceTool.FILES) return WorkspaceIcon.FILES;
+    if (tool === WorkspaceTool.IDEA) return WorkspaceIcon.SOURCE;
+    if (tool === WorkspaceTool.SNIPPET) return WorkspaceIcon.CODE;
+    if (tool === WorkspaceTool.AI) return WorkspaceIcon.AI;
+    if (tool === WorkspaceTool.REWRITE) return WorkspaceIcon.DOCUMENT;
+    if (tool === WorkspaceTool.SEARCH) return WorkspaceIcon.SEARCH;
+    if (tool === WorkspaceTool.SYNC) return WorkspaceIcon.REFRESH;
+    return WorkspaceIcon.DOCUMENT;
+  }
+
+  private modeIcon(mode: AIMode): WorkspaceIcon {
+    if (mode === AIMode.FAITHFUL_TRANSFORM) return WorkspaceIcon.SOURCE;
+    if (mode === AIMode.FEASIBILITY_ANALYSIS) return WorkspaceIcon.SEARCH;
+    if (mode === AIMode.PROGRESSIVE_HINT) return WorkspaceIcon.AI;
+    return WorkspaceIcon.DOCUMENT;
+  }
+
+  @Builder
+  Icon(icon: WorkspaceIcon, size: number = 15, color: string = '#FFFFFF') {
+    if (icon === WorkspaceIcon.MENU) {
+      Image($r('app.media.menu')).width(size).height(size).fillColor(color).objectFit(ImageFit.Contain)
+    } else if (icon === WorkspaceIcon.FILES) {
+      Image($r('app.media.files')).width(size).height(size).fillColor(color).objectFit(ImageFit.Contain)
+    } else if (icon === WorkspaceIcon.SOURCE) {
+      Image($r('app.media.source')).width(size).height(size).fillColor(color).objectFit(ImageFit.Contain)
+    } else if (icon === WorkspaceIcon.AI) {
+      Image($r('app.media.ai')).width(size).height(size).fillColor(color).objectFit(ImageFit.Contain)
+    } else if (icon === WorkspaceIcon.SEARCH) {
+      Image($r('app.media.search')).width(size).height(size).fillColor(color).objectFit(ImageFit.Contain)
+    } else if (icon === WorkspaceIcon.DOCUMENT) {
+      Image($r('app.media.document')).width(size).height(size).fillColor(color).objectFit(ImageFit.Contain)
+    } else if (icon === WorkspaceIcon.REFRESH) {
+      Image($r('app.media.refresh')).width(size).height(size).fillColor(color).objectFit(ImageFit.Contain)
+    } else if (icon === WorkspaceIcon.CROSS) {
+      Image($r('app.media.cross')).width(size).height(size).fillColor(color).objectFit(ImageFit.Contain)
+    } else if (icon === WorkspaceIcon.PLUS) {
+      Image($r('app.media.plus')).width(size).height(size).fillColor(color).objectFit(ImageFit.Contain)
+    } else {
+      Image($r('app.media.code')).width(size).height(size).fillColor(color).objectFit(ImageFit.Contain)
+    }
+  }
+
   @Builder
   FileTab(file: EditorFile, label: string) {
-    Button(`${label}${!this.saved && this.activeFile === file ? ' *' : ''}`)
-      .height(34).padding({ left: 11, right: 11 }).fontSize(10)
-      .fontColor(this.activeFile === file ? '#F4F6F3' : '#9BA39D')
-      .backgroundColor(this.activeFile === file ? '#323A36' : Color.Transparent)
+    Button() {
+      Row({ space: 5 }) {
+        this.Icon(this.fileIcon(file), 13, this.activeFile === file ? '#ECECED' : '#6E6E73')
+        Text(`${label}${!this.saved && this.activeFile === file ? ' *' : ''}`).fontSize(10)
+          .fontColor(this.activeFile === file ? '#ECECED' : '#8E8E93')
+      }
+    }.height(34).padding({ left: 11, right: 11 })
+      .backgroundColor(this.activeFile === file ? '#1C1C1E' : Color.Transparent)
       .borderRadius(4).onClick(() => this.selectFile(file))
   }
 
   @Builder
   ToolButton(label: string, tool: WorkspaceTool) {
-    Button(label).height(36).padding({ left: 13, right: 13 }).fontSize(10)
-      .fontColor(this.activeTool === tool ? '#FFFFFF' : '#3E4942')
-      .backgroundColor(this.activeTool === tool ? '#4F6F5A' : Color.Transparent)
+    Button() {
+      Row({ space: 5 }) {
+        this.Icon(this.toolIcon(tool), 14, this.activeTool === tool ? '#ECECED' : '#8E8E93')
+        Text(label).fontSize(10).fontColor(this.activeTool === tool ? '#ECECED' : '#8E8E93')
+      }
+    }.height(36).padding({ left: 13, right: 13 })
+      .backgroundColor(this.activeTool === tool ? '#1E6B39' : Color.Transparent)
       .borderRadius(5).onClick(() => this.toggleTool(tool))
   }
 
   @Builder
   ModeButton(label: string, value: AIMode) {
-    Button(label).layoutWeight(1).height(34).fontSize(10)
-      .fontColor(this.mode === value ? '#FFFFFF' : '#344038')
-      .backgroundColor(this.mode === value ? '#4F6F5A' : '#E6EBE7')
+    Button() {
+      Row({ space: 5 }) {
+        this.Icon(this.modeIcon(value), 13, this.mode === value ? '#07110A' : '#A7A7AD')
+        Text(label).fontSize(10).fontColor(this.mode === value ? '#07110A' : '#D4D4D8')
+      }
+    }.layoutWeight(1).height(34)
+      .backgroundColor(this.mode === value ? '#30D158' : '#242426')
       .borderRadius(4).onClick(() => this.chooseMode(value))
+  }
+
+  @Builder
+  DrawerSectionTitle(label: string) {
+    Text(label.toUpperCase()).fontSize(9).fontWeight(FontWeight.Bold).fontColor('#8E8E93')
+      .margin({ bottom: 7 })
+  }
+
+  @Builder
+  DrawerFileButton(file: EditorFile, label: string) {
+    Button() {
+      Row({ space: 9 }) {
+        this.Icon(this.fileIcon(file), 15, this.activeFile === file ? '#ECECED' : '#A7A7AD')
+        Column() {
+          Text(label).fontSize(11).fontColor(this.activeFile === file ? '#ECECED' : '#B8B8BD')
+          Text(file === EditorFile.MAIN ? '主代码编辑区' : file === EditorFile.IDEA ? '思路来源文件' : '独立复写文件')
+            .fontSize(9).fontColor('#6E6E73').margin({ top: 2 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        if (this.activeFile === file) {
+          Circle().width(6).height(6).fill('#ECECED')
+        }
+      }
+    }.width('100%').height(48).padding({ left: 11, right: 11 })
+      .backgroundColor(this.activeFile === file ? '#242426' : '#1C1C1E')
+      .border({ width: 1, color: this.activeFile === file ? '#5A5A5F' : '#2A2A2D' })
+      .borderRadius(7).onClick(() => { this.selectFile(file); this.closeDrawer(); })
+  }
+
+  @Builder
+  DrawerToolButton(label: string, tool: WorkspaceTool) {
+    Button() {
+      Row({ space: 8 }) {
+        this.Icon(this.toolIcon(tool), 14, this.activeTool === tool ? '#ECECED' : '#A7A7AD')
+        Text(label).fontSize(10).fontColor(this.activeTool === tool ? '#ECECED' : '#B8B8BD')
+        Blank()
+        if (this.activeTool === tool) {
+          Text('打开').fontSize(9).fontColor('#ECECED')
+        }
+      }
+    }.width('100%').height(36).padding({ left: 11, right: 11 })
+      .backgroundColor(this.activeTool === tool ? '#242426' : Color.Transparent)
+      .border({ width: 1, color: this.activeTool === tool ? '#5A5A5F' : Color.Transparent })
+      .borderRadius(6).onClick(() => this.openTool(tool))
+  }
+
+  @Builder
+  DrawerModeButton(label: string, value: AIMode) {
+    Button() {
+      Row({ space: 5 }) {
+        this.Icon(this.modeIcon(value), 13, this.mode === value ? '#ECECED' : '#A7A7AD')
+        Text(label).fontSize(10).fontColor(this.mode === value ? '#ECECED' : '#B8B8BD')
+      }
+    }.layoutWeight(1).height(34)
+      .backgroundColor(this.mode === value ? '#242426' : '#1C1C1E')
+      .border({ width: 1, color: this.mode === value ? '#5A5A5F' : '#2A2A2D' })
+      .borderRadius(4).onClick(() => this.chooseMode(value))
+  }
+
+  @Builder
+  TopNavigation() {
+    Row() {
+      Button() {
+        this.Icon(WorkspaceIcon.MENU, 18, '#ECECED')
+      }.width(38).height(38).padding({ left: 0, right: 0, top: 0, bottom: 0 })
+        .backgroundColor('#1E1E20').borderRadius(19).onClick(() => this.openDrawer())
+      Column() {
+        Text(this.activeFile).fontSize(13).fontWeight(FontWeight.Medium).fontFamily('monospace')
+          .fontColor('#ECECED')
+        Text(this.title.length === 0 ? '未命名思路' :
+          this.title.length > 16 ? `${this.title.substring(0, 16)}...` : this.title).fontSize(9).fontColor('#8E8E93')
+          .margin({ top: 3 })
+      }.layoutWeight(1).alignItems(HorizontalAlign.Center)
+      Button() {
+        Row({ space: 5 }) {
+          Circle().width(7).height(7).fill(this.statusColor())
+          Text(this.statusLabel()).fontSize(9).fontColor('#B8B8BD')
+        }
+      }.height(28).padding({ left: 9, right: 9 }).backgroundColor('#1E1E20').borderRadius(14)
+        .onClick(() => this.openTool(WorkspaceTool.SYNC))
+    }.width('100%').height(58).padding({ left: 14, right: 14 })
+      .backgroundColor('#111113').border({ width: { bottom: 1 }, color: '#2A2A2D' })
   }
 
   @Builder
   EditorHeader() {
     Row() {
       Text(this.activeFile === EditorFile.IDEA ? 'TEXT' : 'C++').fontSize(9).fontWeight(FontWeight.Bold)
-        .fontColor('#BBD2C1').backgroundColor('#34453B').borderRadius(3)
+        .fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(3)
         .padding({ left: 6, right: 6, top: 3, bottom: 3 })
-      Text(this.activeFile).fontSize(12).fontWeight(FontWeight.Medium).fontColor('#E9ECEA').margin({ left: 9 })
+      Text(this.activeFile).fontSize(12).fontWeight(FontWeight.Medium).fontColor('#ECECED').margin({ left: 9 })
       if (!this.saved) {
-        Circle().width(6).height(6).fill('#E5A875').margin({ left: 7 })
+        Circle().width(6).height(6).fill('#FF9F0A').margin({ left: 7 })
       }
       Blank()
-      Text(`${this.currentValue().split('\n').length} 行`).fontSize(9).fontColor('#929B95')
+      Text(`${this.currentValue().split('\n').length} 行`).fontSize(9).fontColor('#8E8E93')
       if (this.isCppFile()) {
-        Text(`${this.reviewIssues.length} 项检查`).fontSize(9).fontColor('#929B95').margin({ left: 10 })
+        Text(`${this.reviewIssues.length} 项检查`).fontSize(9).fontColor('#8E8E93').margin({ left: 10 })
       }
-    }.width('100%').height(38).padding({ left: 12, right: 12 }).backgroundColor('#202622')
+    }.width('100%').height(36).padding({ left: 12, right: 12 }).backgroundColor('#161618')
+      .border({ width: { bottom: 1 }, color: '#242426' })
   }
 
   @Builder
@@ -578,16 +750,16 @@ struct Index {
       Row() {
         Column() {
           Text(this.lineNumbers()).width('100%').padding({ top: 12, right: 9 })
-            .fontSize(13).lineHeight(22).fontFamily('monospace').fontColor('#6F7972')
+            .fontSize(13).lineHeight(22).fontFamily('monospace').fontColor('#48484A')
             .textAlign(TextAlign.End).translate({ y: -this.scrollY })
-        }.width(40).height('100%').clip(true).backgroundColor('#1C211E')
-        Blank().layoutWeight(1).height('100%').backgroundColor('#242A26')
+        }.width(40).height('100%').clip(true).backgroundColor('#0D0D0F')
+        Blank().layoutWeight(1).height('100%').backgroundColor('#0A0A0C')
       }.width('100%').height('100%')
 
       Row() {
         Blank().width(40)
-        Blank().layoutWeight(1).height(22).border({ width: 1, color: '#607C68' })
-          .backgroundColor('#2A332D').margin({ right: 8 })
+        Blank().layoutWeight(1).height(22).border({ width: { left: 2 }, color: '#8E8E93' })
+          .backgroundColor('#1C1C1E').margin({ right: 8 })
       }.width('100%').height(22).position({ x: 0, y: 12 + this.activeLine * 22 - this.scrollY })
 
       if (this.currentValue().length > 0) {
@@ -628,49 +800,60 @@ struct Index {
         }.width(240).position({ x: 44, y: 38 }).padding({ top: 3, bottom: 3 })
           .backgroundColor('#303A34').border({ width: 1, color: '#607066' }).borderRadius(4)
       }
-    }.width('100%').layoutWeight(1).clip(true).backgroundColor('#242A26')
+    }.width('100%').layoutWeight(1).clip(true).backgroundColor('#0A0A0C')
   }
 
   @Builder
   FilesPanel() {
     Column({ space: 8 }) {
       Row() {
-        Text('草稿').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#263129')
+        Text('草稿').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
         Blank()
-        Button('新建').height(30).fontSize(10).fontColor('#FFFFFF').backgroundColor('#4F6F5A').borderRadius(4).onClick(() => this.createDraft())
-        Button('删除').height(30).fontSize(10).fontColor('#9B4F42').backgroundColor('#F4E5DF').borderRadius(4).margin({ left: 7 }).onClick(() => this.deleteDraft())
+        Button() {
+          Row({ space: 5 }) {
+            this.Icon(WorkspaceIcon.PLUS, 13)
+            Text('新建').fontSize(10).fontColor('#FFFFFF')
+          }
+        }.height(30).fontColor('#07110A').backgroundColor('#30D158').borderRadius(4).onClick(() => this.createDraft())
+        Button('删除').height(30).fontSize(10).fontColor('#FF9A94').backgroundColor('#2A1B1C').borderRadius(4).margin({ left: 7 }).onClick(() => this.deleteDraft())
       }.width('100%')
-      Text(this.syncMessage).fontSize(10).lineHeight(16).fontColor(this.syncStatus === SyncStatus.FAILED ? '#9B4F42' : '#657069')
+      Text(this.syncMessage).fontSize(10).lineHeight(16).fontColor(this.syncStatus === SyncStatus.FAILED ? '#FF9A94' : '#8E8E93')
         .margin({ top: 7 })
       Scroll() {
         Column({ space: 5 }) {
           ForEach(this.drafts, (draft: Draft) => {
             Button(`${draft.title} · v${draft.version}`).width('100%').height(34).fontSize(10)
-              .fontColor(draft.id === this.selectedId ? '#FFFFFF' : '#344038')
-              .backgroundColor(draft.id === this.selectedId ? '#4F6F5A' : '#E9ECE9')
+              .fontColor(draft.id === this.selectedId ? '#07110A' : '#B8B8BD')
+              .backgroundColor(draft.id === this.selectedId ? '#30D158' : '#242426')
               .borderRadius(4).onClick(() => this.selectDraft(draft.id))
           }, (draft: Draft) => draft.id)
         }
       }.width('100%').height(130).scrollBar(BarState.Auto)
       TextInput({ text: this.title, placeholder: '草稿标题' }).width('100%').height(36).fontSize(11)
-        .backgroundColor('#FFFFFF').border({ width: 1, color: '#C7CEC9' }).borderRadius(4)
+        .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
+        .border({ width: 1, color: '#3A3A3D' }).borderRadius(4)
         .onChange((value: string) => { this.title = value; this.saved = false; })
-    }.width('100%')
+    }.width('100%').backgroundColor('#161618')
   }
 
   @Builder
   IdeaPanel() {
     Column() {
-      Text('思路来源').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#263129')
-      Text('编辑 idea.md 后，每个非空行保留稳定来源 ID。').fontSize(10).fontColor('#657069').margin({ top: 3, bottom: 9 })
-      Button('打开 idea.md').height(34).fontSize(10).fontColor('#FFFFFF').backgroundColor('#4F6F5A').borderRadius(4)
+      Text('思路来源').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+      Text('编辑 idea.md 后，每个非空行保留稳定来源 ID。').fontSize(10).fontColor('#8E8E93').margin({ top: 3, bottom: 9 })
+      Button() {
+        Row({ space: 5 }) {
+          this.Icon(WorkspaceIcon.SOURCE, 14)
+          Text('打开 idea.md').fontSize(10).fontColor('#FFFFFF')
+        }
+      }.height(34).fontColor('#07110A').backgroundColor('#30D158').borderRadius(4)
         .onClick(() => { this.selectFile(EditorFile.IDEA); this.activeTool = WorkspaceTool.NONE; })
       if (this.segments.length > 0) {
         Scroll() {
           Row({ space: 6 }) {
             ForEach(this.segments, (segment: IdeaSegment) => {
               Text(`S${segment.position + 1}`).height(28).padding({ left: 9, right: 9 })
-                .fontSize(10).fontColor('#385443').backgroundColor('#DCE8DF').borderRadius(4)
+                .fontSize(10).fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4)
             }, (segment: IdeaSegment) => segment.id)
           }
         }.width('100%').height(36).margin({ top: 10 }).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
@@ -681,18 +864,18 @@ struct Index {
   @Builder
   SnippetPanel() {
     Column() {
-      Text('独立短代码').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#263129')
-      Text('该内容不会覆盖 main.cpp。').fontSize(10).fontColor('#657069').margin({ top: 3, bottom: 8 })
+      Text('独立短代码').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+      Text('该内容不会覆盖 main.cpp。').fontSize(10).fontColor('#8E8E93').margin({ top: 3, bottom: 8 })
       TextArea({ text: this.shortCode, placeholder: '// 局部 C++ 片段' }).width('100%').height(145)
-        .fontSize(12).lineHeight(20).fontFamily('monospace').fontColor('#E8ECE9').backgroundColor('#242A26')
-        .borderRadius(4).onChange((value: string) => { this.shortCode = value; this.saved = false; })
-    }.width('100%')
+        .fontSize(12).lineHeight(20).fontFamily('monospace').fontColor('#E8ECE9').backgroundColor('#0A0A0C')
+        .border({ width: 1, color: '#3A3A3D' }).borderRadius(4).onChange((value: string) => { this.shortCode = value; this.saved = false; })
+    }.width('100%').backgroundColor('#161618')
   }
 
   @Builder
   AIPanel() {
     Column({ space: 7 }) {
-      Text('AI 模式').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#263129')
+      Text('AI 模式').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
       Row({ space: 7 }) {
         this.ModeButton('忠实转换', AIMode.FAITHFUL_TRANSFORM)
         this.ModeButton('可行性', AIMode.FEASIBILITY_ANALYSIS)
@@ -703,11 +886,11 @@ struct Index {
       }.width('100%')
       Row() {
         Column() {
-          Text('AI 未启用').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#263129')
-          Text('未配置模型服务，不生成模拟结果。').fontSize(10).fontColor('#657069').margin({ top: 2 })
+          Text('AI 未启用').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+          Text('未配置模型服务，不生成模拟结果。').fontSize(10).fontColor('#8E8E93').margin({ top: 2 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button(this.artifactHidden ? '显示结果区' : '隐藏结果区').height(32).fontSize(10)
-          .fontColor('#385443').backgroundColor('#DCE8DF').borderRadius(4).onClick(() => this.toggleArtifact())
+          .fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).onClick(() => this.toggleArtifact())
       }.width('100%').margin({ top: 4 })
     }.width('100%')
   }
@@ -715,9 +898,14 @@ struct Index {
   @Builder
   RewritePanel() {
     Column() {
-      Text('独立复写').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#263129')
-      Text('复写文件与 main.cpp 分开保存。').fontSize(10).fontColor('#657069').margin({ top: 3, bottom: 9 })
-      Button('打开 rewrite.cpp').height(34).fontSize(10).fontColor('#FFFFFF').backgroundColor('#4F6F5A').borderRadius(4)
+      Text('独立复写').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+      Text('复写文件与 main.cpp 分开保存。').fontSize(10).fontColor('#8E8E93').margin({ top: 3, bottom: 9 })
+      Button() {
+        Row({ space: 5 }) {
+          this.Icon(WorkspaceIcon.CODE, 14)
+          Text('打开 rewrite.cpp').fontSize(10).fontColor('#FFFFFF')
+        }
+      }.height(34).fontColor('#07110A').backgroundColor('#30D158').borderRadius(4)
         .onClick(() => { this.selectFile(EditorFile.REWRITE); this.activeTool = WorkspaceTool.NONE; })
     }.width('100%')
   }
@@ -726,21 +914,21 @@ struct Index {
   ReviewPanel() {
     Column() {
       Row({ space: 7 }) {
-        Button('复制行').height(30).fontSize(10).fontColor('#385443').backgroundColor('#DCE8DF').borderRadius(4).onClick(() => this.duplicateLine())
-        Button('删除行').height(30).fontSize(10).fontColor('#9B4F42').backgroundColor('#F4E5DF').borderRadius(4).onClick(() => this.deleteLine())
-        Button('格式化').height(30).fontSize(10).fontColor('#385443').backgroundColor('#DCE8DF').borderRadius(4).onClick(() => this.formatDocument())
+        Button('复制行').height(30).fontSize(10).fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).onClick(() => this.duplicateLine())
+        Button('删除行').height(30).fontSize(10).fontColor('#FF9A94').backgroundColor('#2A1B1C').borderRadius(4).onClick(() => this.deleteLine())
+        Button('格式化').height(30).fontSize(10).fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).onClick(() => this.formatDocument())
       }.width('100%').margin({ bottom: 8 })
       if (!this.isCppFile()) {
-        Text('当前文件不是 C++ 文档。').fontSize(11).fontColor('#657069')
+        Text('当前文件不是 C++ 文档。').fontSize(11).fontColor('#8E8E93')
       } else if (this.reviewIssues.length === 0) {
-        Text('基础检查通过').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#4F6F5A')
-        Text('未发现括号、入口或头文件基础问题。').fontSize(10).fontColor('#657069').margin({ top: 4 })
+        Text('基础检查通过').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#30D158')
+        Text('未发现括号、入口或头文件基础问题。').fontSize(10).fontColor('#8E8E93').margin({ top: 4 })
       } else {
         Scroll() {
           Column() {
             ForEach(this.reviewIssues, (issue: ReviewIssue) => {
               Button(`第 ${issue.line} 行 · ${issue.message}`).width('100%').height(31).fontSize(10)
-                .fontColor(issue.severity === 'error' ? '#9B4F42' : '#4F5B53')
+                .fontColor(issue.severity === 'error' ? '#FF9A94' : '#B8B8BD')
                 .backgroundColor(Color.Transparent).onClick(() => this.jumpToLine(issue.line))
             }, (issue: ReviewIssue) => `${issue.line}-${issue.message}`)
           }
@@ -752,35 +940,52 @@ struct Index {
   @Builder
   SearchPanel() {
     Column() {
-      Text('当前文件搜索').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#263129')
+      Text('当前文件搜索').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
       Row({ space: 7 }) {
         TextInput({ text: this.searchQuery, placeholder: '输入关键词' }).layoutWeight(1).height(36).fontSize(11)
-          .backgroundColor('#FFFFFF').border({ width: 1, color: '#C7CEC9' }).borderRadius(4)
+          .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
+          .border({ width: 1, color: '#3A3A3D' }).borderRadius(4)
           .onChange((value: string) => { this.searchQuery = value; this.updateSearchCount(); })
-        Button('下一个').height(36).fontSize(10).fontColor('#FFFFFF').backgroundColor('#4F6F5A').borderRadius(4).onClick(() => this.jumpToNextMatch())
+        Button() {
+          Row({ space: 5 }) {
+            this.Icon(WorkspaceIcon.SEARCH, 13)
+            Text('下一个').fontSize(10).fontColor('#FFFFFF')
+          }
+        }.height(36).fontColor('#07110A').backgroundColor('#30D158').borderRadius(4).onClick(() => this.jumpToNextMatch())
       }.width('100%').margin({ top: 8 })
-      Text(this.searchQuery.length === 0 ? '输入关键词开始搜索。' : `找到 ${this.searchCount} 处`).fontSize(10).fontColor('#657069').margin({ top: 8 })
+      Text(this.searchQuery.length === 0 ? '输入关键词开始搜索。' : `找到 ${this.searchCount} 处`).fontSize(10).fontColor('#8E8E93').margin({ top: 8 })
     }.width('100%')
   }
 
   @Builder
   SyncPanel() {
     Column() {
-      Text('保存与同步').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#263129')
-      Text('本地 RDB 保存离线副本；同步连接局域网 sync-api。').fontSize(10).lineHeight(17).fontColor('#657069').margin({ top: 5, bottom: 10 })
+      Text('保存与同步').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+      Text('本地 RDB 保存离线副本；同步连接局域网 sync-api。').fontSize(10).lineHeight(17).fontColor('#8E8E93').margin({ top: 5, bottom: 10 })
       TextInput({ text: this.syncBaseUrl, placeholder: 'http://电脑局域网IP:8787' }).width('100%').height(34).fontSize(10)
-        .backgroundColor('#FFFFFF').border({ width: 1, color: '#C7CEC9' }).borderRadius(4)
+        .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
+        .border({ width: 1, color: '#3A3A3D' }).borderRadius(4)
         .onChange((value: string) => { this.syncBaseUrl = value; this.viewModel.setSyncBaseUrl(value); })
       Row() {
-        Text(this.statusLabel()).fontSize(11).fontWeight(FontWeight.Bold).fontColor(this.saved ? '#4F6F5A' : '#9B4F42')
+        Text(this.statusLabel()).fontSize(11).fontWeight(FontWeight.Bold).fontColor(this.statusColor())
         Blank()
-        Text(`v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`).fontSize(10).fontColor('#657069')
+        Text(`v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`).fontSize(10).fontColor('#8E8E93')
       }.width('100%')
-      Button('保存当前内容').width('100%').height(36).fontSize(11).fontColor('#FFFFFF')
-        .backgroundColor('#4F6F5A').borderRadius(4).margin({ top: 12 }).onClick(() => this.saveDraft())
-      Button('立即同步').width('100%').height(36).fontSize(11).fontColor('#385443')
-        .backgroundColor('#DCE8DF').borderRadius(4).margin({ top: 7 }).onClick(() => this.synchronize())
-    }.width('100%')
+      Button() {
+        Row({ space: 5 }) {
+          this.Icon(WorkspaceIcon.DOCUMENT, 14)
+          Text('保存当前内容').fontSize(11).fontColor('#FFFFFF')
+        }
+      }.width('100%').height(36).fontColor('#07110A')
+        .backgroundColor('#30D158').borderRadius(4).margin({ top: 12 }).onClick(() => this.saveDraft())
+      Button() {
+        Row({ space: 5 }) {
+          this.Icon(WorkspaceIcon.REFRESH, 14, '#9BE7A9')
+          Text('立即同步').fontSize(11).fontColor('#9BE7A9')
+        }
+      }.width('100%').height(36)
+        .backgroundColor('#1E3A27').borderRadius(4).margin({ top: 7 }).onClick(() => this.synchronize())
+    }.width('100%').backgroundColor('#161618')
   }
 
   @Builder
@@ -804,25 +1009,153 @@ struct Index {
         this.SyncPanel()
       }
     }.width('100%').height(230).padding({ left: 14, right: 14, top: 12, bottom: 12 })
-      .backgroundColor('#F5F7F4').border({ width: { top: 1 }, color: '#C7CEC9' })
+      .backgroundColor('#161618').border({ width: { top: 1 }, color: '#2A2A2D' })
   }
 
-  build() {
+  @Builder
+  WorkspaceDrawer() {
     Column() {
       Row() {
         Row({ space: 9 }) {
-          Text('AF').width(30).height(30).fontSize(10).fontWeight(FontWeight.Bold).textAlign(TextAlign.Center)
-            .fontColor('#F5F7F4').backgroundColor('#30443A').borderRadius(5)
+          Stack({ alignContent: Alignment.Center }) {
+            Row().width(32).height(32).backgroundColor('#1E3A27').borderRadius(8)
+            this.Icon(WorkspaceIcon.CODE, 17, '#9BE7A9')
+          }
           Column() {
-            Text(this.title.length > 18 ? `${this.title.substring(0, 18)}...` : this.title).fontSize(13).fontWeight(FontWeight.Bold).fontColor('#263129')
-            Text('手机代码工作台').fontSize(9).fontColor('#657069').margin({ top: 2 })
+            Text('AlgoFlow IDE').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+            Text('OpenHarmony 移动端').fontSize(9).fontColor('#8E8E93').margin({ top: 2 })
           }.alignItems(HorizontalAlign.Start)
         }
         Blank()
-        Circle().width(7).height(7).fill(this.saved ? '#4F6F5A' : '#D07A56')
-        Text(this.statusLabel()).fontSize(10).fontColor('#657069').margin({ left: 6 })
-      }.width('100%').height(54).padding({ left: 13, right: 13 }).backgroundColor('#F5F7F4')
-        .border({ width: { bottom: 1 }, color: '#C7CEC9' })
+        Button() {
+          this.Icon(WorkspaceIcon.CROSS, 15, '#A7A7AD')
+        }.width(32).height(32).padding({ left: 0, right: 0, top: 0, bottom: 0 })
+          .backgroundColor('#242426').borderRadius(16).onClick(() => this.closeDrawer())
+      }.width('100%').height(64).padding({ left: 16, right: 12 })
+        .border({ width: { bottom: 1 }, color: '#2A2A2D' })
+
+      Scroll() {
+        Column({ space: 15 }) {
+          Column() {
+            this.DrawerSectionTitle('草稿管理')
+            Button() {
+              Row({ space: 7 }) {
+                this.Icon(WorkspaceIcon.PLUS, 14, '#07110A')
+                Text('新建思路草稿').fontSize(10).fontColor('#07110A')
+              }
+            }.width('100%').height(36).backgroundColor('#30D158').borderRadius(6)
+              .onClick(() => { this.createDraft(); this.closeDrawer(); })
+            Column({ space: 5 }) {
+              ForEach(this.drafts, (draft: Draft) => {
+                Button() {
+                  Row() {
+                    Column() {
+                      Text(draft.title.length === 0 ? '未命名思路' : draft.title).fontSize(10)
+                        .fontColor(draft.id === this.selectedId ? '#ECECED' : '#B8B8BD')
+                      Text(`main.cpp · v${draft.version}`).fontSize(9).fontColor('#6E6E73').margin({ top: 2 })
+                    }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                    Circle().width(7).height(7).fill(draft.id === this.selectedId ? '#ECECED' : '#6E6E73')
+                  }
+                }.width('100%').height(44).padding({ left: 10, right: 10 })
+                  .backgroundColor(draft.id === this.selectedId ? '#242426' : '#1C1C1E')
+                  .border({ width: 1, color: draft.id === this.selectedId ? '#5A5A5F' : '#2A2A2D' })
+                  .borderRadius(6).onClick(() => { this.selectDraft(draft.id); this.closeDrawer(); })
+              }, (draft: Draft) => draft.id)
+            }.width('100%').margin({ top: 7 })
+          }.width('100%')
+
+          Column({ space: 6 }) {
+            this.DrawerSectionTitle('文件')
+            this.DrawerFileButton(EditorFile.MAIN, 'main.cpp')
+            this.DrawerFileButton(EditorFile.IDEA, 'idea.md')
+            this.DrawerFileButton(EditorFile.REWRITE, 'rewrite.cpp')
+          }.width('100%')
+
+          Column({ space: 6 }) {
+            this.DrawerSectionTitle('AI 协作模式')
+            Row({ space: 6 }) {
+              this.DrawerModeButton('忠实转换', AIMode.FAITHFUL_TRANSFORM)
+              this.DrawerModeButton('可行性分析', AIMode.FEASIBILITY_ANALYSIS)
+            }.width('100%')
+            Row({ space: 6 }) {
+              this.DrawerModeButton('渐进提示', AIMode.PROGRESSIVE_HINT)
+              this.DrawerModeButton('完整解题', AIMode.FULL_SOLUTION)
+            }.width('100%')
+            Text('当前未配置模型服务，保持 AI 结果隔离。').fontSize(9).fontColor('#8E8E93').margin({ top: 3 })
+          }.width('100%')
+
+          Column({ space: 3 }) {
+            this.DrawerSectionTitle('工具')
+            this.DrawerToolButton('草稿详情与标题', WorkspaceTool.FILES)
+            this.DrawerToolButton('思路来源', WorkspaceTool.IDEA)
+            this.DrawerToolButton('独立短代码', WorkspaceTool.SNIPPET)
+            this.DrawerToolButton('独立复写', WorkspaceTool.REWRITE)
+            this.DrawerToolButton('代码检查', WorkspaceTool.REVIEW)
+            this.DrawerToolButton('当前文件搜索', WorkspaceTool.SEARCH)
+            this.DrawerToolButton('保存与同步', WorkspaceTool.SYNC)
+          }.width('100%')
+
+          Column() {
+            this.DrawerSectionTitle('同步状态')
+            Row() {
+              Column() {
+                Text(this.statusLabel()).fontSize(11).fontWeight(FontWeight.Bold).fontColor(this.statusColor())
+                Text(this.syncMessage.length === 0 ? '本地副本可继续编辑' : this.syncMessage)
+                  .fontSize(9).fontColor('#8E8E93').margin({ top: 3 })
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              Text(`v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`).fontSize(10).fontColor('#8E8E93')
+            }.width('100%').padding({ left: 11, right: 11, top: 10, bottom: 10 })
+              .backgroundColor('#1C1C1E').border({ width: 1, color: '#2A2A2D' }).borderRadius(7)
+            Button() {
+              Row({ space: 6 }) {
+                this.Icon(WorkspaceIcon.REFRESH, 14, '#07110A')
+                Text('立即同步').fontSize(10).fontColor('#07110A')
+              }
+            }.width('100%').height(34).backgroundColor('#30D158').borderRadius(6).margin({ top: 7 })
+              .onClick(() => { this.closeDrawer(); this.synchronize(); })
+          }.width('100%')
+        }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 18 })
+      }.layoutWeight(1).scrollBar(BarState.Auto)
+
+      Row() {
+        Text('IDE 工作区').fontSize(9).fontColor('#6E6E73')
+        Blank()
+        Text('OpenHarmony').fontSize(9).fontColor('#6E6E73')
+      }.width('100%').height(42).padding({ left: 16, right: 16 })
+        .border({ width: { top: 1 }, color: '#2A2A2D' })
+    }.width('84%').height('100%').backgroundColor('#161618')
+      .border({ width: { right: 1 }, color: '#2A2A2D' })
+  }
+
+  @Builder
+  FloatingToolBar() {
+    Row() {
+      Button() {
+        Row({ space: 6 }) {
+          this.Icon(WorkspaceIcon.SOURCE, 14, '#FF9F0A')
+          Text(`思路片段${this.segments.length > 0 ? ` (${this.segments.length})` : ''}`).fontSize(10).fontColor('#ECECED')
+        }
+      }.height(36).padding({ left: 11, right: 11 }).backgroundColor(Color.Transparent)
+        .onClick(() => this.toggleTool(WorkspaceTool.IDEA))
+      Blank().width(1).height(18).backgroundColor('#3A3A3D')
+      Button() {
+        Row({ space: 6 }) {
+          Circle().width(7).height(7).fill('#79C0FF')
+          Text(this.modeLabel()).fontSize(10).fontColor('#ECECED')
+        }
+      }.height(36).padding({ left: 11, right: 11 }).backgroundColor(Color.Transparent)
+        .onClick(() => this.toggleTool(WorkspaceTool.AI))
+      Blank().width(1).height(18).backgroundColor('#3A3A3D')
+      Button(this.artifactHidden ? '显示结果' : '隐藏结果').height(36).padding({ left: 11, right: 11 })
+        .fontSize(10).fontColor('#B8B8BD').backgroundColor(Color.Transparent).onClick(() => this.toggleArtifact())
+    }.height(48).padding({ left: 7, right: 7 }).backgroundColor('#1E1E20')
+      .border({ width: 1, color: '#3A3A3D' }).borderRadius(24)
+  }
+
+  @Builder
+  IDEWorkspace() {
+    Column() {
+      this.TopNavigation()
 
       Scroll() {
         Row({ space: 3 }) {
@@ -830,36 +1163,42 @@ struct Index {
           this.FileTab(EditorFile.IDEA, 'idea.md')
           this.FileTab(EditorFile.REWRITE, 'rewrite.cpp')
         }.padding({ left: 8, right: 8 })
-      }.width('100%').height(42).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).backgroundColor('#1C211E')
+      }.width('100%').height(42).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+        .backgroundColor('#0D0D0F')
 
       this.EditorHeader()
       this.EditorSurface()
 
       Row() {
-        Text(this.activeFile).fontSize(9).fontColor('#D8E4DC')
+        Text(this.activeFile).fontSize(9).fontColor('#8E8E93')
         Blank()
-        Text(`Ln ${this.activeLine + 1}, Col ${this.activeColumn + 1}`).fontSize(9).fontColor('#D8E4DC')
-        Text('UTF-8').fontSize(9).fontColor('#D8E4DC').margin({ left: 12 })
-        Text(this.modeLabel()).fontSize(9).fontColor('#D8E4DC').margin({ left: 12 })
-      }.width('100%').height(28).padding({ left: 12, right: 12 }).backgroundColor('#4F6F5A')
-
-      Scroll() {
-        Row({ space: 2 }) {
-          this.ToolButton('草稿', WorkspaceTool.FILES)
-          this.ToolButton('思路', WorkspaceTool.IDEA)
-          this.ToolButton('短代码', WorkspaceTool.SNIPPET)
-          this.ToolButton('AI', WorkspaceTool.AI)
-          this.ToolButton('复写', WorkspaceTool.REWRITE)
-          this.ToolButton('检查', WorkspaceTool.REVIEW)
-          this.ToolButton('搜索', WorkspaceTool.SEARCH)
-          this.ToolButton('同步', WorkspaceTool.SYNC)
-        }.padding({ left: 7, right: 7 })
-      }.width('100%').height(48).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).backgroundColor('#F5F7F4')
+        Text(`Ln ${this.activeLine + 1}, Col ${this.activeColumn + 1}`).fontSize(9).fontColor('#8E8E93')
+        Text('UTF-8').fontSize(9).fontColor('#8E8E93').margin({ left: 12 })
+        Text(this.modeLabel()).fontSize(9).fontColor('#9BE7A9').margin({ left: 12 })
+      }.width('100%').height(28).padding({ left: 12, right: 12 }).backgroundColor('#111113')
+        .border({ width: { top: 1 }, color: '#242426' })
 
       if (this.activeTool !== WorkspaceTool.NONE) {
         this.ToolPanel()
       }
-    }.width('100%').height('100%').backgroundColor('#242A26')
+
+      Row() {
+        Blank().layoutWeight(1)
+        this.FloatingToolBar()
+        Blank().layoutWeight(1)
+      }.width('100%').height(68).padding({ top: 8, bottom: 8, left: 8, right: 8 })
+        .backgroundColor('#0A0A0C')
+    }.width('100%').height('100%').backgroundColor('#0A0A0C')
+  }
+
+  build() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      this.IDEWorkspace()
+      if (this.drawerOpen) {
+        Column().width('100%').height('100%').backgroundColor('#99000000').onClick(() => this.closeDrawer())
+        this.WorkspaceDrawer()
+      }
+    }.width('100%').height('100%').backgroundColor('#0A0A0C')
   }
 }
 
