@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { validateAIArtifact, validateAIRequest } from './contracts.mjs';
 
-export function createAIGateway({ aiProvider = null, templates = [], enabledModes = ['faithful_transform'] } = {}) {
+export function createAIGateway({ aiProvider = null, templates = [], enabledModes = ['faithful_transform'], timeoutMs = 30000 } = {}) {
   const enabledModeSet = new Set(enabledModes);
   const hasProvider = aiProvider !== null && typeof aiProvider.generate === 'function';
   return createServer(async (request, response) => {
@@ -18,13 +18,17 @@ export function createAIGateway({ aiProvider = null, templates = [], enabledMode
       if (!enabledModeSet.has(body.mode)) { writeJson(response, 409, { code: 'AI_MODE_NOT_AVAILABLE', mode: body.mode }); return; }
       if (!hasProvider) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
       try {
-        const artifact = await aiProvider.generate({ request: body, templates });
+        const artifact = await generateWithTimeout(aiProvider, body, templates, timeoutMs);
         const artifactErrors = validateAIArtifact(artifact);
         artifactErrors.push(...validateArtifactAgainstRequest(artifact, body, templates));
         if (artifactErrors.length) { writeJson(response, 422, { code: 'INVALID_AI_ARTIFACT', errors: artifactErrors }); return; }
         writeJson(response, 200, artifact);
-      } catch {
-        writeJson(response, 502, { code: 'AI_PROVIDER_ERROR' });
+      } catch (error) {
+        if (error !== null && typeof error === 'object' && error.code === 'AI_TIMEOUT') {
+          writeJson(response, 504, { code: 'AI_PROVIDER_TIMEOUT' });
+        } else {
+          writeJson(response, 502, { code: 'AI_PROVIDER_ERROR' });
+        }
       }
       return;
     }
@@ -59,6 +63,22 @@ async function readJson(request) {
   for await (const chunk of request) chunks.push(chunk);
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { return null; }
+}
+
+async function generateWithTimeout(aiProvider, request, templates, timeoutMs) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error('AI provider timed out');
+      error.code = 'AI_TIMEOUT';
+      reject(error);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([aiProvider.generate({ request, templates }), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function writeJson(response, statusCode, body) {
