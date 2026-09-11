@@ -128,9 +128,9 @@ struct Home {
 
   @Builder
   NotificationButton() {
-    Row() {
+    Button() {
       ResourceIcon({ name: ResourceIconName.QUERY, iconSize: 18, tint: '#5E645D' })
-    }.width(36).height(36).justifyContent(FlexAlign.Center)
+    }.type(ButtonType.Normal).width(36).height(36)
       .backgroundColor('#FFFFFF').border({ width: 1, color: '#E2E8E3' }).borderRadius(18)
       .onClick(() => { this.openReservedPage('通知', '通知中心尚未接入，当前入口仅作预留。'); });
   }
@@ -162,9 +162,9 @@ struct Home {
           Text(this.summary(draft)).fontSize(11).fontColor('#68736C')
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-        Row() {
+        Button() {
           ResourceIcon({ name: ResourceIconName.CODE, iconSize: 16, tint: '#55745F' })
-        }.width(36).height(36).justifyContent(FlexAlign.Center).backgroundColor('#EEF6F3').borderRadius(10)
+        }.type(ButtonType.Normal).width(36).height(36).backgroundColor('#EEF6F3').borderRadius(10)
           .onClick(() => { this.openDraft(draft.id); })
       }.width('100%').alignItems(VerticalAlign.Top)
 
