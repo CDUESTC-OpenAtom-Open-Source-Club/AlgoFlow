@@ -3,7 +3,7 @@ import { relationalStore } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
 import { ConflictRecord, DraftPayload, SyncOperation, SyncOperationType, draftToPayload,
   payloadToDraft } from '../domain/SyncModels';
 import { SyncRepository } from '../domain/SyncRepository';
@@ -363,6 +363,7 @@ function parseAIMode(value: string): AIMode {
 function cloneDraft(draft: Draft): Draft {
   const snapshot = payloadToDraft(draftToPayload(draft));
   snapshot.syncStatus = draft.syncStatus;
+  snapshot.aiArtifacts = draft.aiArtifacts.map((artifact: AIArtifact) => artifact.clone());
   return snapshot;
 }
 

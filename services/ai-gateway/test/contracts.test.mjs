@@ -40,11 +40,23 @@ const validArtifact = {
   template_id: null
 };
 
-test('AI artifact vectors match expected validity', async () => {
+test('AI request vectors match expected validity', async (t) => {
+  const source = new URL('../../../packages/contracts/vectors/ai-requests.json', import.meta.url);
+  const vectors = JSON.parse(await readFile(source, 'utf8'));
+  for (const vector of vectors) {
+    await t.test(vector.name, () => {
+      assert.equal(validateAIRequest(vector.request).length === 0, vector.valid, vector.name);
+    });
+  }
+});
+
+test('AI artifact vectors match expected validity', async (t) => {
   const source = new URL('../../../packages/contracts/vectors/ai-artifacts.json', import.meta.url);
   const vectors = JSON.parse(await readFile(source, 'utf8'));
   for (const vector of vectors) {
-    assert.equal(validateAIArtifact(vector.artifact).length === 0, vector.valid, vector.name);
+    await t.test(vector.name, () => {
+      assert.equal(validateAIArtifact(vector.artifact).length === 0, vector.valid, vector.name);
+    });
   }
 });
 
@@ -58,7 +70,7 @@ test('accepts an AI request with explicit mode, versions, and stable idea segmen
   assert.deepEqual(validateAIRequest(validRequest), []);
 });
 
-for (const field of ['mode', 'draft_version', 'language', 'rule_version', 'problem_context', 'output_kind', 'visibility']) {
+for (const field of ['mode', 'draft_id', 'draft_version', 'language', 'rule_version', 'problem_context', 'output_kind', 'visibility']) {
   test(`rejects an AI request missing required ${field}`, () => {
     const request = { ...validRequest };
     delete request[field];
@@ -74,11 +86,32 @@ test('rejects an AI request without a stable non-empty idea segment id', () => {
   assert.notDeepEqual(validateAIRequest(requestWithoutSegmentId), [], 'missing idea segment id');
 });
 
+test('rejects duplicate idea segment ids', () => {
+  const request = {
+    ...validRequest,
+    idea_segments: [
+      { id: 'idea_segment_1', content: 'first' },
+      { id: 'idea_segment_1', content: 'duplicate' }
+    ]
+  };
+  assert.notDeepEqual(validateAIRequest(request), [], 'duplicate idea segment ids');
+});
+
 test('rejects provider secrets and other fields outside the request schema', () => {
   assert.notDeepEqual(validateAIRequest({
     ...validRequest,
     api_key: 'must-not-enter-client-contracts'
   }), []);
+});
+
+test('rejects an overlong problem_context', () => {
+  const request = { ...validRequest, problem_context: 'A'.repeat(20001) };
+  assert.notDeepEqual(validateAIRequest(request), [], 'overlong problem_context');
+});
+
+test('rejects a non-integer draft_version', () => {
+  const request = { ...validRequest, draft_version: 1.5 };
+  assert.notDeepEqual(validateAIRequest(request), [], 'non-integer draft_version');
 });
 
 test('accepts a faithful artifact whose every pseudocode step maps to source segments', () => {
@@ -134,6 +167,25 @@ for (const field of ['source_draft_version', 'model_id', 'rule_version']) {
   });
 }
 
+test('rejects duplicate pseudocode step ids', () => {
+  assert.notDeepEqual(validateAIArtifact({
+    ...validArtifact,
+    pseudocode: [
+      { id: 'step_1', step: 'first', source_refs: ['idea_segment_1'] },
+      { id: 'step_1', step: 'second', source_refs: ['idea_segment_2'] }
+    ]
+  }), []);
+});
+
+test('rejects a code mapping whose end line precedes its start line', () => {
+  assert.notDeepEqual(validateAIArtifact({
+    ...validArtifact,
+    output_kind: 'code_snippet',
+    code_snippet: 'sort(intervals.begin(), intervals.end());',
+    code_mappings: [{ step_id: 'step_1', start_line: 5, end_line: 2 }]
+  }), []);
+});
+
 test('AI gateway reports disabled AI instead of returning a mock artifact', async (t) => {
   const server = createAIGateway();
   t.after(() => server.close());
@@ -146,6 +198,15 @@ test('AI gateway reports disabled AI instead of returning a mock artifact', asyn
   const response = await requestJson(address.port, 'POST', '/requests', validRequest);
   assert.equal(response.statusCode, 503);
   assert.deepEqual(response.body, { code: 'AI_NOT_ENABLED' });
+});
+
+test('AI gateway reports enabled when a provider is configured', async (t) => {
+  const server = createAIGateway({ aiProvider: { async generate() { return validArtifact; } } });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const status = await requestJson(server.address().port, 'GET', '/status');
+  assert.equal(status.statusCode, 200);
+  assert.deepEqual(status.body, { enabled: true, code: 'AI_ENABLED' });
 });
 
 test('AI gateway delegates configured generation through the AIProvider port', async (t) => {
@@ -167,6 +228,27 @@ test('AI gateway delegates configured generation through the AIProvider port', a
   assert.deepEqual(response.body, validArtifact);
 });
 
+test('AI gateway maps provider exceptions to AI_PROVIDER_ERROR', async (t) => {
+  const server = createAIGateway({ aiProvider: { async generate() { throw new Error('provider down'); } } });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/requests', validRequest);
+  assert.equal(response.statusCode, 502);
+  assert.deepEqual(response.body, { code: 'AI_PROVIDER_ERROR' });
+});
+
+test('AI gateway returns AI_PROVIDER_TIMEOUT when generation exceeds the budget', async (t) => {
+  const server = createAIGateway({
+    aiProvider: { async generate() { await new Promise((resolve) => setTimeout(resolve, 500)); return validArtifact; } },
+    timeoutMs: 20
+  });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/requests', validRequest);
+  assert.equal(response.statusCode, 504);
+  assert.deepEqual(response.body, { code: 'AI_PROVIDER_TIMEOUT' });
+});
+
 test('AI gateway rejects provider output that cites ideas absent from the user draft', async (t) => {
   const aiProvider = {
     async generate() {
@@ -183,6 +265,20 @@ test('AI gateway rejects provider output that cites ideas absent from the user d
   assert.equal(response.statusCode, 422);
   assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
   assert.ok(response.body.errors.some((error) => error.includes('unknown source_ref')));
+});
+
+test('AI gateway rejects provider output that adds algorithm steps in faithful mode', async (t) => {
+  const aiProvider = {
+    async generate() {
+      return { ...validArtifact, added_algorithm_steps: ['Invent a proof'] };
+    }
+  };
+  const server = createAIGateway({ aiProvider });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/requests', validRequest);
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
 });
 
 test('AI gateway accepts and reports a configured template selected by the provider', async (t) => {
@@ -234,6 +330,37 @@ test('AI gateway keeps hint and full solution modes unavailable until explicitly
     assert.equal(response.statusCode, 409);
     assert.deepEqual(response.body, { code: 'AI_MODE_NOT_AVAILABLE', mode });
   }
+});
+
+test('AI gateway keeps feasibility_analysis available when explicitly enabled', async (t) => {
+  const aiProvider = {
+    async generate() { return { ...validArtifact, mode: 'feasibility_analysis' }; }
+  };
+  const server = createAIGateway({ aiProvider, enabledModes: ['faithful_transform', 'feasibility_analysis'] });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/requests', {
+    ...validRequest,
+    mode: 'feasibility_analysis'
+  });
+  assert.equal(response.statusCode, 200);
+});
+
+test('AI gateway validates artifacts through the dedicated endpoint', async (t) => {
+  const server = createAIGateway();
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const valid = await requestJson(server.address().port, 'POST', '/artifacts/validate', validArtifact);
+  assert.equal(valid.statusCode, 200);
+  assert.deepEqual(valid.body, { valid: true, errors: [] });
+
+  const invalid = await requestJson(server.address().port, 'POST', '/artifacts/validate', {
+    ...validArtifact,
+    added_algorithm_steps: ['extra step']
+  });
+  assert.equal(invalid.statusCode, 422);
+  assert.equal(invalid.body.valid, false);
+  assert.ok(invalid.body.errors.length > 0);
 });
 
 test('AI gateway does not expose compilation or execution as an AI endpoint', async (t) => {

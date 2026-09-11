@@ -98,5 +98,247 @@
       "visibility": "visible",
       "template_id": null
     }
+  },
+  {
+    "name": "feasibility analysis may add algorithm steps",
+    "valid": true,
+    "artifact": {
+      "mode": "feasibility_analysis",
+      "pseudocode": [{ "id": "step_1", "step": "Analyze greedy choice", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": null,
+      "code_mappings": [],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": ["greedy choice not proven"],
+      "added_algorithm_steps": ["Consider exchange argument"],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "template_id": null
+    }
+  },
+  {
+    "name": "pseudocode output rejects non-empty code mappings",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": null,
+      "code_mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 1 }],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "template_id": null
+    }
+  },
+  {
+    "name": "code snippet output rejects null code snippet",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": null,
+      "code_mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 1 }],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "code_snippet",
+      "visibility": "visible",
+      "template_id": null
+    }
+  },
+  {
+    "name": "code snippet output rejects empty code mappings",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": "sort(intervals.begin(), intervals.end());",
+      "code_mappings": [],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "code_snippet",
+      "visibility": "visible",
+      "template_id": null
+    }
+  },
+  {
+    "name": "pseudocode step missing source_refs key",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint" }],
+      "code_snippet": null,
+      "code_mappings": [],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "template_id": null
+    }
+  },
+  {
+    "name": "pseudocode step with blank source reference",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Invent an implementation detail", "source_refs": [""] }],
+      "code_snippet": null,
+      "code_mappings": [],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "template_id": null
+    }
+  },
+  {
+    "name": "artifact missing model_id",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": null,
+      "code_mappings": [],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "template_id": null
+    }
+  },
+  {
+    "name": "artifact missing source_draft_version",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": null,
+      "code_mappings": [],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "template_id": null
+    }
+  },
+  {
+    "name": "artifact rejects fields outside the schema",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": null,
+      "code_mappings": [],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "template_id": null,
+      "provider_api_key": "sk-leaked"
+    }
+  },
+  {
+    "name": "duplicate pseudocode step ids rejected",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [
+        { "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] },
+        { "id": "step_1", "step": "Select intervals", "source_refs": ["idea_segment_1"] }
+      ],
+      "code_snippet": null,
+      "code_mappings": [],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "template_id": null
+    }
+  },
+  {
+    "name": "code mapping end line precedes start line",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": "sort(intervals.begin(), intervals.end());",
+      "code_mappings": [{ "step_id": "step_1", "start_line": 5, "end_line": 2 }],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "code_snippet",
+      "visibility": "visible",
+      "template_id": null
+    }
+  },
+  {
+    "name": "hidden faithful artifact is valid",
+    "valid": true,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": null,
+      "code_mappings": [],
+      "assumptions": ["intervals non-empty"],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "hidden",
+      "template_id": null
+    }
   }
 ]

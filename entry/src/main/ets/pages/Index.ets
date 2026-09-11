@@ -1,5 +1,5 @@
 import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
-import { AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIMode, AIResultStatus, Draft, IdeaSegment, PseudocodeStep, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
 import { saveCardSnapshot } from '../platform/CardSnapshot';
@@ -113,6 +113,11 @@ struct Index {
   @State searchCount: number = 0;
   @State syncBaseUrl: string = 'http://127.0.0.1:8787';
   @State syncMessage: string = '';
+  @State aiBaseUrl: string = 'http://127.0.0.1:8788';
+  @State aiLoading: boolean = false;
+  @State aiMessage: string = '';
+  @State aiError: boolean = false;
+  @State aiResult: AIArtifact | null = null;
 
   aboutToAppear(): void {
     this.initializeWorkspace();
@@ -151,6 +156,9 @@ struct Index {
     this.artifactHidden = draft.artifactHidden;
     this.syncStatus = draft.syncStatus;
     this.segments = draft.ideaSegments;
+    this.aiResult = this.viewModel.getArtifact(this.selectedId, draft.aiMode) ?? null;
+    this.aiError = false;
+    this.aiMessage = '';
     saveCardSnapshot(getContext(this), draft);
     this.saved = true;
     this.resetEditorPosition();
@@ -513,6 +521,28 @@ struct Index {
     this.mode = nextMode;
     this.saved = false;
     this.syncStatus = SyncStatus.LOCAL_ONLY;
+    this.aiResult = this.viewModel.getArtifact(this.selectedId, nextMode) ?? null;
+    this.aiError = false;
+    this.aiMessage = '';
+  }
+
+  private async runAI(): Promise<void> {
+    this.aiLoading = true;
+    this.aiError = false;
+    this.aiMessage = '正在连接 AI Gateway...';
+    this.aiResult = null;
+    this.viewModel.setAIBaseUrl(this.aiBaseUrl);
+    const result = await this.viewModel.requestAI(this.selectedId, this.mode);
+    this.aiLoading = false;
+    if (result.status === AIResultStatus.SUCCESS && result.artifact !== null) {
+      this.aiResult = result.artifact;
+      this.aiMessage = '转换完成，结果已按模式隔离保存';
+      this.saved = false;
+      this.syncStatus = SyncStatus.LOCAL_ONLY;
+    } else {
+      this.aiError = true;
+      this.aiMessage = result.message;
+    }
   }
 
   private toggleArtifact(): void {
@@ -884,15 +914,63 @@ struct Index {
         this.ModeButton('渐进提示', AIMode.PROGRESSIVE_HINT)
         this.ModeButton('完整解题', AIMode.FULL_SOLUTION)
       }.width('100%')
+      if (this.mode !== AIMode.FAITHFUL_TRANSFORM) {
+        Text('该模式尚未接入，保持显式不可用，不会自动降级为忠实转换。').fontSize(10).fontColor('#FF9F0A').margin({ top: 2 })
+      }
+      if (this.aiLoading) {
+        Row({ space: 8 }) {
+          Text('正在请求 AI Gateway...').fontSize(10).fontColor('#79C0FF').layoutWeight(1)
+          Button('取消').height(30).fontSize(10).fontColor('#FF9A94').backgroundColor('#2A1B1C').borderRadius(4)
+            .onClick(() => { this.viewModel.cancelAI(); })
+        }.width('100%').margin({ top: 4 })
+      } else {
+        Button() {
+          Row({ space: 5 }) {
+            this.Icon(WorkspaceIcon.AI, 13, '#07110A')
+            Text('发起忠实转换').fontSize(11).fontColor('#07110A')
+          }
+        }.width('100%').height(36).backgroundColor('#30D158').borderRadius(4).margin({ top: 4 })
+          .onClick(() => this.runAI())
+      }
+      if (this.aiError) {
+        Text(this.aiMessage).fontSize(10).lineHeight(16).fontColor('#FF9A94').margin({ top: 4 })
+      } else if (this.aiResult !== null) {
+        this.AIResultList()
+      } else if (!this.aiLoading) {
+        Text(this.aiMessage.length === 0 ? '未发起转换。忠实转换严格映射思路来源，越界新增步骤将被拒绝。' : this.aiMessage)
+          .fontSize(10).fontColor('#8E8E93').margin({ top: 4 })
+      }
       Row() {
         Column() {
-          Text('AI 未启用').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#ECECED')
-          Text('未配置模型服务，不生成模拟结果。').fontSize(10).fontColor('#8E8E93').margin({ top: 2 })
+          Text('AI Gateway').fontSize(11).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+          Text('未配置模型时返回 AI_NOT_ENABLED，不生成模拟结果。').fontSize(10).fontColor('#8E8E93').margin({ top: 2 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button(this.artifactHidden ? '显示结果区' : '隐藏结果区').height(32).fontSize(10)
           .fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).onClick(() => this.toggleArtifact())
       }.width('100%').margin({ top: 4 })
+      TextInput({ text: this.aiBaseUrl, placeholder: 'http://电脑局域网IP:8788' }).width('100%').height(30).fontSize(9)
+        .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
+        .border({ width: 1, color: '#3A3A3D' }).borderRadius(4)
+        .onChange((value: string) => { this.aiBaseUrl = value; this.viewModel.setAIBaseUrl(value); })
     }.width('100%')
+  }
+
+  @Builder
+  AIResultList() {
+    Column({ space: 5 }) {
+      Text('转换结果').fontSize(11).fontWeight(FontWeight.Bold).fontColor('#9BE7A9')
+      if (this.aiResult !== null && this.aiResult.pseudocode.length > 0) {
+        ForEach(this.aiResult.pseudocode, (step: PseudocodeStep) => {
+          Column() {
+            Text(step.step).fontSize(10).fontColor('#ECECED')
+            Text(`来源: ${step.sourceRefs.join(', ')}`).fontSize(9).fontColor('#8E8E93').margin({ top: 2 })
+          }.alignItems(HorizontalAlign.Start).width('100%').padding(6)
+            .backgroundColor('#1C1C1E').borderRadius(4)
+        }, (step: PseudocodeStep) => step.id)
+      } else {
+        Text('（无伪代码步骤）').fontSize(10).fontColor('#8E8E93')
+      }
+    }.width('100%').margin({ top: 4 })
   }
 
   @Builder

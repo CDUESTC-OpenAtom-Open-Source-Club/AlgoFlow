@@ -1,0 +1,334 @@
+[
+  {
+    "name": "valid faithful_transform pseudocode request",
+    "valid": true,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 3,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals, choose a non-overlapping subset.",
+      "idea_segments": [
+        { "id": "idea_segment_1", "content": "Sort intervals by right endpoint." },
+        { "id": "idea_segment_2", "content": "Select non-overlapping intervals." }
+      ],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "valid faithful_transform code_snippet request",
+    "valid": true,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-2",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Sort a vector of intervals by right endpoint.",
+      "idea_segments": [
+        { "id": "idea_segment_1", "content": "Sort by right endpoint." }
+      ],
+      "output_kind": "code_snippet",
+      "visibility": "hidden"
+    }
+  },
+  {
+    "name": "valid feasibility_analysis request",
+    "valid": true,
+    "request": {
+      "mode": "feasibility_analysis",
+      "draft_id": "draft-3",
+      "draft_version": 0,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Is a greedy choice safe here?",
+      "idea_segments": [
+        { "id": "idea_segment_1", "content": "Pick the interval with the smallest right endpoint." }
+      ],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request missing mode",
+    "valid": false,
+    "request": {
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals, choose a non-overlapping subset.",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort by right endpoint." }],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request missing draft_id",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request missing draft_version",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request missing language",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request missing rule_version",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "problem_context": "Given intervals.",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request missing problem_context",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request missing idea_segments",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request missing output_kind",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request missing visibility",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "output_kind": "pseudocode"
+    }
+  },
+  {
+    "name": "request invalid mode enum",
+    "valid": false,
+    "request": {
+      "mode": "not_a_real_mode",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request unsupported language",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "python",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request negative draft_version",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": -1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request empty problem_context",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request empty idea_segments array",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request idea segment missing id",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [{ "content": "Sort without a stable id." }],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request duplicate idea segment ids",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [
+        { "id": "idea_segment_1", "content": "Sort." },
+        { "id": "idea_segment_1", "content": "Select." }
+      ],
+      "output_kind": "pseudocode",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request rejects injected provider secret",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "api_key": "sk-must-not-be-accepted"
+    }
+  },
+  {
+    "name": "request invalid output_kind",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "output_kind": "full_program",
+      "visibility": "visible"
+    }
+  },
+  {
+    "name": "request invalid visibility",
+    "valid": false,
+    "request": {
+      "mode": "faithful_transform",
+      "draft_id": "draft-1",
+      "draft_version": 1,
+      "language": "cpp",
+      "rule_version": "1.0.0",
+      "problem_context": "Given intervals.",
+      "idea_segments": [{ "id": "idea_segment_1", "content": "Sort." }],
+      "output_kind": "pseudocode",
+      "visibility": "classified"
+    }
+  }
+]
