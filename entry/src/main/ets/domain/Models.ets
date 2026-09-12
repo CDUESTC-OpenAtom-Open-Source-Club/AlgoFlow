@@ -25,6 +25,57 @@ export class IdeaSegment {
   }
 }
 
+export enum NotificationKind {
+  SYNC_FAILED = 'sync_failed',
+  CONFLICT = 'conflict',
+  INFO = 'info'
+}
+
+export class Notification {
+  id: string;
+  kind: NotificationKind;
+  title: string;
+  message: string;
+  createdAt: string;
+  read: boolean;
+
+  constructor(id: string, kind: NotificationKind, title: string, message: string) {
+    this.id = id;
+    this.kind = kind;
+    this.title = title;
+    this.message = message;
+    this.createdAt = new Date().toISOString();
+    this.read = false;
+  }
+}
+
+export class DraftVersion {
+  id: string;
+  draftId: string;
+  version: number;
+  title: string;
+  idea: string;
+  code: string;
+  shortCode: string;
+  rewrite: string;
+  archived: boolean;
+  createdAt: string;
+
+  constructor(id: string, draftId: string, version: number, title: string, idea: string,
+    code: string, shortCode: string, rewrite: string, archived: boolean, createdAt: string) {
+    this.id = id;
+    this.draftId = draftId;
+    this.version = version;
+    this.title = title;
+    this.idea = idea;
+    this.code = code;
+    this.shortCode = shortCode;
+    this.rewrite = rewrite;
+    this.archived = archived;
+    this.createdAt = createdAt;
+  }
+}
+
 export class Draft {
   id: string;
   workspaceId: string;
@@ -42,6 +93,8 @@ export class Draft {
   aiMode: AIMode;
   artifactHidden: boolean;
   ideaSegments: IdeaSegment[];
+  archived: boolean;
+  archivedAt: string;
 
   constructor(id: string, title: string) {
     this.id = id;
@@ -60,5 +113,7 @@ export class Draft {
     this.aiMode = AIMode.FAITHFUL_TRANSFORM;
     this.artifactHidden = false;
     this.ideaSegments = [];
+    this.archived = false;
+    this.archivedAt = '';
   }
 }

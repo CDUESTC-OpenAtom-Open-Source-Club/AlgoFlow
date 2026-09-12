@@ -2,6 +2,10 @@
   "src": [
     "pages/Home",
     "pages/Index",
-    "pages/Placeholder"
+    "pages/Placeholder",
+    "pages/AllDrafts",
+    "pages/HistoryVersions",
+    "pages/Notifications",
+    "pages/Settings"
   ]
 }

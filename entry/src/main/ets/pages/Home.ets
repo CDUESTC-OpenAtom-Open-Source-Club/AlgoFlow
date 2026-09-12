@@ -2,7 +2,7 @@ import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel'
 import { Draft, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { ResourceIcon, ResourceIconName } from '../components/ResourceIcon';
-import { openEditor, openPlaceholder } from '../navigation/AppRoutes';
+import { openEditor, openPlaceholder, openAllDrafts, openHistory, openNotifications, openSettings } from '../navigation/AppRoutes';
 
 @Entry
 @Component
@@ -12,9 +12,19 @@ struct Home {
   @State drafts: Draft[] = [];
   @State ready: boolean = false;
   @State message: string = '';
+  @State unread: number = 0;
+  @State versionCount: number = 0;
 
   aboutToAppear(): void {
     this.initializeWorkspace();
+  }
+
+  onPageShow(): void {
+    if (this.ready) {
+      this.drafts = this.viewModel.listDrafts();
+      this.unread = this.viewModel.unreadNotificationCount();
+      this.versionCount = this.viewModel.totalVersionCount();
+    }
   }
 
   private async initializeWorkspace(): Promise<void> {
@@ -23,6 +33,8 @@ struct Home {
       this.viewModel = new DraftWorkspaceViewModel(repository, repository);
       await this.viewModel.initialize();
       this.drafts = this.viewModel.listDrafts();
+      this.unread = this.viewModel.unreadNotificationCount();
+      this.versionCount = this.viewModel.totalVersionCount();
       this.ready = true;
 
       const routedDraftId = AppStorage.get<string>('routeDraftId');
@@ -62,6 +74,13 @@ struct Home {
     this.viewModel.deleteDraft(draftId);
     this.drafts = this.viewModel.listDrafts();
     this.message = '草稿已删除，仍保留同步墓碑';
+  }
+
+  private async archiveDraft(draftId: string): Promise<void> {
+    if (!this.ready) return;
+    this.viewModel.archiveDraft(draftId);
+    this.drafts = this.viewModel.listDrafts();
+    this.message = '草稿已归档，可在全部草稿中恢复';
   }
 
   private async openReservedPage(title: string, detail: string): Promise<void> {
@@ -128,11 +147,26 @@ struct Home {
 
   @Builder
   NotificationButton() {
-    Button() {
-      ResourceIcon({ name: ResourceIconName.QUERY, iconSize: 18, tint: '#5E645D' })
-    }.type(ButtonType.Normal).width(36).height(36)
-      .backgroundColor('#FFFFFF').border({ width: 1, color: '#E2E8E3' }).borderRadius(18)
-      .onClick(() => { this.openReservedPage('通知', '通知中心尚未接入，当前入口仅作预留。'); });
+    Stack({ alignContent: Alignment.TopEnd }) {
+      Button() {
+        ResourceIcon({ name: ResourceIconName.QUERY, iconSize: 18, tint: '#5E645D' })
+      }.type(ButtonType.Normal).width(36).height(36)
+        .backgroundColor('#FFFFFF').border({ width: 1, color: '#E2E8E3' }).borderRadius(18)
+        .onClick(() => { this.openNotificationsPage(); })
+      if (this.unread > 0) {
+        Text(this.unread > 99 ? '99+' : `${this.unread}`).fontSize(9).fontColor('#FFFFFF')
+          .padding({ left: 5, right: 5, top: 1, bottom: 1 }).backgroundColor('#B5674D').borderRadius(8)
+          .margin({ top: 2, right: 2 })
+      }
+    }
+  }
+
+  private async openNotificationsPage(): Promise<void> {
+    await openNotifications();
+  }
+
+  private async openHistoryPage(): Promise<void> {
+    await openHistory();
   }
 
   @Builder
@@ -144,6 +178,18 @@ struct Home {
     }.layoutWeight(1).padding(12).alignItems(HorizontalAlign.Start)
       .backgroundColor(background).borderRadius(20)
       .constraintSize({ minHeight: 106 });
+  }
+
+  @Builder
+  VersionTile() {
+    Column({ space: 8 }) {
+      ResourceIcon({ name: ResourceIconName.VERSIONS, iconSize: 18, tint: '#61758A' })
+      Text(`${this.versionCount}`).fontSize(20).fontWeight(FontWeight.Bold).fontColor('#253029')
+      Text('历史版本').fontSize(10).fontColor('#68736C')
+    }.layoutWeight(1).padding(12).alignItems(HorizontalAlign.Start)
+      .backgroundColor('#E9EEF4').borderRadius(20)
+      .constraintSize({ minHeight: 106 })
+      .onClick(() => { this.openHistoryPage(); });
   }
 
   @Builder
@@ -178,7 +224,7 @@ struct Home {
         }.layoutWeight(1)
         Button('归档')
           .height(26).fontSize(10).fontColor('#68736C').backgroundColor(Color.Transparent)
-          .onClick(() => { this.openReservedPage('归档草稿', '归档状态与恢复流程尚未接入，当前入口仅作预留。'); })
+          .onClick(() => { this.archiveDraft(draft.id); })
         Button('删除')
           .height(26).fontSize(10).fontColor('#B5674D').backgroundColor(Color.Transparent)
           .onClick(() => { this.deleteDraft(draft.id); })
@@ -214,7 +260,7 @@ struct Home {
       .onClick(() => {
         if (label === '写思路') this.openStarterDraft();
         if (label === 'AI 转换') this.openReservedPage('AI 转换', 'AI Gateway 尚未接入，当前入口仅作预留。');
-        if (label === '设置') this.openReservedPage('设置', '设置项尚未完成，当前入口仅作预留。');
+        if (label === '设置') openSettings();
       });
   }
 
@@ -247,7 +293,7 @@ struct Home {
             Row({ space: 8 }) {
               this.StatTile(`${this.syncedCount()}`, '已同步草稿', ResourceIconName.REFRESH, '#E5F1EB', '#55745F')
               this.StatTile(`${this.localCount()}`, '仅本地', ResourceIconName.DOCUMENT, '#FAF3DC', '#A87732')
-              this.StatTile('待接入', '历史版本', ResourceIconName.VERSIONS, '#E9EEF4', '#61758A')
+              this.VersionTile()
             }.width('100%')
           }.width('100%')
 
@@ -260,7 +306,7 @@ struct Home {
               Button('查看全部')
                 .height(28).fontSize(11).fontWeight(FontWeight.Bold).fontColor('#55745F')
                 .backgroundColor(Color.Transparent)
-                .onClick(() => { this.openReservedPage('全部草稿', '全部草稿列表尚未拆分为独立页面，当前入口仅作预留。'); })
+                .onClick(() => { openAllDrafts(); })
             }.width('100%')
             if (this.recentDrafts().length === 0) {
               Column({ space: 6 }) {
