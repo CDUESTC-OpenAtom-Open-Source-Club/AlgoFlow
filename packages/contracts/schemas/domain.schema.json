@@ -58,7 +58,9 @@
             "language": { "type": "string", "enum": ["cpp"] },
             "idea_segments": { "type": "array", "items": { "$ref": "#/$defs/ideaSegment" } },
             "sync_status": { "$ref": "#/$defs/syncStatus" },
-            "code": { "type": "string", "maxLength": 20000 }
+            "code": { "type": "string", "maxLength": 20000 },
+            "archived": { "type": "boolean" },
+            "archived_at": { "type": "string", "format": "date-time" }
           }
         }
       ]

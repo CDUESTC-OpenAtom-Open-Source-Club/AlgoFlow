@@ -29,6 +29,8 @@ export interface Draft {
   ai_mode: Mode;
   artifact_hidden: boolean;
   sync_status: SyncStatus;
+  archived: boolean;
+  archived_at: string;
 }
 
 export interface SyncOperation {

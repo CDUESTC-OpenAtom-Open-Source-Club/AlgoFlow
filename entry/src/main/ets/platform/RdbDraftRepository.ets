@@ -3,14 +3,14 @@ import { relationalStore } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIMode, Draft, DraftVersion, IdeaSegment, Notification, NotificationKind, SyncStatus } from '../domain/Models';
 import { ConflictRecord, DraftPayload, SyncOperation, SyncOperationType, draftToPayload,
   payloadToDraft } from '../domain/SyncModels';
 import { SyncRepository } from '../domain/SyncRepository';
 
 const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8787';
 const STORE_CONFIG: relationalStore.StoreConfig = {
   name: 'algoflow_workspace.db',
@@ -21,6 +21,8 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   private context: common.Context;
   private store?: relationalStore.RdbStore;
   private drafts: Draft[] = [];
+  private versions: DraftVersion[] = [];
+  private notifications: Notification[] = [];
   private operations: SyncOperation[] = [];
   private clientId: string = '';
   private cursor: string = '0';
@@ -37,11 +39,23 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     await this.migrate(this.store);
     await this.loadState(this.store);
     await this.loadDrafts(this.store);
+    await this.loadVersions(this.store);
+    await this.loadNotifications(this.store);
     await this.loadOperations(this.store);
   }
 
   list(): Draft[] {
+    return this.drafts.filter((draft: Draft) => !draft.deleted && !draft.archived)
+      .sort((left: Draft, right: Draft) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  listAll(): Draft[] {
     return this.drafts.filter((draft: Draft) => !draft.deleted)
+      .sort((left: Draft, right: Draft) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  listArchived(): Draft[] {
+    return this.drafts.filter((draft: Draft) => !draft.deleted && draft.archived)
       .sort((left: Draft, right: Draft) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
@@ -53,7 +67,12 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     draft.deleted = false;
     draft.lastModifiedClientId = this.clientId;
     draft.syncStatus = SyncStatus.LOCAL_ONLY;
+    const previous = this.drafts.find((item: Draft) => item.id === draft.id);
+    const contentChanged = previous === undefined || !sameContent(previous, draft);
     this.replaceDraft(draft);
+    if (contentChanged && !isBlankDraft(draft)) {
+      this.recordVersion(draft);
+    }
     // The starter draft is a local UI placeholder. Do not publish an empty
     // version-0 entity before a remote draft has had a chance to be pulled.
     if (draft.version === 0 && isBlankDraft(draft)) {
@@ -123,6 +142,52 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     this.replaceDraft(draft);
   }
 
+  listVersions(draftId: string): DraftVersion[] {
+    return this.versions.filter((version: DraftVersion) => version.draftId === draftId)
+      .sort((left: DraftVersion, right: DraftVersion) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  listAllVersions(): DraftVersion[] {
+    return this.versions.slice()
+      .sort((left: DraftVersion, right: DraftVersion) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  totalVersionCount(): number {
+    return this.versions.filter((version: DraftVersion) => {
+      const owner = this.drafts.find((draft: Draft) => draft.id === version.draftId);
+      return owner !== undefined && !owner.deleted;
+    }).length;
+  }
+
+  listNotifications(): Notification[] {
+    return this.notifications.slice()
+      .sort((left: Notification, right: Notification) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  recordNotification(kind: NotificationKind, title: string, message: string): void {
+    const notification = new Notification(createOperationId(), kind, title, message);
+    this.notifications.push(notification);
+    this.enqueue(async () => this.persistNotification(notification));
+  }
+
+  markNotificationRead(id: string): void {
+    const notification = this.notifications.find((item: Notification) => item.id === id);
+    if (notification === undefined) return;
+    notification.read = true;
+    this.enqueue(async () => this.updateNotificationRead(id, true));
+  }
+
+  markAllNotificationsRead(): void {
+    for (const notification of this.notifications) {
+      notification.read = true;
+    }
+    this.enqueue(async () => this.updateAllNotificationsRead());
+  }
+
+  unreadNotificationCount(): number {
+    return this.notifications.filter((notification: Notification) => !notification.read).length;
+  }
+
   private async migrate(store: relationalStore.RdbStore): Promise<void> {
     if (store.version > DATABASE_VERSION) {
       throw new Error(`Unsupported database version ${store.version}`);
@@ -148,6 +213,27 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
           'id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, local_copy_id TEXT NOT NULL, ' +
           'server_entity_json TEXT NOT NULL, created_at TEXT NOT NULL, resolved INTEGER NOT NULL)');
         store.version = 1;
+        store.commit();
+      } catch (error) {
+        store.rollBack();
+        throw new Error(error instanceof Error ? error.message : 'RDB migration failed');
+      }
+    }
+    if (store.version === 1) {
+      store.beginTransaction();
+      try {
+        await store.executeSql('ALTER TABLE drafts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
+        await store.executeSql('ALTER TABLE drafts ADD COLUMN archived_at TEXT NOT NULL DEFAULT \'\'');
+        await store.executeSql('CREATE TABLE IF NOT EXISTS draft_versions (' +
+          'id TEXT PRIMARY KEY, draft_id TEXT NOT NULL, version INTEGER NOT NULL, title TEXT NOT NULL, ' +
+          'idea TEXT NOT NULL, code TEXT NOT NULL, short_code TEXT NOT NULL, rewrite TEXT NOT NULL, ' +
+          'archived INTEGER NOT NULL, created_at TEXT NOT NULL)');
+        await store.executeSql('CREATE INDEX IF NOT EXISTS idx_draft_versions_draft ' +
+          'ON draft_versions(draft_id)');
+        await store.executeSql('CREATE TABLE IF NOT EXISTS notifications (' +
+          'id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, message TEXT NOT NULL, ' +
+          'created_at TEXT NOT NULL, read INTEGER NOT NULL)');
+        store.version = 2;
         store.commit();
       } catch (error) {
         store.rollBack();
@@ -202,6 +288,8 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
           draft.aiMode = parseAIMode(readString(resultSet, 'ai_mode'));
           draft.artifactHidden = readNumber(resultSet, 'artifact_hidden') === 1;
           draft.ideaSegments = parseIdeaSegments(readString(resultSet, 'idea_segments_json'));
+          draft.archived = readNumber(resultSet, 'archived') === 1;
+          draft.archivedAt = readString(resultSet, 'archived_at');
           loaded.push(draft);
         } while (resultSet.goToNextRow());
       }
@@ -209,6 +297,55 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
       resultSet.close();
     }
     this.drafts = loaded;
+  }
+
+  private async loadVersions(store: relationalStore.RdbStore): Promise<void> {
+    const resultSet = await store.querySql('SELECT * FROM draft_versions ORDER BY created_at DESC');
+    const loaded: DraftVersion[] = [];
+    try {
+      if (resultSet.goToFirstRow()) {
+        do {
+          loaded.push(new DraftVersion(
+            readString(resultSet, 'id'),
+            readString(resultSet, 'draft_id'),
+            readNumber(resultSet, 'version'),
+            readString(resultSet, 'title'),
+            readString(resultSet, 'idea'),
+            readString(resultSet, 'code'),
+            readString(resultSet, 'short_code'),
+            readString(resultSet, 'rewrite'),
+            readNumber(resultSet, 'archived') === 1,
+            readString(resultSet, 'created_at')
+          ));
+        } while (resultSet.goToNextRow());
+      }
+    } finally {
+      resultSet.close();
+    }
+    this.versions = loaded;
+  }
+
+  private async loadNotifications(store: relationalStore.RdbStore): Promise<void> {
+    const resultSet = await store.querySql('SELECT * FROM notifications ORDER BY created_at DESC');
+    const loaded: Notification[] = [];
+    try {
+      if (resultSet.goToFirstRow()) {
+        do {
+          const notification = new Notification(
+            readString(resultSet, 'id'),
+            parseNotificationKind(readString(resultSet, 'kind')),
+            readString(resultSet, 'title'),
+            readString(resultSet, 'message')
+          );
+          notification.createdAt = readString(resultSet, 'created_at');
+          notification.read = readNumber(resultSet, 'read') === 1;
+          loaded.push(notification);
+        } while (resultSet.goToNextRow());
+      }
+    } finally {
+      resultSet.close();
+    }
+    this.notifications = loaded;
   }
 
   private async loadOperations(store: relationalStore.RdbStore): Promise<void> {
@@ -294,12 +431,41 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     const store = this.requireStore();
     await store.executeSql('INSERT OR REPLACE INTO drafts (' +
       'id, workspace_id, title, idea, code, short_code, rewrite, version, created_at, updated_at, deleted, ' +
-      'last_modified_client_id, sync_status, ai_mode, artifact_hidden, idea_segments_json) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+      'last_modified_client_id, sync_status, ai_mode, artifact_hidden, idea_segments_json, archived, archived_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
         draft.id, draft.workspaceId, draft.title, draft.idea, draft.code, draft.shortCode, draft.rewrite,
         draft.version, draft.createdAt, draft.updatedAt, draft.deleted ? 1 : 0, draft.lastModifiedClientId,
-        draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0, JSON.stringify(draft.ideaSegments)
+        draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0, JSON.stringify(draft.ideaSegments),
+        draft.archived ? 1 : 0, draft.archivedAt
       ]);
+  }
+
+  private recordVersion(draft: Draft): void {
+    const version = new DraftVersion(createOperationId(), draft.id, draft.version, draft.title, draft.idea,
+      draft.code, draft.shortCode, draft.rewrite, draft.archived, draft.updatedAt);
+    this.versions.push(version);
+    this.enqueue(async () => this.persistVersion(version));
+  }
+
+  private async persistVersion(version: DraftVersion): Promise<void> {
+    await this.requireStore().executeSql('INSERT OR REPLACE INTO draft_versions (' +
+      'id, draft_id, version, title, idea, code, short_code, rewrite, archived, created_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [version.id, version.draftId, version.version, version.title,
+        version.idea, version.code, version.shortCode, version.rewrite, version.archived ? 1 : 0, version.createdAt]);
+  }
+
+  private async persistNotification(notification: Notification): Promise<void> {
+    await this.requireStore().executeSql('INSERT OR REPLACE INTO notifications (' +
+      'id, kind, title, message, created_at, read) VALUES (?, ?, ?, ?, ?, ?)', [notification.id, notification.kind,
+        notification.title, notification.message, notification.createdAt, notification.read ? 1 : 0]);
+  }
+
+  private async updateNotificationRead(id: string, read: boolean): Promise<void> {
+    await this.requireStore().executeSql('UPDATE notifications SET read = ? WHERE id = ?', [read ? 1 : 0, id]);
+  }
+
+  private async updateAllNotificationsRead(): Promise<void> {
+    await this.requireStore().executeSql('UPDATE notifications SET read = 1', []);
   }
 
   private async persistOperation(operation: SyncOperation): Promise<void> {
@@ -358,6 +524,17 @@ function parseAIMode(value: string): AIMode {
   if (value === AIMode.PROGRESSIVE_HINT) return AIMode.PROGRESSIVE_HINT;
   if (value === AIMode.FULL_SOLUTION) return AIMode.FULL_SOLUTION;
   return AIMode.FAITHFUL_TRANSFORM;
+}
+
+function parseNotificationKind(value: string): NotificationKind {
+  if (value === NotificationKind.SYNC_FAILED) return NotificationKind.SYNC_FAILED;
+  if (value === NotificationKind.CONFLICT) return NotificationKind.CONFLICT;
+  return NotificationKind.INFO;
+}
+
+function sameContent(left: Draft, right: Draft): boolean {
+  return left.title === right.title && left.idea === right.idea && left.code === right.code &&
+    left.shortCode === right.shortCode && left.rewrite === right.rewrite;
 }
 
 function cloneDraft(draft: Draft): Draft {

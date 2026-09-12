@@ -42,6 +42,8 @@ export class DraftPayload {
   artifact_hidden: boolean = false;
   sync_status: string = SyncStatus.SYNCED;
   idea_segments: IdeaSegment[] = [];
+  archived: boolean = false;
+  archived_at: string = '';
 }
 
 export class SyncOperation {
@@ -101,6 +103,8 @@ export function draftToPayload(draft: Draft): DraftPayload {
   payload.artifact_hidden = draft.artifactHidden;
   payload.sync_status = SyncStatus.SYNCED;
   payload.idea_segments = draft.ideaSegments;
+  payload.archived = draft.archived;
+  payload.archived_at = draft.archivedAt;
   return payload;
 }
 
@@ -120,6 +124,8 @@ export function payloadToDraft(payload: DraftPayload): Draft {
   draft.artifactHidden = payload.artifact_hidden === true;
   draft.syncStatus = SyncStatus.SYNCED;
   draft.ideaSegments = payload.idea_segments ?? [];
+  draft.archived = payload.archived === true;
+  draft.archivedAt = payload.archived_at ?? '';
   return draft;
 }
 

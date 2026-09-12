@@ -24,5 +24,31 @@
       "occurred_at": "2026-08-21T00:01:00.000Z",
       "payload": { "deleted": true }
     }
+  },
+  {
+    "name": "archive draft carrying version",
+    "operation": {
+      "operation_id": "op-archive-1",
+      "entity_type": "draft",
+      "entity_id": "draft-1",
+      "operation_type": "upsert",
+      "base_version": 2,
+      "client_id": "phone-local",
+      "occurred_at": "2026-08-21T00:02:00.000Z",
+      "payload": { "title": "Interval notes", "archived": true, "archived_at": "2026-08-21T00:02:00.000Z", "deleted": false }
+    }
+  },
+  {
+    "name": "restore draft carrying version",
+    "operation": {
+      "operation_id": "op-restore-1",
+      "entity_type": "draft",
+      "entity_id": "draft-1",
+      "operation_type": "upsert",
+      "base_version": 3,
+      "client_id": "phone-local",
+      "occurred_at": "2026-08-21T00:03:00.000Z",
+      "payload": { "title": "Interval notes", "archived": false, "archived_at": "", "deleted": false }
+    }
   }
 ]

@@ -33,6 +33,37 @@ test('keeps a deletion tombstone in the change stream', () => {
   assert.equal(store.pull('1').changes.length, 1);
 });
 
+test('archive and restore round-trip the archived flag across the sync boundary', () => {
+  const store = new SyncStore();
+  const created = store.apply({
+    ...operation, operation_id: 'op-archive-create', entity_id: 'draft-archive',
+    payload: { title: 'Draft', archived: false, archived_at: '' }
+  });
+  assert.equal(created.status, 'applied');
+  assert.equal(created.server_entity.archived, false);
+
+  const archived = store.apply({
+    ...operation, operation_id: 'op-archive', entity_id: 'draft-archive',
+    base_version: created.version,
+    payload: { title: 'Draft', archived: true, archived_at: '2026-09-01T00:00:00.000Z' }
+  });
+  assert.equal(archived.status, 'applied');
+  assert.equal(archived.server_entity.archived, true);
+  assert.equal(archived.server_entity.archived_at, '2026-09-01T00:00:00.000Z');
+
+  const restored = store.apply({
+    ...operation, operation_id: 'op-restore', entity_id: 'draft-archive',
+    base_version: archived.version,
+    payload: { title: 'Draft', archived: false, archived_at: '' }
+  });
+  assert.equal(restored.status, 'applied');
+  assert.equal(restored.server_entity.archived, false);
+  assert.equal(restored.server_entity.archived_at, '');
+
+  const changes = store.pull('0').changes;
+  assert.equal(changes[changes.length - 1].entity.archived, false);
+});
+
 test('accepts independent operations that arrive out of order and preserves cursor order', () => {
   const store = new SyncStore();
   const firstEntity = { ...operation, operation_id: 'op-a', entity_id: 'draft-a' };
