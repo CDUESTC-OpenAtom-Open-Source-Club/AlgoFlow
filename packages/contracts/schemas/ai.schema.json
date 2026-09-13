@@ -3,6 +3,30 @@
   "$id": "https://algoflow.local/contracts/ai.schema.json",
   "title": "AlgoFlow AI contracts",
   "$defs": {
+    "ideaSegments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "content"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "content": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "sourceRange": {
+      "type": "object",
+      "required": ["start_line", "start_char", "end_line", "end_char"],
+      "properties": {
+        "start_line": { "type": "integer", "minimum": 1 },
+        "start_char": { "type": "integer", "minimum": 0 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "end_char": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
     "request": {
       "type": "object",
       "required": ["mode", "draft_id", "draft_version", "language", "rule_version", "problem_context", "idea_segments", "output_kind", "visibility"],
@@ -13,19 +37,7 @@
         "language": { "type": "string", "enum": ["cpp"] },
         "rule_version": { "type": "string", "minLength": 1 },
         "problem_context": { "type": "string", "minLength": 1, "maxLength": 20000 },
-        "idea_segments": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "object",
-            "required": ["id", "content"],
-            "properties": {
-              "id": { "type": "string", "minLength": 1 },
-              "content": { "type": "string" }
-            },
-            "additionalProperties": false
-          }
-        },
+        "idea_segments": { "$ref": "#/$defs/ideaSegments" },
         "output_kind": { "$ref": "domain.schema.json#/$defs/aiOutputKind" },
         "visibility": { "$ref": "domain.schema.json#/$defs/aiVisibility" }
       },
@@ -105,6 +117,98 @@
           }
         }
       ],
+      "additionalProperties": false
+    },
+    "reviewRequest": {
+      "type": "object",
+      "required": ["mode", "draft_id", "draft_version", "language", "rule_version", "review_kind", "problem_context", "idea_segments", "code", "visibility"],
+      "properties": {
+        "mode": { "$ref": "domain.schema.json#/$defs/aiMode" },
+        "draft_id": { "type": "string", "minLength": 1 },
+        "draft_version": { "type": "integer", "minimum": 0 },
+        "language": { "type": "string", "enum": ["cpp"] },
+        "rule_version": { "type": "string", "minLength": 1 },
+        "review_kind": { "$ref": "domain.schema.json#/$defs/reviewKind" },
+        "problem_context": { "type": "string", "minLength": 1, "maxLength": 20000 },
+        "idea_segments": { "$ref": "#/$defs/ideaSegments" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 20000 },
+        "visibility": { "$ref": "domain.schema.json#/$defs/aiVisibility" }
+      },
+      "additionalProperties": false
+    },
+    "reviewResult": {
+      "type": "object",
+      "required": ["mode", "draft_id", "source_draft_version", "model_id", "rule_version", "review_kind", "diagnostics", "visibility"],
+      "properties": {
+        "mode": { "$ref": "domain.schema.json#/$defs/aiMode" },
+        "draft_id": { "type": "string", "minLength": 1 },
+        "source_draft_version": { "type": "integer", "minimum": 0 },
+        "model_id": { "type": "string", "minLength": 1 },
+        "rule_version": { "type": "string", "minLength": 1 },
+        "review_kind": { "$ref": "domain.schema.json#/$defs/reviewKind" },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "level", "problem", "basis", "suggestion"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "level": { "$ref": "domain.schema.json#/$defs/diagnosticLevel" },
+              "range": { "oneOf": [{ "$ref": "#/$defs/sourceRange" }, { "type": "null" }] },
+              "problem": { "type": "string", "minLength": 1 },
+              "basis": { "type": "string", "minLength": 1 },
+              "suggestion": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "visibility": { "$ref": "domain.schema.json#/$defs/aiVisibility" }
+      },
+      "additionalProperties": false
+    },
+    "completionRequest": {
+      "type": "object",
+      "required": ["mode", "draft_id", "draft_version", "language", "rule_version", "problem_context", "idea_segments", "code", "cursor", "visibility"],
+      "properties": {
+        "mode": { "$ref": "domain.schema.json#/$defs/aiMode" },
+        "draft_id": { "type": "string", "minLength": 1 },
+        "draft_version": { "type": "integer", "minimum": 0 },
+        "language": { "type": "string", "enum": ["cpp"] },
+        "rule_version": { "type": "string", "minLength": 1 },
+        "problem_context": { "type": "string", "minLength": 1, "maxLength": 20000 },
+        "idea_segments": { "$ref": "#/$defs/ideaSegments" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 20000 },
+        "cursor": {
+          "type": "object",
+          "required": ["line", "char"],
+          "properties": {
+            "line": { "type": "integer", "minimum": 1 },
+            "char": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "visibility": { "$ref": "domain.schema.json#/$defs/aiVisibility" }
+      },
+      "additionalProperties": false
+    },
+    "completionResult": {
+      "type": "object",
+      "required": ["mode", "draft_id", "source_draft_version", "model_id", "rule_version", "replaced_range", "suggestion_text", "visibility"],
+      "properties": {
+        "mode": { "$ref": "domain.schema.json#/$defs/aiMode" },
+        "draft_id": { "type": "string", "minLength": 1 },
+        "source_draft_version": { "type": "integer", "minimum": 0 },
+        "model_id": { "type": "string", "minLength": 1 },
+        "rule_version": { "type": "string", "minLength": 1 },
+        "replaced_range": { "$ref": "#/$defs/sourceRange" },
+        "suggestion_text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "pattern": "^(?![\\s\\S]*\\b(?:int|signed|auto|void)\\s+main\\s*\\()[\\s\\S]*$"
+        },
+        "visibility": { "$ref": "domain.schema.json#/$defs/aiVisibility" }
+      },
       "additionalProperties": false
     }
   }

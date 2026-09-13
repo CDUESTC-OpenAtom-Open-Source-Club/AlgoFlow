@@ -1,14 +1,35 @@
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
-import { validateAIArtifact, validateAIRequest } from './contracts.mjs';
+import {
+  validateAIArtifact,
+  validateAIRequest,
+  validateCompletionRequest,
+  validateCompletionResult,
+  validateReviewRequest,
+  validateReviewResult
+} from './contracts.mjs';
 
-export function createAIGateway({ aiProvider = null, templates = [], enabledModes = ['faithful_transform'], timeoutMs = 30000 } = {}) {
+const DEFAULT_TIMEOUT_MS = 30000;
+
+export function createAIGateway({
+  aiProvider = null,
+  templates = [],
+  enabledModes = ['faithful_transform'],
+  timeoutMs = DEFAULT_TIMEOUT_MS
+} = {}) {
   const enabledModeSet = new Set(enabledModes);
-  const hasProvider = aiProvider !== null && typeof aiProvider.generate === 'function';
+  const hasGenerate = aiProvider !== null && typeof aiProvider.generate === 'function';
+  const hasReview = aiProvider !== null && typeof aiProvider.review === 'function';
+  const hasComplete = aiProvider !== null && typeof aiProvider.complete === 'function';
+  const anyEnabled = hasGenerate || hasReview || hasComplete;
   return createServer(async (request, response) => {
     response.setHeader('Content-Type', 'application/json; charset=utf-8');
     if (request.method === 'GET' && request.url === '/status') {
-      response.end(JSON.stringify({ enabled: hasProvider, code: hasProvider ? 'AI_ENABLED' : 'AI_NOT_ENABLED' }));
+      writeJson(response, 200, {
+        enabled: anyEnabled,
+        code: anyEnabled ? 'AI_ENABLED' : 'AI_NOT_ENABLED',
+        capabilities: { transform: hasGenerate, review: hasReview, completion: hasComplete }
+      });
       return;
     }
     if (request.method === 'POST' && request.url === '/requests') {
@@ -16,19 +37,49 @@ export function createAIGateway({ aiProvider = null, templates = [], enabledMode
       const errors = validateAIRequest(body);
       if (errors.length) { writeJson(response, 400, { code: 'INVALID_REQUEST', errors }); return; }
       if (!enabledModeSet.has(body.mode)) { writeJson(response, 409, { code: 'AI_MODE_NOT_AVAILABLE', mode: body.mode }); return; }
-      if (!hasProvider) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
+      if (!hasGenerate) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
       try {
-        const artifact = await generateWithTimeout(aiProvider, body, templates, timeoutMs);
+        const artifact = await withTimeout(aiProvider.generate({ request: body, templates }), timeoutMs);
         const artifactErrors = validateAIArtifact(artifact);
         artifactErrors.push(...validateArtifactAgainstRequest(artifact, body, templates));
         if (artifactErrors.length) { writeJson(response, 422, { code: 'INVALID_AI_ARTIFACT', errors: artifactErrors }); return; }
         writeJson(response, 200, artifact);
       } catch (error) {
-        if (error !== null && typeof error === 'object' && error.code === 'AI_TIMEOUT') {
-          writeJson(response, 504, { code: 'AI_PROVIDER_TIMEOUT' });
-        } else {
-          writeJson(response, 502, { code: 'AI_PROVIDER_ERROR' });
-        }
+        writeProviderError(response, error);
+      }
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/reviews') {
+      const body = await readJson(request);
+      const errors = validateReviewRequest(body);
+      if (errors.length) { writeJson(response, 400, { code: 'INVALID_REQUEST', errors }); return; }
+      if (!enabledModeSet.has(body.mode)) { writeJson(response, 409, { code: 'AI_MODE_NOT_AVAILABLE', mode: body.mode }); return; }
+      if (!hasReview) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
+      try {
+        const result = await withTimeout(aiProvider.review({ request: body }), timeoutMs);
+        const resultErrors = validateReviewResult(result);
+        resultErrors.push(...validateReviewAgainstRequest(result, body));
+        if (resultErrors.length) { writeJson(response, 422, { code: 'INVALID_AI_ARTIFACT', errors: resultErrors }); return; }
+        writeJson(response, 200, result);
+      } catch (error) {
+        writeProviderError(response, error);
+      }
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/completions') {
+      const body = await readJson(request);
+      const errors = validateCompletionRequest(body);
+      if (errors.length) { writeJson(response, 400, { code: 'INVALID_REQUEST', errors }); return; }
+      if (!enabledModeSet.has(body.mode)) { writeJson(response, 409, { code: 'AI_MODE_NOT_AVAILABLE', mode: body.mode }); return; }
+      if (!hasComplete) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
+      try {
+        const result = await withTimeout(aiProvider.complete({ request: body }), timeoutMs);
+        const resultErrors = validateCompletionResult(result);
+        resultErrors.push(...validateCompletionAgainstRequest(result, body));
+        if (resultErrors.length) { writeJson(response, 422, { code: 'INVALID_AI_ARTIFACT', errors: resultErrors }); return; }
+        writeJson(response, 200, result);
+      } catch (error) {
+        writeProviderError(response, error);
       }
       return;
     }
@@ -58,27 +109,90 @@ function validateArtifactAgainstRequest(artifact, request, templates) {
   return errors;
 }
 
+function validateReviewAgainstRequest(result, request) {
+  if (!result || typeof result !== 'object') return [];
+  const errors = [];
+  if (result.mode !== request.mode) errors.push('result mode must match request mode');
+  if (result.draft_id !== request.draft_id) errors.push('result draft_id must match request draft_id');
+  if (result.source_draft_version !== request.draft_version) errors.push('result source_draft_version must match request draft_version');
+  if (result.rule_version !== request.rule_version) errors.push('result rule_version must match request rule_version');
+  if (result.review_kind !== request.review_kind) errors.push('result review_kind must match request review_kind');
+  if (result.visibility !== request.visibility) errors.push('result visibility must match request visibility');
+  for (const [index, diagnostic] of (result.diagnostics ?? []).entries()) {
+    errors.push(...validateRangeWithinCode(diagnostic.range, request.code, `diagnostics[${index}].range`));
+  }
+  return errors;
+}
+
+function validateCompletionAgainstRequest(result, request) {
+  if (!result || typeof result !== 'object') return [];
+  const errors = [];
+  if (result.mode !== request.mode) errors.push('result mode must match request mode');
+  if (result.draft_id !== request.draft_id) errors.push('result draft_id must match request draft_id');
+  if (result.source_draft_version !== request.draft_version) errors.push('result source_draft_version must match request draft_version');
+  if (result.rule_version !== request.rule_version) errors.push('result rule_version must match request rule_version');
+  if (result.visibility !== request.visibility) errors.push('result visibility must match request visibility');
+  const sourceIds = new Set(request.idea_segments.map((segment) => segment.id));
+  for (const ref of result.source_refs ?? []) {
+    if (!sourceIds.has(ref)) errors.push(`unknown source_ref: ${ref}`);
+  }
+  const range = result.replaced_range;
+  const cursor = request.cursor;
+  errors.push(...validateRangeWithinCode(range, request.code, 'replaced_range'));
+  if (range && cursor) {
+    const windowLines = 5;
+    if (cursor.line < range.start_line - windowLines || cursor.line > range.end_line + windowLines) {
+      errors.push('replaced_range must stay near the cursor');
+    }
+  }
+  return errors;
+}
+
+function validateRangeWithinCode(range, code, path) {
+  if (!range || typeof code !== 'string') return [];
+  const errors = [];
+  const lines = code.split(/\r?\n/);
+  if (range.start_line > lines.length) errors.push(`${path}.start_line exceeds request code`);
+  if (range.end_line > lines.length) errors.push(`${path}.end_line exceeds request code`);
+  const startLine = lines[range.start_line - 1];
+  const endLine = lines[range.end_line - 1];
+  if (startLine !== undefined && range.start_char > startLine.length) {
+    errors.push(`${path}.start_char exceeds request code line`);
+  }
+  if (endLine !== undefined && range.end_char > endLine.length) {
+    errors.push(`${path}.end_char exceeds request code line`);
+  }
+  return errors;
+}
+
+function withTimeout(promise, timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const error = new Error('AI provider timed out');
+      error.code = 'AI_PROVIDER_TIMEOUT';
+      reject(error);
+    }, timeoutMs);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); }
+    );
+  });
+}
+
+function writeProviderError(response, error) {
+  if (error && error.code === 'AI_PROVIDER_TIMEOUT') {
+    writeJson(response, 504, { code: 'AI_PROVIDER_TIMEOUT' });
+    return;
+  }
+  writeJson(response, 502, { code: 'AI_PROVIDER_ERROR' });
+}
+
 async function readJson(request) {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { return null; }
-}
-
-async function generateWithTimeout(aiProvider, request, templates, timeoutMs) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => {
-      const error = new Error('AI provider timed out');
-      error.code = 'AI_TIMEOUT';
-      reject(error);
-    }, timeoutMs);
-  });
-  try {
-    return await Promise.race([aiProvider.generate({ request, templates }), timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 function writeJson(response, statusCode, body) {
