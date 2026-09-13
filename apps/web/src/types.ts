@@ -84,3 +84,84 @@ export interface SyncRunResult {
   state: WorkspaceState;
   status: SyncStatus;
 }
+
+// ---- IDE AI review and completion contracts (mirror ai.schema.json) ----
+
+export type ReviewKind = 'explanation' | 'risk' | 'complexity';
+
+export type DiagnosticLevel = 'error' | 'warning' | 'info' | 'hint';
+
+export interface SourceRange {
+  start_line: number;
+  start_char: number;
+  end_line: number;
+  end_char: number;
+}
+
+export interface IdeaSegmentInput {
+  id: string;
+  content: string;
+}
+
+export interface ReviewRequest {
+  mode: Mode;
+  draft_id: string;
+  draft_version: number;
+  language: 'cpp';
+  rule_version: string;
+  review_kind: ReviewKind;
+  problem_context: string;
+  idea_segments: IdeaSegmentInput[];
+  code: string;
+  visibility: 'visible' | 'hidden';
+}
+
+export interface ReviewDiagnostic {
+  id: string;
+  level: DiagnosticLevel;
+  range: SourceRange | null;
+  problem: string;
+  basis: string;
+  suggestion: string;
+}
+
+export interface ReviewResult {
+  mode: Mode;
+  draft_id: string;
+  source_draft_version: number;
+  model_id: string;
+  rule_version: string;
+  review_kind: ReviewKind;
+  diagnostics: ReviewDiagnostic[];
+  visibility: 'visible' | 'hidden';
+}
+
+export interface CompletionRequest {
+  mode: Mode;
+  draft_id: string;
+  draft_version: number;
+  language: 'cpp';
+  rule_version: string;
+  problem_context: string;
+  idea_segments: IdeaSegmentInput[];
+  code: string;
+  cursor: { line: number; char: number };
+  visibility: 'visible' | 'hidden';
+}
+
+export interface CompletionResult {
+  mode: Mode;
+  draft_id: string;
+  source_draft_version: number;
+  model_id: string;
+  rule_version: string;
+  replaced_range: SourceRange;
+  suggestion_text: string;
+  visibility: 'visible' | 'hidden';
+}
+
+export interface AICapabilities {
+  enabled: boolean;
+  code: 'AI_ENABLED' | 'AI_NOT_ENABLED';
+  capabilities: { transform: boolean; review: boolean; completion: boolean };
+}
