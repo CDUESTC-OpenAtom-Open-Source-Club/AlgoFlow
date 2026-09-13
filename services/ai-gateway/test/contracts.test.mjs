@@ -3,7 +3,17 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { createAIGateway } from '../src/server.mjs';
-import { AI_MODES, validateAIArtifact, validateAIRequest } from '../src/contracts.mjs';
+import {
+  AI_MODES,
+  DIAGNOSTIC_LEVELS,
+  REVIEW_KINDS,
+  validateAIArtifact,
+  validateAIRequest,
+  validateCompletionRequest,
+  validateCompletionResult,
+  validateReviewRequest,
+  validateReviewResult
+} from '../src/contracts.mjs';
 
 const validRequest = {
   mode: 'faithful_transform',
@@ -40,12 +50,169 @@ const validArtifact = {
   template_id: null
 };
 
+const validReviewRequest = {
+  mode: 'faithful_transform',
+  draft_id: 'draft-1',
+  draft_version: 3,
+  language: 'cpp',
+  rule_version: '1.0.0',
+  review_kind: 'risk',
+  problem_context: 'Given intervals, choose a non-overlapping subset.',
+  idea_segments: [
+    { id: 'idea_segment_1', content: 'Sort intervals by right endpoint.' }
+  ],
+  code: 'void choose(vector<Interval>& intervals) {\n  sort(intervals.begin(), intervals.end(), byRight);\n  \n}',
+  visibility: 'visible'
+};
+
+const validReviewResult = {
+  mode: 'faithful_transform',
+  draft_id: 'draft-1',
+  source_draft_version: 3,
+  model_id: 'provider-disabled',
+  rule_version: '1.0.0',
+  review_kind: 'risk',
+  diagnostics: [
+    {
+      id: 'diag_1',
+      level: 'warning',
+      range: { start_line: 3, start_char: 2, end_line: 3, end_char: 2 },
+      problem: 'The selection loop is empty.',
+      basis: 'The greedy selection step is not implemented.',
+      suggestion: 'Track the last selected end and append non-overlapping intervals.'
+    }
+  ],
+  visibility: 'visible'
+};
+
+const validCompletionRequest = {
+  mode: 'faithful_transform',
+  draft_id: 'draft-1',
+  draft_version: 3,
+  language: 'cpp',
+  rule_version: '1.0.0',
+  problem_context: 'Given intervals, choose a non-overlapping subset.',
+  idea_segments: [
+    { id: 'idea_segment_1', content: 'Sort intervals by right endpoint.' }
+  ],
+  code: 'void choose(vector<Interval>& intervals) {\n  sort(intervals.begin(), intervals.end(), byRight);\n  \n}',
+  cursor: { line: 3, char: 2 },
+  visibility: 'visible'
+};
+
+const validCompletionResult = {
+  mode: 'faithful_transform',
+  draft_id: 'draft-1',
+  source_draft_version: 3,
+  model_id: 'provider-disabled',
+  rule_version: '1.0.0',
+  replaced_range: { start_line: 3, start_char: 2, end_line: 3, end_char: 2 },
+  suggestion_text: 'int last = -1;\n  for (auto& interval : intervals) { if (interval.start >= last) { pick(interval); last = interval.end; } }',
+  visibility: 'visible'
+};
+
 test('AI artifact vectors match expected validity', async () => {
   const source = new URL('../../../packages/contracts/vectors/ai-artifacts.json', import.meta.url);
   const vectors = JSON.parse(await readFile(source, 'utf8'));
   for (const vector of vectors) {
     assert.equal(validateAIArtifact(vector.artifact).length === 0, vector.valid, vector.name);
   }
+});
+
+test('IDE review request vectors match expected validity', async () => {
+  const source = new URL('../../../packages/contracts/vectors/ide-review-vectors.json', import.meta.url);
+  const vectors = JSON.parse(await readFile(source, 'utf8'));
+  for (const vector of vectors.requests) {
+    assert.equal(validateReviewRequest(vector.request).length === 0, vector.valid, vector.name);
+  }
+});
+
+test('IDE review result vectors match expected validity', async () => {
+  const source = new URL('../../../packages/contracts/vectors/ide-review-vectors.json', import.meta.url);
+  const vectors = JSON.parse(await readFile(source, 'utf8'));
+  for (const vector of vectors.results) {
+    assert.equal(validateReviewResult(vector.result).length === 0, vector.valid, vector.name);
+  }
+});
+
+test('IDE completion request vectors match expected validity', async () => {
+  const source = new URL('../../../packages/contracts/vectors/ide-completion-vectors.json', import.meta.url);
+  const vectors = JSON.parse(await readFile(source, 'utf8'));
+  for (const vector of vectors.requests) {
+    assert.equal(validateCompletionRequest(vector.request).length === 0, vector.valid, vector.name);
+  }
+});
+
+test('IDE completion result vectors match expected validity', async () => {
+  const source = new URL('../../../packages/contracts/vectors/ide-completion-vectors.json', import.meta.url);
+  const vectors = JSON.parse(await readFile(source, 'utf8'));
+  for (const vector of vectors.results) {
+    assert.equal(validateCompletionResult(vector.result).length === 0, vector.valid, vector.name);
+  }
+});
+
+test('review and diagnostic enums stay identical to the JSON Schema source of truth', async () => {
+  const source = new URL('../../../packages/contracts/schemas/domain.schema.json', import.meta.url);
+  const schema = JSON.parse(await readFile(source, 'utf8'));
+  assert.deepEqual([...REVIEW_KINDS], schema.$defs.reviewKind.enum);
+  assert.deepEqual([...DIAGNOSTIC_LEVELS], schema.$defs.diagnosticLevel.enum);
+});
+
+test('accepts a review request with explicit mode, versions, and source code', () => {
+  assert.deepEqual(validateReviewRequest(validReviewRequest), []);
+});
+
+for (const field of ['mode', 'draft_version', 'rule_version', 'review_kind', 'code', 'visibility']) {
+  test(`rejects a review request missing required ${field}`, () => {
+    const request = { ...validReviewRequest };
+    delete request[field];
+    assert.notDeepEqual(validateReviewRequest(request), [], `missing ${field}`);
+  });
+}
+
+test('rejects a review result whose diagnostic omits the separated suggestion field', () => {
+  // A diagnostic must carry its own suggestion text; it cannot smuggle user code back.
+  assert.notDeepEqual(validateReviewResult({
+    ...validReviewResult,
+    diagnostics: [{ id: 'diag_1', level: 'error', problem: 'x', basis: 'y' }]
+  }), []);
+});
+
+test('rejects a review result with a diagnostic lacking a basis', () => {
+  assert.notDeepEqual(validateReviewResult({
+    ...validReviewResult,
+    diagnostics: [{ ...validReviewResult.diagnostics[0], basis: undefined }]
+  }), []);
+});
+
+test('accepts a review result whose diagnostic is a global suggestion', () => {
+  assert.deepEqual(validateReviewResult({
+    ...validReviewResult,
+    diagnostics: [{ ...validReviewResult.diagnostics[0], range: null }]
+  }), []);
+});
+
+test('accepts a completion request with explicit cursor position', () => {
+  assert.deepEqual(validateCompletionRequest(validCompletionRequest), []);
+});
+
+for (const field of ['mode', 'draft_version', 'rule_version', 'code', 'cursor', 'visibility']) {
+  test(`rejects a completion request missing required ${field}`, () => {
+    const request = { ...validCompletionRequest };
+    delete request[field];
+    assert.notDeepEqual(validateCompletionRequest(request), [], `missing ${field}`);
+  });
+}
+
+test('rejects a completion that returns a complete main program', () => {
+  assert.notDeepEqual(validateCompletionResult({
+    ...validCompletionResult,
+    suggestion_text: 'int main() { return 0; }'
+  }), []);
+});
+
+test('rejects a completion with an empty suggestion text', () => {
+  assert.notDeepEqual(validateCompletionResult({ ...validCompletionResult, suggestion_text: '' }), []);
 });
 
 test('AI gateway mode values stay identical to the JSON Schema source of truth', async () => {
@@ -141,7 +308,11 @@ test('AI gateway reports disabled AI instead of returning a mock artifact', asyn
   const address = server.address();
   const status = await requestJson(address.port, 'GET', '/status');
   assert.equal(status.statusCode, 200);
-  assert.deepEqual(status.body, { enabled: false, code: 'AI_NOT_ENABLED' });
+  assert.deepEqual(status.body, {
+    enabled: false,
+    code: 'AI_NOT_ENABLED',
+    capabilities: { transform: false, review: false, completion: false }
+  });
 
   const response = await requestJson(address.port, 'POST', '/requests', validRequest);
   assert.equal(response.statusCode, 503);
@@ -245,6 +416,135 @@ test('AI gateway does not expose compilation or execution as an AI endpoint', as
   });
   assert.equal(response.statusCode, 404);
   assert.deepEqual(response.body, { code: 'NOT_FOUND' });
+});
+
+test('AI gateway reports disabled review and completion capabilities', async (t) => {
+  const server = createAIGateway();
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  for (const [path, request] of [['/reviews', validReviewRequest], ['/completions', validCompletionRequest]]) {
+    const response = await requestJson(port, 'POST', path, request);
+    assert.equal(response.statusCode, 503);
+    assert.deepEqual(response.body, { code: 'AI_NOT_ENABLED' });
+  }
+});
+
+test('AI gateway delegates configured review through the AIProvider port', async (t) => {
+  let reviewInput = null;
+  const aiProvider = {
+    async review(input) {
+      reviewInput = input;
+      return validReviewResult;
+    }
+  };
+  const server = createAIGateway({ aiProvider });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/reviews', validReviewRequest);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(reviewInput, { request: validReviewRequest });
+  assert.deepEqual(response.body, validReviewResult);
+});
+
+test('AI gateway delegates configured completion through the AIProvider port', async (t) => {
+  let completionInput = null;
+  const aiProvider = {
+    async complete(input) {
+      completionInput = input;
+      return validCompletionResult;
+    }
+  };
+  const server = createAIGateway({ aiProvider });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/completions', validCompletionRequest);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(completionInput, { request: validCompletionRequest });
+  assert.deepEqual(response.body, validCompletionResult);
+});
+
+test('AI gateway rejects a completion that returns a full main program', async (t) => {
+  const aiProvider = {
+    async complete() {
+      return { ...validCompletionResult, suggestion_text: '#include <iostream>\nint main() { return 0; }' };
+    }
+  };
+  const server = createAIGateway({ aiProvider });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/completions', validCompletionRequest);
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
+});
+
+test('AI gateway rejects a completion whose replaced range is far from the cursor', async (t) => {
+  const aiProvider = {
+    async complete() {
+      return {
+        ...validCompletionResult,
+        replaced_range: { start_line: 400, start_char: 0, end_line: 400, end_char: 1 }
+      };
+    }
+  };
+  const server = createAIGateway({ aiProvider });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/completions', validCompletionRequest);
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
+  assert.ok(response.body.errors.some((error) => error.includes('near the cursor')));
+});
+
+test('AI gateway rejects a review result that drops the problem basis', async (t) => {
+  const aiProvider = {
+    async review() {
+      return {
+        ...validReviewResult,
+        diagnostics: [{ ...validReviewResult.diagnostics[0], basis: undefined }]
+      };
+    }
+  };
+  const server = createAIGateway({ aiProvider });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/reviews', validReviewRequest);
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
+});
+
+test('AI gateway returns a classified timeout when the review provider stalls', async (t) => {
+  const aiProvider = {
+    async review() { return new Promise(() => {}); }
+  };
+  const server = createAIGateway({ aiProvider, providerTimeoutMs: 20 });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/reviews', validReviewRequest);
+  assert.equal(response.statusCode, 504);
+  assert.deepEqual(response.body, { code: 'AI_PROVIDER_TIMEOUT' });
+});
+
+test('AI gateway returns a classified timeout when the completion provider stalls', async (t) => {
+  const aiProvider = {
+    async complete() { return new Promise(() => {}); }
+  };
+  const server = createAIGateway({ aiProvider, providerTimeoutMs: 20 });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/completions', validCompletionRequest);
+  assert.equal(response.statusCode, 504);
+  assert.deepEqual(response.body, { code: 'AI_PROVIDER_TIMEOUT' });
+});
+
+test('AI gateway reports enabled capabilities on the status endpoint', async (t) => {
+  const aiProvider = { async review() { return validReviewResult; } };
+  const server = createAIGateway({ aiProvider });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const status = await requestJson(server.address().port, 'GET', '/status');
+  assert.equal(status.body.enabled, true);
+  assert.deepEqual(status.body.capabilities, { transform: false, review: true, completion: false });
 });
 
 function requestJson(port, method, path, body) {
