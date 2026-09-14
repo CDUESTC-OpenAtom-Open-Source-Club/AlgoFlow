@@ -14,6 +14,7 @@ export class DraftWorkspaceViewModel {
   private aiProvider: AIProvider;
   private aiBaseUrl: string = 'http://127.0.0.1:8788';
   private aiRequestInFlight: boolean = false;
+  private aiRequestGeneration: number = 0;
   private sequence: number = 1;
   private segmentSequence: number = 1;
 
@@ -42,6 +43,10 @@ export class DraftWorkspaceViewModel {
   }
 
   setAIBaseUrl(baseUrl: string): void {
+    this.aiRequestGeneration += 1;
+    if (this.aiProvider instanceof HttpAIProvider) {
+      (this.aiProvider as HttpAIProvider).cancel();
+    }
     this.aiBaseUrl = baseUrl;
     this.aiProvider = new HttpAIProvider(baseUrl);
   }
@@ -55,6 +60,7 @@ export class DraftWorkspaceViewModel {
   }
 
   cancelAI(): void {
+    this.aiRequestGeneration += 1;
     if (this.aiProvider instanceof HttpAIProvider) {
       (this.aiProvider as HttpAIProvider).cancel();
     }
@@ -77,9 +83,13 @@ export class DraftWorkspaceViewModel {
     const request = new AIRequest(mode, draft.id, draft.version, 'cpp', RULE_VERSION,
       problemContext, segments, AIOutputKind.PSEUDOCODE,
       draft.artifactHidden ? AIVisibility.HIDDEN : AIVisibility.VISIBLE);
+    const requestGeneration = ++this.aiRequestGeneration;
     this.aiRequestInFlight = true;
     try {
       const result = await this.aiProvider.generate(request);
+      if (requestGeneration !== this.aiRequestGeneration) {
+        return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
+      }
       if (result.status === AIResultStatus.SUCCESS && result.artifact !== null) {
         this.saveArtifact(id, result.artifact);
       }

@@ -14,7 +14,9 @@ export class HttpAIProvider implements AIProvider {
   private baseUrl: string;
   private maxRetries: number;
   private readTimeoutMs: number;
-  private cancelled: boolean = false;
+  private activeRequest: http.HttpRequest | null = null;
+  private generation: number = 0;
+  private cancelledGeneration: number = -1;
 
   constructor(baseUrl: string = DEFAULT_BASE_URL, maxRetries: number = 2, readTimeoutMs: number = 10000) {
     this.baseUrl = trimBaseUrl(baseUrl);
@@ -23,11 +25,14 @@ export class HttpAIProvider implements AIProvider {
   }
 
   cancel(): void {
-    this.cancelled = true;
+    this.cancelledGeneration = this.generation;
+    const request = this.activeRequest;
+    this.activeRequest = null;
+    if (request !== null) request.destroy();
   }
 
   async generate(request: AIRequest): Promise<AIResult> {
-    this.cancelled = false;
+    const generation = ++this.generation;
     const modeUnavailable = validateModeAvailability(request.mode);
     if (modeUnavailable.length > 0) {
       return AIResult.failure(AIErrorCode.AI_MODE_NOT_AVAILABLE, modeUnavailable);
@@ -38,11 +43,14 @@ export class HttpAIProvider implements AIProvider {
     const body = JSON.stringify(new AIRequestBody(request));
     let lastError: AIErrorCode = AIErrorCode.NETWORK_ERROR;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      if (this.cancelled) {
+      if (this.isCancelled(generation)) {
         return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
       }
       try {
         const result = await this.post(body);
+        if (this.isCancelled(generation)) {
+          return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
+        }
         if (result.statusCode >= 200 && result.statusCode < 300) {
           return this.parseSuccess(result.body, request);
         }
@@ -53,6 +61,9 @@ export class HttpAIProvider implements AIProvider {
             '[AlgoFlow] AI provider transient failure. status=%{public}s attempt=%{public}s',
             result.statusCode.toString(), attempt.toString());
           await sleep(500 * (attempt + 1));
+          if (this.isCancelled(generation)) {
+            return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
+          }
           continue;
         }
         hilog.warn(DOMAIN, TAG,
@@ -60,11 +71,17 @@ export class HttpAIProvider implements AIProvider {
           result.statusCode.toString(), mapped.code);
         return AIResult.failure(mapped.code, mapped.message);
       } catch (error) {
+        if (this.isCancelled(generation)) {
+          return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
+        }
         lastError = AIErrorCode.NETWORK_ERROR;
         hilog.warn(DOMAIN, TAG,
           '[AlgoFlow] AI transport failed. attempt=%{public}s', attempt.toString());
         if (attempt < this.maxRetries) {
           await sleep(500 * (attempt + 1));
+          if (this.isCancelled(generation)) {
+            return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
+          }
           continue;
         }
         return AIResult.failure(AIErrorCode.NETWORK_ERROR, 'AI 服务不可达，请检查网络或稍后重试');
@@ -75,6 +92,7 @@ export class HttpAIProvider implements AIProvider {
 
   private async post(body: string): Promise<HttpResult> {
     const request = http.createHttp();
+    this.activeRequest = request;
     try {
       const response = await request.request(`${this.baseUrl}/requests`, {
         method: http.RequestMethod.POST,
@@ -87,8 +105,13 @@ export class HttpAIProvider implements AIProvider {
       const responseBody = typeof response.result === 'string' ? response.result : JSON.stringify(response.result);
       return new HttpResult(response.responseCode, responseBody);
     } finally {
+      if (this.activeRequest === request) this.activeRequest = null;
       request.destroy();
     }
+  }
+
+  private isCancelled(generation: number): boolean {
+    return this.cancelledGeneration === generation;
   }
 
   private parseSuccess(body: string, request: AIRequest): AIResult {
