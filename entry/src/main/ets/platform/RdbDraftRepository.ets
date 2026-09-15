@@ -4,13 +4,14 @@ import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DraftRepository } from '../domain/DraftRepository';
 import { AIArtifact, AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIArtifactPayload, artifactsToPayloads, payloadsToArtifacts } from '../domain/AIArtifactCodec';
 import { ConflictRecord, DraftPayload, SyncOperation, SyncOperationType, draftToPayload,
   payloadToDraft } from '../domain/SyncModels';
 import { SyncRepository } from '../domain/SyncRepository';
 
 const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8787';
 const STORE_CONFIG: relationalStore.StoreConfig = {
   name: 'algoflow_workspace.db',
@@ -135,7 +136,8 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
           'code TEXT NOT NULL, short_code TEXT NOT NULL, rewrite TEXT NOT NULL, version INTEGER NOT NULL, ' +
           'created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted INTEGER NOT NULL, ' +
           'last_modified_client_id TEXT NOT NULL, sync_status TEXT NOT NULL, ai_mode TEXT NOT NULL, ' +
-          'artifact_hidden INTEGER NOT NULL, idea_segments_json TEXT NOT NULL)');
+          'artifact_hidden INTEGER NOT NULL, ai_artifacts_json TEXT NOT NULL DEFAULT \'\', ' +
+          'idea_segments_json TEXT NOT NULL)');
         await store.executeSql('CREATE TABLE IF NOT EXISTS sync_operations (' +
           'operation_id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, ' +
           'operation_type TEXT NOT NULL, base_version INTEGER NOT NULL, client_id TEXT NOT NULL, ' +
@@ -147,7 +149,18 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
         await store.executeSql('CREATE TABLE IF NOT EXISTS conflicts (' +
           'id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, local_copy_id TEXT NOT NULL, ' +
           'server_entity_json TEXT NOT NULL, created_at TEXT NOT NULL, resolved INTEGER NOT NULL)');
-        store.version = 1;
+        store.version = DATABASE_VERSION;
+        store.commit();
+      } catch (error) {
+        store.rollBack();
+        throw new Error(error instanceof Error ? error.message : 'RDB migration failed');
+      }
+    }
+    if (store.version === 1) {
+      store.beginTransaction();
+      try {
+        await store.executeSql('ALTER TABLE drafts ADD COLUMN ai_artifacts_json TEXT NOT NULL DEFAULT \'\'');
+        store.version = 2;
         store.commit();
       } catch (error) {
         store.rollBack();
@@ -201,6 +214,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
           draft.syncStatus = parseSyncStatus(readString(resultSet, 'sync_status'));
           draft.aiMode = parseAIMode(readString(resultSet, 'ai_mode'));
           draft.artifactHidden = readNumber(resultSet, 'artifact_hidden') === 1;
+          draft.aiArtifacts = parseAIArtifacts(readString(resultSet, 'ai_artifacts_json'));
           draft.ideaSegments = parseIdeaSegments(readString(resultSet, 'idea_segments_json'));
           loaded.push(draft);
         } while (resultSet.goToNextRow());
@@ -294,11 +308,12 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     const store = this.requireStore();
     await store.executeSql('INSERT OR REPLACE INTO drafts (' +
       'id, workspace_id, title, idea, code, short_code, rewrite, version, created_at, updated_at, deleted, ' +
-      'last_modified_client_id, sync_status, ai_mode, artifact_hidden, idea_segments_json) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+      'last_modified_client_id, sync_status, ai_mode, artifact_hidden, ai_artifacts_json, idea_segments_json) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
         draft.id, draft.workspaceId, draft.title, draft.idea, draft.code, draft.shortCode, draft.rewrite,
         draft.version, draft.createdAt, draft.updatedAt, draft.deleted ? 1 : 0, draft.lastModifiedClientId,
-        draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0, JSON.stringify(draft.ideaSegments)
+        draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0,
+        JSON.stringify(artifactsToPayloads(draft.aiArtifacts)), JSON.stringify(draft.ideaSegments)
       ]);
   }
 
@@ -345,6 +360,11 @@ function parseIdeaSegments(value: string): IdeaSegment[] {
   return JSON.parse(value) as IdeaSegment[];
 }
 
+function parseAIArtifacts(value: string): AIArtifact[] {
+  if (value.length === 0) return [];
+  return payloadsToArtifacts(JSON.parse(value) as AIArtifactPayload[]);
+}
+
 function parseSyncStatus(value: string): SyncStatus {
   if (value === SyncStatus.SYNCING) return SyncStatus.SYNCING;
   if (value === SyncStatus.SYNCED) return SyncStatus.SYNCED;
@@ -363,7 +383,6 @@ function parseAIMode(value: string): AIMode {
 function cloneDraft(draft: Draft): Draft {
   const snapshot = payloadToDraft(draftToPayload(draft));
   snapshot.syncStatus = draft.syncStatus;
-  snapshot.aiArtifacts = draft.aiArtifacts.map((artifact: AIArtifact) => artifact.clone());
   return snapshot;
 }
 
