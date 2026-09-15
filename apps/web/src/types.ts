@@ -29,6 +29,24 @@ export interface Draft {
   ai_mode: Mode;
   artifact_hidden: boolean;
   sync_status: SyncStatus;
+  ai_artifacts?: AIArtifactPayload[];
+}
+
+export interface AIArtifactPayload {
+  mode: Mode;
+  pseudocode: { id: string; step: string; source_refs: string[] }[];
+  code_snippet: string | null;
+  code_mappings: { step_id: string; start_line: number; end_line: number }[];
+  assumptions: string[];
+  missing_information: string[];
+  risk_flags: string[];
+  added_algorithm_steps: string[];
+  source_draft_version: number;
+  model_id: string;
+  rule_version: string;
+  output_kind: 'pseudocode' | 'code_snippet';
+  visibility: 'visible' | 'hidden';
+  template_id: string | null;
 }
 
 export interface SyncOperation {

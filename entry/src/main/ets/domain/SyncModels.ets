@@ -1,4 +1,5 @@
 import { AIMode, Draft, IdeaSegment, SyncStatus } from './Models';
+import { AIArtifactPayload, artifactsToPayloads, payloadsToArtifacts } from './AIArtifactCodec';
 
 export enum SyncEntityType {
   DRAFT = 'draft',
@@ -42,6 +43,7 @@ export class DraftPayload {
   artifact_hidden: boolean = false;
   sync_status: string = SyncStatus.SYNCED;
   idea_segments: IdeaSegment[] = [];
+  ai_artifacts: AIArtifactPayload[] = [];
 }
 
 export class SyncOperation {
@@ -101,6 +103,7 @@ export function draftToPayload(draft: Draft): DraftPayload {
   payload.artifact_hidden = draft.artifactHidden;
   payload.sync_status = SyncStatus.SYNCED;
   payload.idea_segments = draft.ideaSegments;
+  payload.ai_artifacts = artifactsToPayloads(draft.aiArtifacts);
   return payload;
 }
 
@@ -120,6 +123,7 @@ export function payloadToDraft(payload: DraftPayload): Draft {
   draft.artifactHidden = payload.artifact_hidden === true;
   draft.syncStatus = SyncStatus.SYNCED;
   draft.ideaSegments = payload.idea_segments ?? [];
+  draft.aiArtifacts = payloadsToArtifacts(payload.ai_artifacts ?? []);
   return draft;
 }
 
