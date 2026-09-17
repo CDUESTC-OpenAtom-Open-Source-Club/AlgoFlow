@@ -14,25 +14,13 @@ export const DIAGNOSTIC_LEVELS = new Set(schemas.domain.$defs.diagnosticLevel.en
 
 export function validateAIRequest(request) {
   const errors = validateSchema(request, schemas.ai.$defs.request, 'request');
-  if (Array.isArray(request?.idea_segments)) {
-    const ids = new Set();
-    request.idea_segments.forEach((segment, index) => {
-      if (ids.has(segment?.id)) errors.push(`idea_segments[${index}].id must be unique`);
-      ids.add(segment?.id);
-    });
-  }
+  errors.push(...validateIdeaSegmentIds(request?.idea_segments));
   return errors;
 }
 
 export function validateReviewRequest(request) {
   const errors = validateSchema(request, schemas.ai.$defs.reviewRequest, 'reviewRequest');
-  if (Array.isArray(request?.idea_segments)) {
-    const ids = new Set();
-    request.idea_segments.forEach((segment, index) => {
-      if (ids.has(segment?.id)) errors.push(`idea_segments[${index}].id must be unique`);
-      ids.add(segment?.id);
-    });
-  }
+  errors.push(...validateIdeaSegmentIds(request?.idea_segments));
   return errors;
 }
 
@@ -54,13 +42,7 @@ export function validateReviewResult(result) {
 
 export function validateCompletionRequest(request) {
   const errors = validateSchema(request, schemas.ai.$defs.completionRequest, 'completionRequest');
-  if (Array.isArray(request?.idea_segments)) {
-    const ids = new Set();
-    request.idea_segments.forEach((segment, index) => {
-      if (ids.has(segment?.id)) errors.push(`idea_segments[${index}].id must be unique`);
-      ids.add(segment?.id);
-    });
-  }
+  errors.push(...validateIdeaSegmentIds(request?.idea_segments));
   return errors;
 }
 
@@ -85,6 +67,17 @@ export function validateAIArtifact(artifact) {
   }
   if (Array.isArray(artifact?.code_mappings)) artifact.code_mappings.forEach((mapping, index) => {
     if (Number.isInteger(mapping?.start_line) && Number.isInteger(mapping?.end_line) && mapping.end_line < mapping.start_line) errors.push(`code_mappings[${index}].end_line must not precede start_line`);
+  });
+  return errors;
+}
+
+function validateIdeaSegmentIds(segments) {
+  if (!Array.isArray(segments)) return [];
+  const errors = [];
+  const ids = new Set();
+  segments.forEach((segment, index) => {
+    if (ids.has(segment?.id)) errors.push(`idea_segments[${index}].id must be unique`);
+    ids.add(segment?.id);
   });
   return errors;
 }

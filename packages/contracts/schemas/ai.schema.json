@@ -193,7 +193,7 @@
     },
     "completionResult": {
       "type": "object",
-      "required": ["mode", "draft_id", "source_draft_version", "model_id", "rule_version", "replaced_range", "suggestion_text", "visibility"],
+      "required": ["mode", "draft_id", "source_draft_version", "model_id", "rule_version", "replaced_range", "suggestion_text", "source_refs", "visibility"],
       "properties": {
         "mode": { "$ref": "domain.schema.json#/$defs/aiMode" },
         "draft_id": { "type": "string", "minLength": 1 },
@@ -206,6 +206,11 @@
           "minLength": 1,
           "maxLength": 2000,
           "pattern": "^(?![\\s\\S]*\\b(?:int|signed|auto|void)\\s+main\\s*\\()[\\s\\S]*$"
+        },
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
         },
         "visibility": { "$ref": "domain.schema.json#/$defs/aiVisibility" }
       },

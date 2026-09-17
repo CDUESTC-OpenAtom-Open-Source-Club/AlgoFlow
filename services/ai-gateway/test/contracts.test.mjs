@@ -264,6 +264,12 @@ test('rejects a completion with an empty suggestion text', () => {
   assert.notDeepEqual(validateCompletionResult({ ...validCompletionResult, suggestion_text: '' }), []);
 });
 
+test('rejects a completion result without source references', () => {
+  const result = { ...validCompletionResult };
+  delete result.source_refs;
+  assert.notDeepEqual(validateCompletionResult(result), []);
+});
+
 test('AI gateway mode values stay identical to the JSON Schema source of truth', async () => {
   const source = new URL('../../../packages/contracts/schemas/domain.schema.json', import.meta.url);
   const schema = JSON.parse(await readFile(source, 'utf8'));
@@ -662,6 +668,21 @@ test('AI gateway rejects a completion whose replaced range is far from the curso
   assert.equal(response.statusCode, 422);
   assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
   assert.ok(response.body.errors.some((error) => error.includes('near the cursor')));
+});
+
+test('AI gateway rejects a completion that cites ideas absent from the request', async (t) => {
+  const aiProvider = {
+    async complete() {
+      return { ...validCompletionResult, source_refs: ['idea_segment_not_requested'] };
+    }
+  };
+  const server = createAIGateway({ aiProvider });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/completions', validCompletionRequest);
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
+  assert.ok(response.body.errors.some((error) => error.includes('unknown source_ref')));
 });
 
 test('AI gateway rejects a review result that drops the problem basis', async (t) => {

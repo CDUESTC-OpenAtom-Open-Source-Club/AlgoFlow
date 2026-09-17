@@ -19,7 +19,7 @@
       }
     },
     {
-      "name": "completion request with prompt injection in idea segment",
+      "name": "completion request containing injection-like text remains structurally valid",
       "valid": true,
       "request": {
         "mode": "faithful_transform",
@@ -66,6 +66,7 @@
         "rule_version": "1.0.0",
         "replaced_range": { "start_line": 3, "start_char": 2, "end_line": 3, "end_char": 2 },
         "suggestion_text": "int last = -1;\n  for (auto& interval : intervals) {\n    if (interval.start >= last) { pick(interval); last = interval.end; }\n  }",
+        "source_refs": ["idea_segment_1"],
         "visibility": "visible"
       }
     },
@@ -80,6 +81,7 @@
         "rule_version": "1.0.0",
         "replaced_range": { "start_line": 1, "start_char": 0, "end_line": 1, "end_char": 0 },
         "suggestion_text": "#include <iostream>\nint main() { std::cout << 0; return 0; }",
+        "source_refs": ["idea_segment_1"],
         "visibility": "visible"
       }
     },
@@ -94,6 +96,7 @@
         "rule_version": "1.0.0",
         "replaced_range": { "start_line": 3, "start_char": 2, "end_line": 3, "end_char": 2 },
         "suggestion_text": "",
+        "source_refs": ["idea_segment_1"],
         "visibility": "visible"
       }
     },
@@ -108,6 +111,7 @@
         "rule_version": "1.0.0",
         "replaced_range": { "start_line": 5, "start_char": 0, "end_line": 2, "end_char": 0 },
         "suggestion_text": "int last = -1;",
+        "source_refs": ["idea_segment_1"],
         "visibility": "visible"
       }
     },
@@ -121,6 +125,52 @@
         "rule_version": "1.0.0",
         "replaced_range": { "start_line": 3, "start_char": 2, "end_line": 3, "end_char": 2 },
         "suggestion_text": "int last = -1;",
+        "source_refs": ["idea_segment_1"],
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "completion missing source references",
+      "valid": false,
+      "result": {
+        "mode": "faithful_transform",
+        "draft_id": "draft-1",
+        "source_draft_version": 3,
+        "model_id": "provider-disabled",
+        "rule_version": "1.0.0",
+        "replaced_range": { "start_line": 3, "start_char": 2, "end_line": 3, "end_char": 2 },
+        "suggestion_text": "int last = -1;",
+        "visibility": "visible"
+      }
+    }
+  ],
+  "against_request": [
+    {
+      "name": "completion range must stay inside request code",
+      "valid": false,
+      "request": {
+        "mode": "faithful_transform",
+        "draft_id": "draft-1",
+        "draft_version": 3,
+        "language": "cpp",
+        "rule_version": "1.0.0",
+        "problem_context": "Given intervals, choose a non-overlapping subset.",
+        "idea_segments": [
+          { "id": "idea_segment_1", "content": "Sort intervals by right endpoint." }
+        ],
+        "code": "void choose() {\n}\n",
+        "cursor": { "line": 2, "char": 0 },
+        "visibility": "visible"
+      },
+      "result": {
+        "mode": "faithful_transform",
+        "draft_id": "draft-1",
+        "source_draft_version": 3,
+        "model_id": "provider-disabled",
+        "rule_version": "1.0.0",
+        "replaced_range": { "start_line": 8, "start_char": 0, "end_line": 8, "end_char": 0 },
+        "suggestion_text": "return;",
+        "source_refs": ["idea_segment_1"],
         "visibility": "visible"
       }
     }

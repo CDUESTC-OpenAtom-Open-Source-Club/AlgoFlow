@@ -38,7 +38,7 @@
       }
     },
     {
-      "name": "review request with prompt injection in code",
+      "name": "review request containing injection-like text remains structurally valid",
       "valid": true,
       "request": {
         "mode": "faithful_transform",
@@ -239,6 +239,45 @@
             "problem": "Unknown level.",
             "basis": "Unknown level.",
             "suggestion": "Use a valid level."
+          }
+        ],
+        "visibility": "visible"
+      }
+    }
+  ],
+  "against_request": [
+    {
+      "name": "review range must stay inside request code",
+      "valid": false,
+      "request": {
+        "mode": "faithful_transform",
+        "draft_id": "draft-1",
+        "draft_version": 3,
+        "language": "cpp",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "problem_context": "Given intervals, choose a non-overlapping subset.",
+        "idea_segments": [
+          { "id": "idea_segment_1", "content": "Sort intervals by right endpoint." }
+        ],
+        "code": "void choose() {\n}\n",
+        "visibility": "visible"
+      },
+      "result": {
+        "mode": "faithful_transform",
+        "draft_id": "draft-1",
+        "source_draft_version": 3,
+        "model_id": "provider-disabled",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "diagnostics": [
+          {
+            "id": "diag_out_of_bounds",
+            "level": "error",
+            "range": { "start_line": 8, "start_char": 0, "end_line": 8, "end_char": 0 },
+            "problem": "Out-of-bounds range.",
+            "basis": "The range does not exist in the submitted code.",
+            "suggestion": "Return a range inside the submitted code."
           }
         ],
         "visibility": "visible"
