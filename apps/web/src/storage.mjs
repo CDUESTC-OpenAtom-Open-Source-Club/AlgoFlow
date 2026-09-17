@@ -45,7 +45,7 @@ export function newDraft(clientId) {
     id, workspace_id: 'workspace-local', version: 0, created_at: now, updated_at: now,
     deleted: false, last_modified_client_id: clientId, title: '未命名思路', language: 'cpp',
     idea: '', code: '', rewrite: '', ai_mode: 'faithful_transform', artifact_hidden: false,
-    sync_status: 'local_only'
+    sync_status: 'local_only', ai_artifacts: []
   };
 }
 

@@ -256,6 +256,50 @@ test('a Web edit updates the same starter draft for the phone pull path', async 
   assert.equal(phoneChanges.next_cursor, '2');
 });
 
+test('preserves ai_artifacts across a draft push and pull', () => {
+  const store = new SyncStore();
+  const artifact = {
+    mode: 'faithful_transform',
+    pseudocode: [{ id: 'step_1', step: 'Sort by right endpoint', source_refs: ['idea_segment_1'] }],
+    code_snippet: null,
+    code_mappings: [],
+    assumptions: [],
+    missing_information: ['Equal endpoints are not specified'],
+    risk_flags: [],
+    added_algorithm_steps: [],
+    source_draft_version: 1,
+    model_id: 'provider-disabled',
+    rule_version: '1.0.0',
+    output_kind: 'pseudocode',
+    visibility: 'visible',
+    template_id: null
+  };
+  const draftWithArtifact = { ...makeDraft('draft-artifact', 'code', 'phone-local'), ai_artifacts: [artifact] };
+  const result = store.apply({
+    operation_id: 'op-artifact-1', entity_type: 'draft', entity_id: 'draft-artifact', operation_type: 'upsert',
+    base_version: 0, client_id: 'phone-local', occurred_at: '2026-09-15T00:00:00.000Z', payload: draftWithArtifact
+  });
+  assert.equal(result.status, 'applied');
+
+  const changes = store.pull('0').changes;
+  assert.equal(changes.length, 1);
+  assert.deepEqual(changes[0].entity.ai_artifacts, [artifact]);
+  assert.equal(changes[0].entity.ai_artifacts[0].mode, 'faithful_transform');
+  assert.equal(changes[0].entity.ai_artifacts[0].source_draft_version, 1);
+  assert.equal(changes[0].entity.ai_artifacts[0].pseudocode[0].source_refs[0], 'idea_segment_1');
+});
+
+test('ai_artifacts stay empty when the draft payload omits them', () => {
+  const store = new SyncStore();
+  const draft = makeDraft('draft-no-artifact', 'code', 'phone-local');
+  const result = store.apply({
+    operation_id: 'op-no-artifact', entity_type: 'draft', entity_id: 'draft-no-artifact', operation_type: 'upsert',
+    base_version: 0, client_id: 'phone-local', occurred_at: '2026-09-15T00:00:01.000Z', payload: draft
+  });
+  assert.equal(result.status, 'applied');
+  assert.equal(store.pull('0').changes[0].entity.ai_artifacts, undefined);
+});
+
 function makeDraft(id, code, clientId) {
   return {
     id,
