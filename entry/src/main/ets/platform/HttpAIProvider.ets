@@ -1,4 +1,5 @@
 import http from '@ohos.net.http';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AIProvider } from '../domain/AIProvider';
 import { AIArtifact, AIErrorCode, AIOutputKind, AIMode, AIRequest, AIRequestSegment, AIResult,
@@ -9,6 +10,9 @@ const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8788';
 const RULE_VERSION = '1.0.0';
+// @ohos.net.http maps transport failures to `2300000 + curl error code`.
+// 2300028 = CURLE_OPERATION_TIMEDOUT（操作超时）。
+const HTTP_ERROR_OPERATION_TIMEOUT = '2300028';
 
 export class HttpAIProvider implements AIProvider {
   private baseUrl: string;
@@ -74,9 +78,16 @@ export class HttpAIProvider implements AIProvider {
         if (this.isCancelled(generation)) {
           return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
         }
-        lastError = AIErrorCode.NETWORK_ERROR;
+        const transport = readTransportError(error as BusinessError);
+        const isTimeout = isTimeoutError(transport.code);
+        lastError = isTimeout ? AIErrorCode.AI_PROVIDER_TIMEOUT : AIErrorCode.NETWORK_ERROR;
         hilog.warn(DOMAIN, TAG,
-          '[AlgoFlow] AI transport failed. attempt=%{public}s', attempt.toString());
+          '[AlgoFlow] AI transport failed. attempt=%{public}s error_code=%{public}s category=%{public}s cause=%{public}s',
+          attempt.toString(), transport.code, isTimeout ? 'timeout' : 'network', transport.message);
+        if (isTimeout) {
+          // 读超时大概率是 provider 响应慢而非网络抖动，不重试，直接按超时返回。
+          return AIResult.failure(AIErrorCode.AI_PROVIDER_TIMEOUT, 'AI 请求超时');
+        }
         if (attempt < this.maxRetries) {
           await sleep(500 * (attempt + 1));
           if (this.isCancelled(generation)) {
@@ -312,4 +323,27 @@ function safeLogValue(value: string): string {
 function safeErrorCode(value: string): string {
   const sanitized = value.toUpperCase().replace(/[^A-Z0-9_]/g, '_').substring(0, 64);
   return sanitized.length > 0 ? sanitized : 'UNKNOWN';
+}
+
+class TransportErrorInfo {
+  code: string;
+  message: string;
+
+  constructor(code: string, message: string) {
+    this.code = code;
+    this.message = message;
+  }
+}
+
+function readTransportError(error: BusinessError): TransportErrorInfo {
+  const code = typeof error.code === 'number' ? error.code.toString() : 'UNKNOWN';
+  const message = typeof error.message === 'string' ? safeLogValue(error.message) : 'unknown';
+  return new TransportErrorInfo(safeErrorCode(code), message);
+}
+
+// 待预研：@ohos.net.http 的 2300028 同时覆盖 connectTimeout 与 readTimeout，
+// 当前 API 20 未提供区分两者的独立错误码；本地场景下连接被拒绝走 2300007，
+// 故 2300028 主要对应读超时。若后续 SDK 提供更细粒度错误码，再细化此分支。
+function isTimeoutError(code: string): boolean {
+  return code === HTTP_ERROR_OPERATION_TIMEOUT;
 }
