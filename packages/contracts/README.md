@@ -37,15 +37,21 @@ matching, or base diagnostics.
   edit near the cursor. The result records the original `replaced_range`, the
   `suggestion_text`, the supporting `source_refs`, and the `model_id` /
   `rule_version` provenance. Every source reference must identify an
-  `idea_segments[].id` from the same request. Completions are bounded to a short
-  fragment and must never contain a `main` entry point, a complete submission
-  program, or an algorithm step unsupported by those referenced segments.
+  `idea_segments[].id` from the same request. The replacement range must contain
+  the cursor (including either endpoint and zero-width insertion), stay within
+  three lines above and below its line (at most seven original code lines), and
+  never cover the entire file, even for short files. The gateway checks these
+  request-relative constraints; `suggestion_text` is limited to 500 characters by
+  the shared schema. Completions must never contain a `main` entry point, a complete
+  submission program, or an algorithm step unsupported by those referenced segments.
 
 Both capabilities reuse `mode`, `draft_id`, `draft_version`, `rule_version`, and
 `visibility` semantics, and classify provider failures with the same error codes:
-`AI_NOT_ENABLED` (no provider), `AI_PROVIDER_ERROR` (provider exception),
-`AI_PROVIDER_TIMEOUT` (provider stalled), and `INVALID_AI_ARTIFACT` (result does
-not satisfy the contract). Results are delivered as separate structures so a
+`AI_NOT_ENABLED` (no provider), `502 AI_PROVIDER_ERROR` (provider call exception,
+timeout, or network failure), and `422 INVALID_AI_ARTIFACT` (returned result does
+not satisfy the contract). Structural validation precedes request-relative range
+and source checks so malformed fields cannot become provider-call errors. This
+classification also applies to `/requests`. Results are delivered separately so a
 client can hide, accept, or reject them without mutating the user's source.
 
 ### Mode semantics for IDE capabilities
@@ -85,7 +91,7 @@ prompt-injection resistance or safe provider behavior. Provider-level injection
 handling requires separate adversarial evaluation after a real model is
 configured.
 
-`AI_PROVIDER_TIMEOUT` limits how long the gateway waits for a provider response.
-It does not cancel the underlying provider promise, which may continue running
+The provider timeout limits how long the gateway waits for a response and returns
+`502 AI_PROVIDER_ERROR`. It does not cancel the underlying promise, which may continue running
 after the HTTP response has timed out. Future HTTP provider adapters should
 accept an `AbortSignal` and propagate cancellation to the outbound request.

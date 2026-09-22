@@ -38,14 +38,20 @@ export function createAIGateway({
       if (errors.length) { writeJson(response, 400, { code: 'INVALID_REQUEST', errors }); return; }
       if (!enabledModeSet.has(body.mode)) { writeJson(response, 409, { code: 'AI_MODE_NOT_AVAILABLE', mode: body.mode }); return; }
       if (!hasGenerate) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
+      let artifact;
       try {
-        const artifact = await withTimeout(aiProvider.generate({ request: body, templates }), timeoutMs);
+        artifact = await withTimeout(aiProvider.generate({ request: body, templates }), timeoutMs);
+      } catch {
+        writeProviderError(response);
+        return;
+      }
+      try {
         const artifactErrors = validateAIArtifact(artifact);
-        artifactErrors.push(...validateArtifactAgainstRequest(artifact, body, templates));
+        if (!artifactErrors.length) artifactErrors.push(...validateArtifactAgainstRequest(artifact, body, templates));
         if (artifactErrors.length) { writeJson(response, 422, { code: 'INVALID_AI_ARTIFACT', errors: artifactErrors }); return; }
         writeJson(response, 200, artifact);
-      } catch (error) {
-        writeProviderError(response, error);
+      } catch {
+        writeInvalidArtifactError(response);
       }
       return;
     }
@@ -55,14 +61,20 @@ export function createAIGateway({
       if (errors.length) { writeJson(response, 400, { code: 'INVALID_REQUEST', errors }); return; }
       if (!enabledModeSet.has(body.mode)) { writeJson(response, 409, { code: 'AI_MODE_NOT_AVAILABLE', mode: body.mode }); return; }
       if (!hasReview) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
+      let result;
       try {
-        const result = await withTimeout(aiProvider.review({ request: body }), timeoutMs);
+        result = await withTimeout(aiProvider.review({ request: body }), timeoutMs);
+      } catch {
+        writeProviderError(response);
+        return;
+      }
+      try {
         const resultErrors = validateReviewResult(result);
-        resultErrors.push(...validateReviewAgainstRequest(result, body));
+        if (!resultErrors.length) resultErrors.push(...validateReviewAgainstRequest(result, body));
         if (resultErrors.length) { writeJson(response, 422, { code: 'INVALID_AI_ARTIFACT', errors: resultErrors }); return; }
         writeJson(response, 200, result);
-      } catch (error) {
-        writeProviderError(response, error);
+      } catch {
+        writeInvalidArtifactError(response);
       }
       return;
     }
@@ -72,14 +84,20 @@ export function createAIGateway({
       if (errors.length) { writeJson(response, 400, { code: 'INVALID_REQUEST', errors }); return; }
       if (!enabledModeSet.has(body.mode)) { writeJson(response, 409, { code: 'AI_MODE_NOT_AVAILABLE', mode: body.mode }); return; }
       if (!hasComplete) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
+      let result;
       try {
-        const result = await withTimeout(aiProvider.complete({ request: body }), timeoutMs);
+        result = await withTimeout(aiProvider.complete({ request: body }), timeoutMs);
+      } catch {
+        writeProviderError(response);
+        return;
+      }
+      try {
         const resultErrors = validateCompletionResult(result);
-        resultErrors.push(...validateCompletionAgainstRequest(result, body));
+        if (!resultErrors.length) resultErrors.push(...validateCompletionAgainstRequest(result, body));
         if (resultErrors.length) { writeJson(response, 422, { code: 'INVALID_AI_ARTIFACT', errors: resultErrors }); return; }
         writeJson(response, 200, result);
-      } catch (error) {
-        writeProviderError(response, error);
+      } catch {
+        writeInvalidArtifactError(response);
       }
       return;
     }
@@ -139,11 +157,21 @@ function validateCompletionAgainstRequest(result, request) {
   const range = result.replaced_range;
   const cursor = request.cursor;
   errors.push(...validateRangeWithinCode(range, request.code, 'replaced_range'));
-  if (range && cursor) {
-    const windowLines = 5;
-    if (cursor.line < range.start_line - windowLines || cursor.line > range.end_line + windowLines) {
-      errors.push('replaced_range must stay near the cursor');
-    }
+  // Cursor containment includes both endpoints, allowing insertion at the cursor.
+  const startsAfterCursor = range.start_line > cursor.line ||
+    (range.start_line === cursor.line && range.start_char > cursor.char);
+  const endsBeforeCursor = range.end_line < cursor.line ||
+    (range.end_line === cursor.line && range.end_char < cursor.char);
+  if (startsAfterCursor || endsBeforeCursor) {
+    errors.push('replaced_range must contain the cursor');
+  }
+  if (range.start_line < cursor.line - 3 || range.end_line > cursor.line + 3) {
+    errors.push('replaced_range must stay within three lines of the cursor (at most seven lines)');
+  }
+  const lines = request.code.split(/\r?\n/);
+  if (range.start_line === 1 && range.start_char === 0 &&
+      range.end_line === lines.length && range.end_char === lines[lines.length - 1].length) {
+    errors.push('replaced_range must not replace the entire file');
   }
   return errors;
 }
@@ -173,19 +201,22 @@ function withTimeout(promise, timeoutMs) {
       error.code = 'AI_PROVIDER_TIMEOUT';
       reject(error);
     }, timeoutMs);
-    promise.then(
+    Promise.resolve(promise).then(
       (value) => { clearTimeout(timer); resolve(value); },
       (error) => { clearTimeout(timer); reject(error); }
     );
   });
 }
 
-function writeProviderError(response, error) {
-  if (error && error.code === 'AI_PROVIDER_TIMEOUT') {
-    writeJson(response, 504, { code: 'AI_PROVIDER_TIMEOUT' });
-    return;
-  }
+function writeProviderError(response) {
   writeJson(response, 502, { code: 'AI_PROVIDER_ERROR' });
+}
+
+function writeInvalidArtifactError(response) {
+  writeJson(response, 422, {
+    code: 'INVALID_AI_ARTIFACT',
+    errors: ['Provider result could not be validated']
+  });
 }
 
 async function readJson(request) {

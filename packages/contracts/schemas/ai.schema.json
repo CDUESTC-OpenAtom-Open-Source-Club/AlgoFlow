@@ -200,12 +200,15 @@
         "source_draft_version": { "type": "integer", "minimum": 0 },
         "model_id": { "type": "string", "minLength": 1 },
         "rule_version": { "type": "string", "minLength": 1 },
-        "replaced_range": { "$ref": "#/$defs/sourceRange" },
+        "replaced_range": {
+          "$ref": "#/$defs/sourceRange",
+          "description": "Must contain the request cursor (endpoints included), remain within cursor.line +/- 3 (at most 7 original code lines), and never replace the entire file. These request-relative constraints are enforced by the gateway."
+        },
         "suggestion_text": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 2000,
-          "pattern": "^(?![\\s\\S]*\\b(?:int|signed|auto|void)\\s+main\\s*\\()[\\s\\S]*$"
+          "maxLength": 500,
+          "pattern": "^(?![\\s\\S]*\\bmain(?:\\s|\\)|/\\*[\\s\\S]*?\\*/|//[^\\r\\n]*(?:\\r?\\n|$))*\\()[\\s\\S]*$"
         },
         "source_refs": {
           "type": "array",

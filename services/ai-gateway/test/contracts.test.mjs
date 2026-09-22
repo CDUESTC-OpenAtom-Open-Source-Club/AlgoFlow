@@ -455,7 +455,7 @@ test('AI gateway maps provider exceptions to AI_PROVIDER_ERROR', async (t) => {
   assert.deepEqual(response.body, { code: 'AI_PROVIDER_ERROR' });
 });
 
-test('AI gateway returns AI_PROVIDER_TIMEOUT when generation exceeds the budget', async (t) => {
+test('AI gateway returns AI_PROVIDER_ERROR when generation exceeds the budget', async (t) => {
   const server = createAIGateway({
     aiProvider: { async generate() { await new Promise((resolve) => setTimeout(resolve, 500)); return validArtifact; } },
     timeoutMs: 20
@@ -463,8 +463,8 @@ test('AI gateway returns AI_PROVIDER_TIMEOUT when generation exceeds the budget'
   t.after(() => server.close());
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const response = await requestJson(server.address().port, 'POST', '/requests', validRequest);
-  assert.equal(response.statusCode, 504);
-  assert.deepEqual(response.body, { code: 'AI_PROVIDER_TIMEOUT' });
+  assert.equal(response.statusCode, 502);
+  assert.deepEqual(response.body, { code: 'AI_PROVIDER_ERROR' });
 });
 
 test('AI gateway rejects provider output that cites ideas absent from the user draft', async (t) => {
@@ -667,8 +667,193 @@ test('AI gateway rejects a completion whose replaced range is far from the curso
   const response = await requestJson(server.address().port, 'POST', '/completions', validCompletionRequest);
   assert.equal(response.statusCode, 422);
   assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
-  assert.ok(response.body.errors.some((error) => error.includes('near the cursor')));
+  assert.ok(response.body.errors.some((error) => error.includes('within three lines of the cursor')));
 });
+
+const completionBoundaryCases = [
+  { name: 'insertion at the cursor', start: [5, 4], end: [5, 4] },
+  { name: 'cursor at the range start', start: [5, 4], end: [5, 8] },
+  { name: 'cursor at the range end', start: [5, 0], end: [5, 4] },
+  { name: 'cursor inside the character range', start: [5, 0], end: [5, 8] },
+  { name: 'exact seven-line window', start: [2, 0], end: [8, 8] },
+  { name: 'window clipped by the first line', cursor: { line: 1, char: 4 }, start: [1, 4], end: [4, 8] },
+  { name: 'window clipped by the last line', cursor: { line: 9, char: 4 }, start: [6, 0], end: [9, 4] },
+  { name: 'same-line range before the cursor', start: [5, 0], end: [5, 3], error: 'contain the cursor' },
+  { name: 'same-line range after the cursor', start: [5, 5], end: [5, 8], error: 'contain the cursor' },
+  { name: 'nearby range on the preceding line', start: [4, 0], end: [4, 8], error: 'contain the cursor' },
+  { name: 'nearby range on the following line', start: [6, 0], end: [6, 8], error: 'contain the cursor' },
+  { name: 'multiline range starting after the cursor character', start: [5, 5], end: [6, 8], error: 'contain the cursor' },
+  { name: 'multiline range ending before the cursor character', start: [4, 0], end: [5, 3], error: 'contain the cursor' },
+  { name: 'seven lines extending four lines above', start: [1, 0], end: [7, 8], error: 'within three lines' },
+  { name: 'seven lines extending four lines below', start: [3, 0], end: [9, 8], error: 'within three lines' },
+  { name: 'eight-line replacement', start: [1, 0], end: [8, 8], error: 'within three lines' },
+  { name: 'range beyond the source lines', start: [5, 0], end: [10, 0], error: 'exceeds request code' },
+  { name: 'range beyond the source characters', start: [5, 0], end: [5, 100], error: 'exceeds request code line' },
+  { name: 'inverted line range', start: [6, 0], end: [4, 8], error: 'must not precede' },
+  { name: 'inverted character range', start: [5, 8], end: [5, 0], error: 'must not precede' },
+  {
+    name: 'entire single-line file', code: 'work();', cursor: { line: 1, char: 3 },
+    start: [1, 0], end: [1, 7], error: 'entire file'
+  },
+  {
+    name: 'entire short multiline file', code: 'a();\nb();\nc();', cursor: { line: 2, char: 2 },
+    start: [1, 0], end: [3, 4], error: 'entire file'
+  },
+  {
+    name: 'entire file with trailing newline', code: 'a();\nb();\n', cursor: { line: 2, char: 2 },
+    start: [1, 0], end: [3, 0], error: 'entire file'
+  },
+  {
+    name: 'entire CRLF file', code: 'a();\r\nb();\r\n', cursor: { line: 2, char: 2 },
+    start: [1, 0], end: [3, 0], error: 'entire file'
+  },
+  {
+    name: 'CRLF local edit at end of line', code: 'a();\r\nb();\r\n', cursor: { line: 2, char: 4 },
+    start: [2, 0], end: [2, 4]
+  },
+  { name: 'exactly 500 suggestion characters', start: [5, 4], end: [5, 4], suggestion: '// ' + 'x'.repeat(497) },
+  { name: '501 suggestion characters', start: [5, 4], end: [5, 4], suggestion: '// ' + 'x'.repeat(498), error: 'too long' }
+];
+
+for (const boundary of completionBoundaryCases) {
+  test(`AI gateway completion boundary: ${boundary.name}`, async (t) => {
+    const request = {
+      ...validCompletionRequest,
+      code: boundary.code ?? Array(9).fill('  work();').join('\n'),
+      cursor: boundary.cursor ?? { line: 5, char: 4 }
+    };
+    const result = {
+      ...validCompletionResult,
+      replaced_range: {
+        start_line: boundary.start[0], start_char: boundary.start[1],
+        end_line: boundary.end[0], end_char: boundary.end[1]
+      },
+      suggestion_text: boundary.suggestion ?? 'sort(intervals.begin(), intervals.end(), byRight);'
+    };
+    const server = createAIGateway({ aiProvider: { async complete() { return result; } } });
+    t.after(() => server.close());
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const response = await requestJson(server.address().port, 'POST', '/completions', request);
+    assert.equal(response.statusCode, boundary.error ? 422 : 200);
+    if (boundary.error) {
+      assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
+      assert.ok(response.body.errors.some((error) => error.includes(boundary.error)), JSON.stringify(response.body));
+    } else {
+      assert.deepEqual(response.body, result);
+    }
+  });
+}
+
+for (const suggestion of [
+  'signed main() { return 0; }',
+  'auto main() -> int { return 0; }',
+  'int/**/main() { return 0; }',
+  'int (main)() { return 0; }',
+  'int main/**/() { return 0; }',
+  'int main// entry point\n() { return 0; }'
+]) {
+  test(`AI gateway rejects a completion containing ${JSON.stringify(suggestion)}`, async (t) => {
+    const result = { ...validCompletionResult, suggestion_text: suggestion };
+    assert.notDeepEqual(validateCompletionResult(result), []);
+    const server = createAIGateway({ aiProvider: { async complete() { return result; } } });
+    t.after(() => server.close());
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const response = await requestJson(server.address().port, 'POST', '/completions', validCompletionRequest);
+    assert.equal(response.statusCode, 422);
+    assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
+  });
+}
+
+const providerEndpoints = [
+  {
+    path: '/requests', method: 'generate', request: validRequest, result: validArtifact,
+    validate: validateAIArtifact,
+    malformedFields: [
+      { pseudocode: {} }, { pseudocode: [null] },
+      { pseudocode: [{ ...validArtifact.pseudocode[0], source_refs: {} }] },
+      { code_mappings: {} }, { code_mappings: [null] },
+      { model_id: 42 }
+    ]
+  },
+  {
+    path: '/reviews', method: 'review', request: validReviewRequest, result: validReviewResult,
+    validate: validateReviewResult,
+    malformedFields: [
+      { diagnostics: {} }, { diagnostics: 'invalid' }, { diagnostics: [null] },
+      { diagnostics: [{ ...validReviewResult.diagnostics[0], range: { start_line: { toString: null }, end_line: 3 } }] },
+      { diagnostics: [{ ...validReviewResult.diagnostics[0], range: { ...validReviewResult.diagnostics[0].range, start_line: '3' } }] },
+      { model_id: 42 }
+    ]
+  },
+  {
+    path: '/completions', method: 'complete', request: validCompletionRequest, result: validCompletionResult,
+    validate: validateCompletionResult,
+    malformedFields: [
+      { source_refs: {} }, { source_refs: [null] }, { replaced_range: null },
+      { replaced_range: { start_line: { toString: null }, end_line: 3 } },
+      { replaced_range: { ...validCompletionResult.replaced_range, start_char: '2' } },
+      { suggestion_text: {} }, { model_id: 42 }
+    ]
+  }
+];
+
+for (const endpoint of providerEndpoints) {
+  test(`AI gateway classifies malformed JSON from ${endpoint.method} as INVALID_AI_ARTIFACT`, async (t) => {
+    let providerResult;
+    const server = createAIGateway({ aiProvider: { async [endpoint.method]() { return providerResult; } } });
+    t.after(() => server.close());
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const malformedResults = [
+      null, [], 'invalid', 42, true, {},
+      ...endpoint.malformedFields.map((fields) => ({ ...endpoint.result, ...fields }))
+    ];
+    for (const result of malformedResults) {
+      await t.test(JSON.stringify(result), async () => {
+        providerResult = JSON.parse(JSON.stringify(result));
+        const validationErrors = endpoint.validate(providerResult);
+        assert.notDeepEqual(validationErrors, []);
+        const response = await requestJson(server.address().port, 'POST', endpoint.path, endpoint.request);
+        assert.equal(response.statusCode, 422);
+        assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
+        assert.deepEqual(response.body.errors, validationErrors);
+      });
+    }
+    providerResult = endpoint.result;
+    const recovery = await requestJson(server.address().port, 'POST', endpoint.path, endpoint.request);
+    assert.equal(recovery.statusCode, 200);
+    assert.deepEqual(recovery.body, endpoint.result);
+  });
+
+  for (const [failureName, invoke] of [
+    ['synchronous exception', () => { throw new Error('private provider details'); }],
+    ['provider TypeError', async () => { throw new TypeError('private provider details'); }],
+    ['network failure', async () => { throw Object.assign(new Error('private connection details'), { code: 'ECONNRESET' }); }],
+    ['provider timeout rejection', async () => { throw Object.assign(new Error('private timeout details'), { code: 'AI_PROVIDER_TIMEOUT' }); }]
+  ]) {
+    test(`AI gateway maps ${endpoint.method} ${failureName} to AI_PROVIDER_ERROR`, async (t) => {
+      const server = createAIGateway({ aiProvider: { [endpoint.method]: invoke } });
+      t.after(() => server.close());
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const response = await requestJson(server.address().port, 'POST', endpoint.path, endpoint.request);
+      assert.equal(response.statusCode, 502);
+      assert.deepEqual(response.body, { code: 'AI_PROVIDER_ERROR' });
+    });
+  }
+
+  test(`AI gateway validates direct JSON returns from ${endpoint.method}`, async (t) => {
+    let providerResult = endpoint.result;
+    const server = createAIGateway({ aiProvider: { [endpoint.method]() { return providerResult; } } });
+    t.after(() => server.close());
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const valid = await requestJson(server.address().port, 'POST', endpoint.path, endpoint.request);
+    assert.equal(valid.statusCode, 200);
+    assert.deepEqual(valid.body, endpoint.result);
+    providerResult = null;
+    const invalid = await requestJson(server.address().port, 'POST', endpoint.path, endpoint.request);
+    assert.equal(invalid.statusCode, 422);
+    assert.equal(invalid.body.code, 'INVALID_AI_ARTIFACT');
+  });
+}
 
 test('AI gateway rejects a completion that cites ideas absent from the request', async (t) => {
   const aiProvider = {
@@ -710,8 +895,8 @@ test('AI gateway returns a classified timeout when the review provider stalls', 
   t.after(() => server.close());
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const response = await requestJson(server.address().port, 'POST', '/reviews', validReviewRequest);
-  assert.equal(response.statusCode, 504);
-  assert.deepEqual(response.body, { code: 'AI_PROVIDER_TIMEOUT' });
+  assert.equal(response.statusCode, 502);
+  assert.deepEqual(response.body, { code: 'AI_PROVIDER_ERROR' });
 });
 
 test('AI gateway returns a classified timeout when the completion provider stalls', async (t) => {
@@ -722,8 +907,8 @@ test('AI gateway returns a classified timeout when the completion provider stall
   t.after(() => server.close());
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const response = await requestJson(server.address().port, 'POST', '/completions', validCompletionRequest);
-  assert.equal(response.statusCode, 504);
-  assert.deepEqual(response.body, { code: 'AI_PROVIDER_TIMEOUT' });
+  assert.equal(response.statusCode, 502);
+  assert.deepEqual(response.body, { code: 'AI_PROVIDER_ERROR' });
 });
 
 test('AI gateway reports enabled capabilities on the status endpoint', async (t) => {
