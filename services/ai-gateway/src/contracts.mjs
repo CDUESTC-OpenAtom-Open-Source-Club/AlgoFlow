@@ -26,6 +26,7 @@ export function validateReviewRequest(request) {
 
 export function validateReviewResult(result) {
   const errors = validateSchema(result, schemas.ai.$defs.reviewResult, 'reviewResult');
+  if (errors.length) return errors;
   if (Array.isArray(result?.diagnostics)) {
     const ids = new Set();
     result.diagnostics.forEach((diagnostic, index) => {
@@ -48,6 +49,7 @@ export function validateCompletionRequest(request) {
 
 export function validateCompletionResult(result) {
   const errors = validateSchema(result, schemas.ai.$defs.completionResult, 'completionResult');
+  if (errors.length) return errors;
   const range = result?.replaced_range;
   if (range) {
     if (range.end_line < range.start_line) errors.push('replaced_range end_line must not precede start_line');
@@ -58,6 +60,7 @@ export function validateCompletionResult(result) {
 
 export function validateAIArtifact(artifact) {
   const errors = validateSchema(artifact, schemas.ai.$defs.artifact, 'artifact');
+  if (errors.length) return errors;
   if (Array.isArray(artifact?.pseudocode)) {
     const ids = new Set();
     artifact.pseudocode.forEach((step, index) => {
