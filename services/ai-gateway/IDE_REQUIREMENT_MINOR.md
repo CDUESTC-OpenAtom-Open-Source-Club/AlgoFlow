@@ -165,3 +165,13 @@
 - 测试入口的三类成功响应均带 `X-AlgoFlow-Test-Data: true` 和 `Cache-Control: no-store`；公共结果 Schema 未增加测试字段。客户端识别和本地持久化仍属于阶段 3/4。
 - Gateway 已向 `generate`、`review`、`complete` 传递 `AbortSignal`，客户端断开后不写响应；三类能力均有断开回归。服务端主动超时的 `502 AI_PROVIDER_ERROR` 保持不变。
 - 阶段 2 当前仍未提交；待补充独立入口的启动验收和取消场景说明后再创建 commit。
+
+## 2026-09-26 阶段 3 Web 实施记录
+
+- 新增 Web `WebAIClient`，调用 `/reviews`、`/completions` 并保留 `/requests` 兼容入口；按 HTTP 分类显示 `AI_NOT_ENABLED`、`AI_PROVIDER_ERROR` 和 `INVALID_AI_ARTIFACT`，仅从 `X-AlgoFlow-Test-Data: true` 响应头识别“测试数据”。
+- 新增独立 `algoflow.ai-results.v1` 本地结果仓储，按草稿、能力和审查类型只保留最近结果；结果不进入 `WorkspaceState`、同步操作或同步 payload，刷新后可恢复来源标记和隐藏状态。
+- Inspector 增加 explanation/risk/complexity 三类可追加审查消息，以及局部补全预览、隐藏和显式接受入口。审查不会写 `.cpp`；补全接受前校验草稿版本、代码快照、文件和过期状态，接受只发起 CodeMirror 局部事务，后续仍需用户保存后才进入普通同步链路。
+- 请求代次和 `AbortController` 防止取消、编辑、切换草稿或迟到响应覆盖新结果；代码/思路快照变化后结果标记为过期，过期补全不可接受。Web 端接口类型可供后续 OpenHarmony 端镜像使用，本阶段未修改手机端。
+- 测试数据 Provider、真实模型接入、云服务部署和新的提示代码生成入口均未在本阶段实现；`run-demo-gateway.mjs` 为未跟踪个人脚本，未纳入提交。
+- 实际验证：`node --test test/*.test.mjs`（Web 2/2）；`npx tsc -p tsconfig.app.json --noEmit`（通过）；`npx tsc -p tsconfig.node.json --noEmit`（通过）；`npm run build`（Vite 构建通过）；`node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`（379/379）；`git diff --check`（通过）。
+- 未执行：浏览器人工交互、OpenHarmony 构建/设备验收、真实 Provider 联调和云端部署；这些不因 Web 构建通过而视为完成。

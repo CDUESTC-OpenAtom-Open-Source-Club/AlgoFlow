@@ -1,5 +1,6 @@
 import { Icon } from './Icon';
 import type { ReviewIssue } from '../code-review';
+import type { AICompletionResult, AIRequestState, AIReviewDiagnostic, ReviewKind } from '../types';
 
 interface InspectorPanelProps {
   hidden: boolean;
@@ -7,9 +8,18 @@ interface InspectorPanelProps {
   onShow: () => void;
   issues: ReviewIssue[];
   onJumpToLine: (line: number) => void;
+  reviewState: Record<ReviewKind, AIRequestState>;
+  reviewMessages: Array<{ kind: ReviewKind; diagnostics: AIReviewDiagnostic[]; isTestData: boolean; stale: boolean }>;
+  completion: { result: AICompletionResult; isTestData: boolean; stale: boolean } | null;
+  completionState: AIRequestState;
+  onReview: (kind: ReviewKind) => void;
+  onCompletion: () => void;
+  onAcceptCompletion: () => void;
+  onHideAI: (kind: ReviewKind) => void;
+  errorMessages: string[];
 }
 
-export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine }: InspectorPanelProps) {
+export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine, reviewState, reviewMessages, completion, completionState, onReview, onCompletion, onAcceptCompletion, onHideAI, errorMessages }: InspectorPanelProps) {
   const errors = issues.filter((issue) => issue.severity === 'error').length;
   return (
     <>
@@ -31,6 +41,29 @@ export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine }:
           </div>
         </div>
         <SourceTrack />
+        <section className="inspect-section ai-review-chat">
+          <div className="inspect-title"><span>AI 审查会话</span><span>仅本地</span></div>
+          <div className="review-actions">
+            {(['explanation', 'risk', 'complexity'] as ReviewKind[]).map((kind) => (
+              <button key={kind} type="button" className="outline-button" onClick={() => onReview(kind)} disabled={reviewState[kind] === 'loading'}>
+                {reviewLabel(kind)}{reviewState[kind] === 'loading' ? '…' : ''}
+              </button>
+            ))}
+          </div>
+          {errorMessages.map((message, index) => <div className="ai-error" role="status" key={`${index}-${message}`}>{message}</div>)}
+          {reviewMessages.map((message) => (
+            <div className={message.stale ? 'ai-result stale' : 'ai-result'} key={message.kind}>
+              <div className="ai-result-heading"><strong>{reviewLabel(message.kind)}</strong>{message.isTestData && <span className="test-data-badge">测试数据</span>}<button type="button" className="quiet-button" onClick={() => onHideAI(message.kind)}>隐藏</button></div>
+              {message.stale && <small>来源已过期，仅供查看</small>}
+              {message.diagnostics.length === 0 ? <p>未返回诊断。</p> : message.diagnostics.map((diagnostic) => <div className="ai-diagnostic" key={diagnostic.id}><strong>{diagnostic.problem}</strong><p>{diagnostic.basis}</p><p>{diagnostic.suggestion}</p>{diagnostic.range ? <button type="button" className="issue-link" onClick={() => onJumpToLine(diagnostic.range?.start_line ?? 1)}>跳转到第 {diagnostic.range.start_line} 行</button> : <small>全局建议</small>}</div>)}
+            </div>
+          ))}
+        </section>
+        <section className="inspect-section completion-section">
+          <div className="inspect-title"><span>局部补全</span><span>预览后写入</span></div>
+          <button type="button" className="outline-button" onClick={onCompletion} disabled={completionState === 'loading'}>请求局部补全{completionState === 'loading' ? '…' : ''}</button>
+          {completion && <div className={completion.stale ? 'ai-result stale' : 'ai-result'}><div className="ai-result-heading"><strong>补全预览</strong>{completion.isTestData && <span className="test-data-badge">测试数据</span>}</div><p>范围：第 {completion.result.replaced_range.start_line} 行至第 {completion.result.replaced_range.end_line} 行</p><pre>{completion.result.suggestion_text}</pre>{completion.stale ? <small>来源已过期，不能接受</small> : <button type="button" className="outline-button" onClick={onAcceptCompletion}>接受并写入 main.cpp</button>}</div>}
+        </section>
         <section className="inspect-section">
           <div className="inspect-title">
             <span>待补信息</span>
@@ -63,6 +96,10 @@ export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine }:
       )}
     </>
   );
+}
+
+function reviewLabel(kind: ReviewKind): string {
+  return ({ explanation: '解释', risk: '风险', complexity: '复杂度' })[kind];
 }
 
 function SourceTrack() {

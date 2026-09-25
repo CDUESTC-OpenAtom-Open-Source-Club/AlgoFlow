@@ -12,6 +12,75 @@ export type Documents = Record<FileId, string>;
 
 export type SyncStatus = 'local_only' | 'syncing' | 'synced' | 'conflict' | 'failed';
 
+export type ReviewKind = 'explanation' | 'risk' | 'complexity';
+export type AIRequestState = 'idle' | 'loading' | 'success' | 'unavailable' | 'error' | 'stale' | 'hidden';
+
+export interface IdeaSegment {
+  id: string;
+  content: string;
+}
+
+export interface AIRange {
+  start_line: number;
+  start_char: number;
+  end_line: number;
+  end_char: number;
+}
+
+export interface AIReviewDiagnostic {
+  id: string;
+  level: 'info' | 'warning' | 'error';
+  range: AIRange | null;
+  problem: string;
+  basis: string;
+  suggestion: string;
+}
+
+export interface AIReviewResult {
+  mode: Mode;
+  draft_id: string;
+  source_draft_version: number;
+  model_id: string;
+  rule_version: string;
+  review_kind: ReviewKind;
+  output_kind: 'review';
+  diagnostics: AIReviewDiagnostic[];
+  visibility: 'visible' | 'hidden';
+}
+
+export interface AICompletionResult {
+  mode: Mode;
+  draft_id: string;
+  source_draft_version: number;
+  model_id: string;
+  rule_version: string;
+  output_kind: 'completion';
+  replaced_range: AIRange;
+  suggestion_text: string;
+  source_refs: string[];
+  visibility: 'visible' | 'hidden';
+}
+
+export interface AIResultRecord {
+  id: string;
+  draftId: string;
+  capability: 'review' | 'completion';
+  reviewKind?: ReviewKind;
+  state: AIRequestState;
+  result: AIReviewResult | AICompletionResult | null;
+  errorCode?: string;
+  errorMessage?: string;
+  isTestData: boolean;
+  hidden: boolean;
+  stale: boolean;
+  requestGeneration: number;
+  sourceDraftVersion: number;
+  sourceFile: FileId;
+  sourceCode: string;
+  sourceIdea: string;
+  updatedAt: string;
+}
+
 export interface Draft {
   id: string;
   workspace_id: string;
