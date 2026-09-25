@@ -13,4 +13,6 @@ IDE 请求和结果必须显式携带输出类型：`/reviews` 为 `output_kind:
 
 Gateway 在 Schema 类型校验后调用共享 `packages/contracts/cpp-fragment.mjs`，识别续行、注释和字面量后执行词法门禁；只运行 JSON Schema 不足以实现此门禁。注释／字符串中的 `main`、`#include` 不会因这些文本本身被拒绝；代码中的独立 `main` 标识符和不支持的转义写法采取保守拒绝。门禁不修改用户原文件，不是编译器或宏展开器，也不能仅凭来源 ID 判断任意算法是否忠实。详细边界及配套回滚见 [公共契约说明](../packages/contracts/README.md)。
 
-issue #5 阶段 1 仅交付契约与 Gateway 门禁。测试专用联调入口、两端结果展示／本地保留及双端验收仍属后续阶段；真实 Provider 接入与模型行为评测已明确延期。普通入口仍不装配测试 Provider，无模型时合法请求返回 `503 AI_NOT_ENABLED`，不得将契约测试通过描述为真实模型或双端验收完成。
+issue #5 阶段 1 仅交付契约与 Gateway 门禁。阶段 2 提供独立 `services/ai-gateway/test-provider.mjs` 测试入口，必须通过显式环境变量选择场景／host／port，普通入口不会装配测试 Provider。测试入口响应带 `X-AlgoFlow-Test-Data: true`，客户端应将其识别为“测试数据”并在后续阶段本地保留来源标记；该标识不进入公共结果 Schema。请求断开会触发 Provider `AbortSignal`，断开后不再写响应；服务端主动超时仍返回 `502 AI_PROVIDER_ERROR`。
+
+测试入口只用于本地协议联调，不证明真实模型效果。真实 Provider、两端结果展示／本地保留及双端验收仍属后续阶段；无模型的普通入口返回 `503 AI_NOT_ENABLED`。

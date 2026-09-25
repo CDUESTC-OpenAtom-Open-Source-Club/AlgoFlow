@@ -15,7 +15,8 @@ export function createAIGateway({
   aiProvider = null,
   templates = [],
   enabledModes = ['faithful_transform'],
-  timeoutMs = DEFAULT_TIMEOUT_MS
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  responseHeaders = {}
 } = {}) {
   const enabledModeSet = new Set(enabledModes);
   const hasGenerate = aiProvider !== null && typeof aiProvider.generate === 'function';
@@ -24,6 +25,18 @@ export function createAIGateway({
   const anyEnabled = hasGenerate || hasReview || hasComplete;
   return createServer(async (request, response) => {
     response.setHeader('Content-Type', 'application/json; charset=utf-8');
+    for (const [name, value] of Object.entries(responseHeaders)) response.setHeader(name, value);
+    const abortController = new AbortController();
+    let requestClosed = false;
+    const abortOnDisconnect = () => {
+      if (!response.writableEnded) {
+        requestClosed = true;
+        abortController.abort();
+      }
+    };
+    request.on('error', () => {});
+    request.on('aborted', abortOnDisconnect);
+    response.on('close', abortOnDisconnect);
     if (request.method === 'GET' && request.url === '/status') {
       writeJson(response, 200, {
         enabled: anyEnabled,
@@ -40,8 +53,9 @@ export function createAIGateway({
       if (!hasGenerate) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
       let artifact;
       try {
-        artifact = await withTimeout(aiProvider.generate({ request: body, templates }), timeoutMs);
+        artifact = await withTimeout(aiProvider.generate({ request: body, templates, signal: abortController.signal }), timeoutMs);
       } catch {
+        if (requestClosed) return;
         writeProviderError(response);
         return;
       }
@@ -63,8 +77,9 @@ export function createAIGateway({
       if (!hasReview) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
       let result;
       try {
-        result = await withTimeout(aiProvider.review({ request: body }), timeoutMs);
+        result = await withTimeout(aiProvider.review({ request: body, signal: abortController.signal }), timeoutMs);
       } catch {
+        if (requestClosed) return;
         writeProviderError(response);
         return;
       }
@@ -86,8 +101,9 @@ export function createAIGateway({
       if (!hasComplete) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
       let result;
       try {
-        result = await withTimeout(aiProvider.complete({ request: body }), timeoutMs);
+        result = await withTimeout(aiProvider.complete({ request: body, signal: abortController.signal }), timeoutMs);
       } catch {
+        if (requestClosed) return;
         writeProviderError(response);
         return;
       }
@@ -223,7 +239,11 @@ function writeInvalidArtifactError(response) {
 
 async function readJson(request) {
   const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
+  try {
+    for await (const chunk of request) chunks.push(chunk);
+  } catch {
+    return null;
+  }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { return null; }
 }
