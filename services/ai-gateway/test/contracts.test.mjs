@@ -668,7 +668,9 @@ test('AI gateway delegates configured generation through the AIProvider port', a
 
   const response = await requestJson(server.address().port, 'POST', '/requests', validRequest);
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(generationInput, { request: validRequest, templates });
+  assert.deepEqual(generationInput.request, validRequest);
+  assert.deepEqual(generationInput.templates, templates);
+  assert.ok(generationInput.signal instanceof AbortSignal);
   assert.deepEqual(response.body, validArtifact);
 });
 
@@ -843,7 +845,8 @@ test('AI gateway delegates configured review through the AIProvider port', async
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const response = await requestJson(server.address().port, 'POST', '/reviews', validReviewRequest);
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(reviewInput, { request: validReviewRequest });
+  assert.deepEqual(reviewInput.request, validReviewRequest);
+  assert.ok(reviewInput.signal instanceof AbortSignal);
   assert.deepEqual(response.body, validReviewResult);
 });
 
@@ -860,7 +863,8 @@ test('AI gateway delegates configured completion through the AIProvider port', a
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const response = await requestJson(server.address().port, 'POST', '/completions', validCompletionRequest);
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(completionInput, { request: validCompletionRequest });
+  assert.deepEqual(completionInput.request, validCompletionRequest);
+  assert.ok(completionInput.signal instanceof AbortSignal);
   assert.deepEqual(response.body, validCompletionResult);
 });
 
@@ -1147,6 +1151,67 @@ test('AI gateway reports enabled capabilities on the status endpoint', async (t)
   assert.deepEqual(status.body.capabilities, { transform: false, review: true, completion: false });
 });
 
+test('AI gateway passes an AbortSignal and does not write after the client disconnects', async (t) => {
+  let aborted = false;
+  const server = createAIGateway({
+    aiProvider: {
+      async review({ signal }) {
+        await new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => { aborted = true; reject(new Error('cancelled')); }, { once: true });
+        });
+      }
+    }
+  });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const request = httpRequest({ host: '127.0.0.1', port: server.address().port, method: 'POST', path: '/reviews', headers: { 'content-type': 'application/json', 'connection': 'close' } });
+  request.on('error', () => undefined);
+  request.end(JSON.stringify(validReviewRequest));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  request.destroy();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(aborted, true);
+});
+
+test('AI gateway applies test-data headers only when explicitly configured', async (t) => {
+  const server = createAIGateway({ responseHeaders: { 'X-AlgoFlow-Test-Data': 'true' } });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'GET', '/status');
+  assert.equal(response.headers['x-algoflow-test-data'], 'true');
+});
+
+test('AI gateway aborts every provider capability on client disconnect', async (t) => {
+  for (const [path, method, request] of [
+    ['/requests', 'generate', validRequest],
+    ['/reviews', 'review', validReviewRequest],
+    ['/completions', 'complete', validCompletionRequest]
+  ]) {
+    await t.test(path, async (t) => {
+      let aborted = false;
+      const server = createAIGateway({ aiProvider: {
+        async [method]({ signal }) {
+          await new Promise((resolve, reject) => {
+            signal.addEventListener('abort', () => { aborted = true; reject(new Error('cancelled')); }, { once: true });
+          });
+        }
+      } });
+      t.after(() => server.close());
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const clientRequest = httpRequest({
+        host: '127.0.0.1', port: server.address().port, method: 'POST', path,
+        headers: { 'content-type': 'application/json', connection: 'close' }
+      });
+      clientRequest.on('error', () => {});
+      clientRequest.end(JSON.stringify(request));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      clientRequest.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      assert.equal(aborted, true);
+    });
+  }
+});
+
 function requestJson(port, method, path, body) {
   return new Promise((resolve, reject) => {
     const request = httpRequest({
@@ -1162,7 +1227,8 @@ function requestJson(port, method, path, body) {
         try {
           resolve({
             statusCode: response.statusCode,
-            body: JSON.parse(Buffer.concat(chunks).toString('utf8'))
+            body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+            headers: response.headers
           });
         } catch (error) {
           reject(error);
