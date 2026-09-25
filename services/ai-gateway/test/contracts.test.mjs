@@ -3,10 +3,14 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { createAIGateway } from '../src/server.mjs';
+import { validateCompletionFragment } from '../../../packages/contracts/cpp-fragment.mjs';
 import {
   AI_MODES,
+  AI_OUTPUT_KINDS,
+  COMPLETION_OUTPUT_KIND,
   DIAGNOSTIC_LEVELS,
   REVIEW_KINDS,
+  REVIEW_OUTPUT_KIND,
   validateAIArtifact,
   validateAIRequest,
   validateCompletionRequest,
@@ -52,6 +56,7 @@ const validArtifact = {
 
 const validReviewRequest = {
   mode: 'faithful_transform',
+  output_kind: 'review',
   draft_id: 'draft-1',
   draft_version: 3,
   language: 'cpp',
@@ -67,6 +72,7 @@ const validReviewRequest = {
 
 const validReviewResult = {
   mode: 'faithful_transform',
+  output_kind: 'review',
   draft_id: 'draft-1',
   source_draft_version: 3,
   model_id: 'provider-disabled',
@@ -77,9 +83,9 @@ const validReviewResult = {
       id: 'diag_1',
       level: 'warning',
       range: { start_line: 3, start_char: 2, end_line: 3, end_char: 2 },
-      problem: 'The selection loop is empty.',
-      basis: 'The greedy selection step is not implemented.',
-      suggestion: 'Track the last selected end and append non-overlapping intervals.'
+      problem: 'The selection rule is unspecified.',
+      basis: 'The only source idea describes sorting by right endpoint.',
+      suggestion: 'Clarify the selection rule before adding any selection code.'
     }
   ],
   visibility: 'visible'
@@ -87,6 +93,7 @@ const validReviewResult = {
 
 const validCompletionRequest = {
   mode: 'faithful_transform',
+  output_kind: 'completion',
   draft_id: 'draft-1',
   draft_version: 3,
   language: 'cpp',
@@ -95,19 +102,20 @@ const validCompletionRequest = {
   idea_segments: [
     { id: 'idea_segment_1', content: 'Sort intervals by right endpoint.' }
   ],
-  code: 'void choose(vector<Interval>& intervals) {\n  sort(intervals.begin(), intervals.end(), byRight);\n  \n}',
+  code: 'void choose(vector<Interval>& intervals) {\n  // Sort by right endpoint.\n  \n}',
   cursor: { line: 3, char: 2 },
   visibility: 'visible'
 };
 
 const validCompletionResult = {
   mode: 'faithful_transform',
+  output_kind: 'completion',
   draft_id: 'draft-1',
   source_draft_version: 3,
   model_id: 'provider-disabled',
   rule_version: '1.0.0',
   replaced_range: { start_line: 3, start_char: 2, end_line: 3, end_char: 2 },
-  suggestion_text: 'int last = -1;\n  for (auto& interval : intervals) { if (interval.start >= last) { pick(interval); last = interval.end; } }',
+  suggestion_text: 'sort(intervals.begin(), intervals.end(), byRight);',
   source_refs: ['idea_segment_1'],
   visibility: 'visible'
 };
@@ -176,12 +184,15 @@ test('IDE review request-boundary vectors match expected validity', async (t) =>
   const source = new URL('../../../packages/contracts/vectors/ide-review-vectors.json', import.meta.url);
   const vectors = JSON.parse(await readFile(source, 'utf8'));
   for (const vector of vectors.against_request) {
-    await t.test(vector.name, async () => {
+    await t.test(vector.name, async (t) => {
+      assert.deepEqual(validateReviewRequest(vector.request), [], 'boundary vector needs a valid request');
+      assert.deepEqual(validateReviewResult(vector.result), [], 'boundary vector needs a structurally valid result');
       const server = createAIGateway({ aiProvider: { async review() { return vector.result; } } });
+      t.after(() => server.close());
       await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
       const response = await requestJson(server.address().port, 'POST', '/reviews', vector.request);
-      await new Promise((resolve) => server.close(resolve));
-      assert.equal(response.statusCode === 200, vector.valid, vector.name);
+      assert.equal(response.statusCode, vector.valid ? 200 : 422, vector.name);
+      if (!vector.valid) assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
     });
   }
 });
@@ -190,12 +201,15 @@ test('IDE completion request-boundary vectors match expected validity', async (t
   const source = new URL('../../../packages/contracts/vectors/ide-completion-vectors.json', import.meta.url);
   const vectors = JSON.parse(await readFile(source, 'utf8'));
   for (const vector of vectors.against_request) {
-    await t.test(vector.name, async () => {
+    await t.test(vector.name, async (t) => {
+      assert.deepEqual(validateCompletionRequest(vector.request), [], 'boundary vector needs a valid request');
+      assert.deepEqual(validateCompletionResult(vector.result), [], 'boundary vector needs a structurally valid result');
       const server = createAIGateway({ aiProvider: { async complete() { return vector.result; } } });
+      t.after(() => server.close());
       await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
       const response = await requestJson(server.address().port, 'POST', '/completions', vector.request);
-      await new Promise((resolve) => server.close(resolve));
-      assert.equal(response.statusCode === 200, vector.valid, vector.name);
+      assert.equal(response.statusCode, vector.valid ? 200 : 422, vector.name);
+      if (!vector.valid) assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
     });
   }
 });
@@ -207,11 +221,223 @@ test('review and diagnostic enums stay identical to the JSON Schema source of tr
   assert.deepEqual([...DIAGNOSTIC_LEVELS], schema.$defs.diagnosticLevel.enum);
 });
 
+test('IDE output kinds have their own schema definitions without widening transform kinds', async () => {
+  const schema = JSON.parse(await readFile(new URL('../../../packages/contracts/schemas/ai.schema.json', import.meta.url), 'utf8'));
+  assert.equal(REVIEW_OUTPUT_KIND, schema.$defs.reviewOutputKind.const);
+  assert.equal(COMPLETION_OUTPUT_KIND, schema.$defs.completionOutputKind.const);
+  assert.deepEqual([...AI_OUTPUT_KINDS], ['pseudocode', 'code_snippet']);
+  for (const [kind, definitions] of [
+    ['reviewOutputKind', ['reviewRequest', 'reviewResult']],
+    ['completionOutputKind', ['completionRequest', 'completionResult']]
+  ]) {
+    for (const definition of definitions) {
+      assert.ok(schema.$defs[definition].required.includes('output_kind'));
+      assert.equal(schema.$defs[definition].properties.output_kind.$ref, `#/$defs/${kind}`);
+    }
+  }
+});
+
+test('C++ completion fragment vectors enforce the lexical gate and HTTP classification', async (t) => {
+  const source = new URL('../../../packages/contracts/vectors/ide-completion-vectors.json', import.meta.url);
+  const { fragments } = JSON.parse(await readFile(source, 'utf8'));
+  let result;
+  const server = createAIGateway({ aiProvider: { complete() { return result; } } });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  for (const vector of fragments) {
+    await t.test(vector.name, async () => {
+      assert.equal(validateCompletionFragment(vector.source).length === 0, vector.valid, vector.name);
+      result = { ...validCompletionResult, suggestion_text: vector.source };
+      const errors = validateCompletionResult(result);
+      assert.equal(errors.length === 0, vector.valid, vector.name);
+      const response = await requestJson(server.address().port, 'POST', '/completions', validCompletionRequest);
+      assert.equal(response.statusCode, vector.valid ? 200 : 422);
+      if (vector.valid) {
+        assert.deepEqual(response.body, result);
+      } else {
+        assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
+        assert.deepEqual(response.body.errors, errors);
+      }
+    });
+  }
+});
+
+test('faithful completion fixtures add only the supplied sorting step', async () => {
+  const source = new URL('../../../packages/contracts/vectors/ide-completion-vectors.json', import.meta.url);
+  const vectors = JSON.parse(await readFile(source, 'utf8'));
+  for (const [request, result] of [
+    [validCompletionRequest, validCompletionResult],
+    [vectors.requests[0].request, vectors.results[0].result]
+  ]) {
+    assert.deepEqual(request.idea_segments, [{ id: 'idea_segment_1', content: 'Sort intervals by right endpoint.' }]);
+    assert.equal(result.suggestion_text, 'sort(intervals.begin(), intervals.end(), byRight);');
+    assert.deepEqual(result.source_refs, ['idea_segment_1']);
+    assert.ok(!request.code.includes(result.suggestion_text), 'the fixture must not insert duplicate sorting');
+  }
+  // These fixed examples do not establish semantic faithfulness for arbitrary model output.
+});
+
+test('completion checks the generated fragment without banning existing user preprocessing or main', async (t) => {
+  const request = {
+    ...validCompletionRequest,
+    code: '#include <vector>\nint main() {\n  \n}',
+    cursor: { line: 3, char: 2 }
+  };
+  const server = createAIGateway({ aiProvider: { complete() { return validCompletionResult; } } });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  assert.deepEqual(validateCompletionRequest(request), []);
+  const response = await requestJson(server.address().port, 'POST', '/completions', request);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, validCompletionResult);
+  assert.equal(request.code, '#include <vector>\nint main() {\n  \n}');
+});
+
+const ideEndpoints = [
+  {
+    path: '/reviews', method: 'review', kind: REVIEW_OUTPUT_KIND,
+    request: validReviewRequest, result: validReviewResult,
+    validateRequest: validateReviewRequest, validateResult: validateReviewResult
+  },
+  {
+    path: '/completions', method: 'complete', kind: COMPLETION_OUTPUT_KIND,
+    request: validCompletionRequest, result: validCompletionResult,
+    validateRequest: validateCompletionRequest, validateResult: validateCompletionResult
+  }
+];
+
+for (const endpoint of ideEndpoints) {
+  const wrongKinds = [undefined, null, '', 1, {}, [], 'pseudocode', 'code_snippet', 'review', 'completion']
+    .filter((kind) => kind !== endpoint.kind);
+
+  test(`${endpoint.path} rejects missing or wrong request output_kind before calling the provider`, async (t) => {
+    let calls = 0;
+    const server = createAIGateway({ aiProvider: { [endpoint.method]() { calls++; return endpoint.result; } } });
+    t.after(() => server.close());
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    for (const kind of wrongKinds) {
+      await t.test(kind === undefined ? 'missing' : JSON.stringify(kind), async () => {
+        const request = { ...endpoint.request, output_kind: kind };
+        if (kind === undefined) delete request.output_kind;
+        assert.ok(endpoint.validateRequest(request).some((error) => error.includes('output_kind')));
+        const response = await requestJson(server.address().port, 'POST', endpoint.path, request);
+        assert.equal(response.statusCode, 400);
+        assert.equal(response.body.code, 'INVALID_REQUEST');
+        assert.ok(response.body.errors.some((error) => error.includes('output_kind')));
+        assert.equal(calls, 0);
+      });
+    }
+    const valid = await requestJson(server.address().port, 'POST', endpoint.path, endpoint.request);
+    assert.equal(valid.statusCode, 200);
+    assert.equal(calls, 1);
+  });
+
+  test(`${endpoint.path} classifies missing or wrong result output_kind as INVALID_AI_ARTIFACT`, async (t) => {
+    let result;
+    const server = createAIGateway({ aiProvider: { [endpoint.method]() { return result; } } });
+    t.after(() => server.close());
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    for (const kind of wrongKinds) {
+      await t.test(kind === undefined ? 'missing' : JSON.stringify(kind), async () => {
+        result = { ...endpoint.result, output_kind: kind };
+        if (kind === undefined) delete result.output_kind;
+        const errors = endpoint.validateResult(result);
+        assert.ok(errors.some((error) => error.includes('output_kind')));
+        const response = await requestJson(server.address().port, 'POST', endpoint.path, endpoint.request);
+        assert.equal(response.statusCode, 422);
+        assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
+        assert.deepEqual(response.body.errors, errors);
+      });
+    }
+  });
+
+  test(`${endpoint.path} preserves request/result metadata matching`, async (t) => {
+    let result;
+    const server = createAIGateway({ aiProvider: { [endpoint.method]() { return result; } } });
+    t.after(() => server.close());
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const mismatches = {
+      mode: 'full_solution', draft_id: 'other-draft', source_draft_version: 4,
+      rule_version: 'other-rule', visibility: 'hidden',
+      ...(endpoint.method === 'review' ? { review_kind: 'explanation' } : {})
+    };
+    for (const [field, value] of Object.entries(mismatches)) {
+      await t.test(field, async () => {
+        result = { ...endpoint.result, [field]: value };
+        assert.deepEqual(endpoint.validateResult(result), [], 'must reach request-relative validation');
+        const response = await requestJson(server.address().port, 'POST', endpoint.path, endpoint.request);
+        assert.equal(response.statusCode, 422);
+        assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
+        assert.ok(response.body.errors.some((error) => error.includes(`${field} must match`)));
+      });
+    }
+  });
+
+  test(`${endpoint.path} keeps non-faithful modes unavailable by default`, async (t) => {
+    let calls = 0;
+    const server = createAIGateway({ aiProvider: { [endpoint.method]() { calls++; return endpoint.result; } } });
+    t.after(() => server.close());
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    for (const mode of ['feasibility_analysis', 'progressive_hint', 'full_solution']) {
+      const response = await requestJson(server.address().port, 'POST', endpoint.path, { ...endpoint.request, mode });
+      assert.equal(response.statusCode, 409);
+      assert.deepEqual(response.body, { code: 'AI_MODE_NOT_AVAILABLE', mode });
+    }
+    assert.equal(calls, 0);
+  });
+}
+
+test('legacy transform rejects IDE output kinds without changing its existing request shape', async (t) => {
+  let calls = 0;
+  const server = createAIGateway({ aiProvider: { generate() { calls++; return validArtifact; } } });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  for (const output_kind of ['review', 'completion']) {
+    const request = { ...validRequest, output_kind };
+    assert.notDeepEqual(validateAIRequest(request), []);
+    assert.notDeepEqual(validateAIArtifact({ ...validArtifact, output_kind }), []);
+    const response = await requestJson(server.address().port, 'POST', '/requests', request);
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.body.code, 'INVALID_REQUEST');
+  }
+  assert.equal(calls, 0);
+  for (const output_kind of ['pseudocode', 'code_snippet']) {
+    assert.deepEqual(validateAIRequest({ ...validRequest, output_kind }), []);
+  }
+});
+
+test('review requires an explicit range or null for all three faithful review kinds', async (t) => {
+  let result;
+  const server = createAIGateway({ aiProvider: { review() { return result; } } });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  for (const review_kind of REVIEW_KINDS) {
+    for (const range of [undefined, null, validReviewResult.diagnostics[0].range]) {
+      await t.test(`${review_kind}: ${range === undefined ? 'missing' : JSON.stringify(range)}`, async () => {
+        const diagnostic = { ...validReviewResult.diagnostics[0], range };
+        if (range === undefined) delete diagnostic.range;
+        result = { ...validReviewResult, review_kind, diagnostics: [diagnostic] };
+        const response = await requestJson(server.address().port, 'POST', '/reviews', { ...validReviewRequest, review_kind });
+        assert.equal(response.statusCode, range === undefined ? 422 : 200);
+        if (range === undefined) {
+          const errors = validateReviewResult(result);
+          assert.ok(errors.some((error) => error.includes('range is required')));
+          assert.equal(response.body.code, 'INVALID_AI_ARTIFACT');
+          assert.deepEqual(response.body.errors, errors);
+        } else {
+          assert.deepEqual(validateReviewResult(result), []);
+          assert.deepEqual(response.body, result);
+        }
+      });
+    }
+  }
+});
+
 test('accepts a review request with explicit mode, versions, and source code', () => {
   assert.deepEqual(validateReviewRequest(validReviewRequest), []);
 });
 
-for (const field of ['mode', 'draft_version', 'rule_version', 'review_kind', 'code', 'visibility']) {
+for (const field of ['mode', 'draft_version', 'rule_version', 'review_kind', 'code', 'output_kind', 'visibility']) {
   test(`rejects a review request missing required ${field}`, () => {
     const request = { ...validReviewRequest };
     delete request[field];
@@ -223,7 +449,7 @@ test('rejects a review result whose diagnostic omits the separated suggestion fi
   // A diagnostic must carry its own suggestion text; it cannot smuggle user code back.
   assert.notDeepEqual(validateReviewResult({
     ...validReviewResult,
-    diagnostics: [{ id: 'diag_1', level: 'error', problem: 'x', basis: 'y' }]
+    diagnostics: [{ id: 'diag_1', level: 'error', range: null, problem: 'x', basis: 'y' }]
   }), []);
 });
 
@@ -245,7 +471,7 @@ test('accepts a completion request with explicit cursor position', () => {
   assert.deepEqual(validateCompletionRequest(validCompletionRequest), []);
 });
 
-for (const field of ['mode', 'draft_version', 'rule_version', 'code', 'cursor', 'visibility']) {
+for (const field of ['mode', 'draft_version', 'rule_version', 'code', 'cursor', 'output_kind', 'visibility']) {
   test(`rejects a completion request missing required ${field}`, () => {
     const request = { ...validCompletionRequest };
     delete request[field];

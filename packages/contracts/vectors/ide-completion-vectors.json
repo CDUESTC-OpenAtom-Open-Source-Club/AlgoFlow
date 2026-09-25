@@ -5,6 +5,7 @@
       "valid": true,
       "request": {
         "mode": "faithful_transform",
+        "output_kind": "completion",
         "draft_id": "draft-1",
         "draft_version": 3,
         "language": "cpp",
@@ -13,7 +14,7 @@
         "idea_segments": [
           { "id": "idea_segment_1", "content": "Sort intervals by right endpoint." }
         ],
-        "code": "void choose(vector<Interval>& intervals) {\n  sort(intervals.begin(), intervals.end(), byRight);\n  \n}",
+        "code": "void choose(vector<Interval>& intervals) {\n  // Sort by right endpoint.\n  \n}",
         "cursor": { "line": 3, "char": 2 },
         "visibility": "visible"
       }
@@ -23,6 +24,7 @@
       "valid": true,
       "request": {
         "mode": "faithful_transform",
+        "output_kind": "completion",
         "draft_id": "draft-2",
         "draft_version": 1,
         "language": "cpp",
@@ -41,6 +43,7 @@
       "valid": false,
       "request": {
         "mode": "faithful_transform",
+        "output_kind": "completion",
         "draft_id": "draft-3",
         "draft_version": 1,
         "language": "cpp",
@@ -60,12 +63,13 @@
       "valid": true,
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "completion",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "model_id": "provider-disabled",
         "rule_version": "1.0.0",
         "replaced_range": { "start_line": 3, "start_char": 2, "end_line": 3, "end_char": 2 },
-        "suggestion_text": "int last = -1;\n  for (auto& interval : intervals) {\n    if (interval.start >= last) { pick(interval); last = interval.end; }\n  }",
+        "suggestion_text": "sort(intervals.begin(), intervals.end(), byRight);",
         "source_refs": ["idea_segment_1"],
         "visibility": "visible"
       }
@@ -75,6 +79,7 @@
       "valid": false,
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "completion",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "model_id": "provider-disabled",
@@ -90,6 +95,7 @@
       "valid": false,
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "completion",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "model_id": "provider-disabled",
@@ -105,12 +111,13 @@
       "valid": false,
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "completion",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "model_id": "provider-disabled",
         "rule_version": "1.0.0",
         "replaced_range": { "start_line": 5, "start_char": 0, "end_line": 2, "end_char": 0 },
-        "suggestion_text": "int last = -1;",
+        "suggestion_text": "sort(intervals.begin(), intervals.end(), byRight);",
         "source_refs": ["idea_segment_1"],
         "visibility": "visible"
       }
@@ -120,11 +127,12 @@
       "valid": false,
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "completion",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "rule_version": "1.0.0",
         "replaced_range": { "start_line": 3, "start_char": 2, "end_line": 3, "end_char": 2 },
-        "suggestion_text": "int last = -1;",
+        "suggestion_text": "sort(intervals.begin(), intervals.end(), byRight);",
         "source_refs": ["idea_segment_1"],
         "visibility": "visible"
       }
@@ -134,14 +142,312 @@
       "valid": false,
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "completion",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "model_id": "provider-disabled",
         "rule_version": "1.0.0",
         "replaced_range": { "start_line": 3, "start_char": 2, "end_line": 3, "end_char": 2 },
-        "suggestion_text": "int last = -1;",
+        "suggestion_text": "sort(intervals.begin(), intervals.end(), byRight);",
         "visibility": "visible"
       }
+    }
+  ],
+  "fragments": [
+    {
+      "name": "macro alias for the entry point",
+      "valid": false,
+      "source": "#define ENTRY main\nint ENTRY() { return 0; }"
+    },
+    {
+      "name": "include directive",
+      "valid": false,
+      "source": "#include <iostream>"
+    },
+    {
+      "name": "spaced preprocessor directive",
+      "valid": false,
+      "source": "  # include <vector>"
+    },
+    {
+      "name": "conditional preprocessing",
+      "valid": false,
+      "source": "#if 1\nwork();\n#endif"
+    },
+    {
+      "name": "undef directive",
+      "valid": false,
+      "source": "#undef ENTRY"
+    },
+    {
+      "name": "pragma directive",
+      "valid": false,
+      "source": "#pragma once"
+    },
+    {
+      "name": "digraph macro directive",
+      "valid": false,
+      "source": "%:define ENTRY main\nint ENTRY() { return 0; }"
+    },
+    {
+      "name": "legacy directive spelling",
+      "valid": false,
+      "source": "??=define ENTRY main\nint ENTRY() { return 0; }"
+    },
+    {
+      "name": "spliced macro directive",
+      "valid": false,
+      "source": "#de\\\nfine ENTRY ma\\\nin\nint ENTRY() { return 0; }"
+    },
+    {
+      "name": "spliced digraph directive",
+      "valid": false,
+      "source": "%\\\n:define VALUE 1"
+    },
+    {
+      "name": "entry split by LF splice",
+      "valid": false,
+      "source": "int ma\\\nin() { return 0; }"
+    },
+    {
+      "name": "entry split by CRLF splice",
+      "valid": false,
+      "source": "int ma\\\r\nin() { return 0; }"
+    },
+    {
+      "name": "entry split by CR splice",
+      "valid": false,
+      "source": "int ma\\\rin() { return 0; }"
+    },
+    {
+      "name": "entry split by whitespace splice",
+      "valid": false,
+      "source": "int ma\\ \t\nin() { return 0; }"
+    },
+    {
+      "name": "entry split by consecutive splices",
+      "valid": false,
+      "source": "int ma\\\n\\\nin() { return 0; }"
+    },
+    {
+      "name": "parenthesized entry declaration",
+      "valid": false,
+      "source": "int (main)() { return 0; }"
+    },
+    {
+      "name": "comment before entry parameter list",
+      "valid": false,
+      "source": "int main/**/() { return 0; }"
+    },
+    {
+      "name": "standalone main call",
+      "valid": false,
+      "source": "main();"
+    },
+    {
+      "name": "escaped identifier outside supported subset",
+      "valid": false,
+      "source": "int \\u006dain() { return 0; }"
+    },
+    {
+      "name": "legacy escape outside supported subset",
+      "valid": false,
+      "source": "int ma??/\nin() { return 0; }"
+    },
+    {
+      "name": "entry after a CR-only line comment",
+      "valid": false,
+      "source": "// harmless comment\rint main() { return 0; }"
+    },
+    {
+      "name": "directive after a CR-only line comment",
+      "valid": false,
+      "source": "// harmless comment\r#define VALUE 1"
+    },
+    {
+      "name": "entry after a block comment",
+      "valid": false,
+      "source": "/* int main() is mentioned here */ int main() { return 0; }"
+    },
+    {
+      "name": "entry after a quoted literal",
+      "valid": false,
+      "source": "auto text = \"main() #define\"; int main() { return 0; }"
+    },
+    {
+      "name": "entry after a custom raw literal",
+      "valid": false,
+      "source": "auto text = R\"tag(main() #define)tag\"; int main() { return 0; }"
+    },
+    {
+      "name": "entry after a separated integer",
+      "valid": false,
+      "source": "auto n = 1'000; int main() { return 0; }"
+    },
+    {
+      "name": "entry after a spliced block comment",
+      "valid": false,
+      "source": "/\\\n* comment *\\\n/ int main() { return 0; }"
+    },
+    {
+      "name": "unclosed block comment",
+      "valid": false,
+      "source": "work(); /* unfinished"
+    },
+    {
+      "name": "unclosed string literal",
+      "valid": false,
+      "source": "auto text = \"unfinished;"
+    },
+    {
+      "name": "unclosed character literal",
+      "valid": false,
+      "source": "char c = 'x;"
+    },
+    {
+      "name": "unclosed raw literal",
+      "valid": false,
+      "source": "auto text = R\"tag(main()"
+    },
+    {
+      "name": "invalid raw delimiter",
+      "valid": false,
+      "source": "auto text = R\"bad delimiter(main())bad delimiter\";"
+    },
+    {
+      "name": "overlong raw delimiter",
+      "valid": false,
+      "source": "auto text = R\"abcdefghijklmnopq(main())abcdefghijklmnopq\";"
+    },
+    {
+      "name": "token-pasting preprocessing token",
+      "valid": false,
+      "source": "prefix ## suffix"
+    },
+    {
+      "name": "only the referenced sorting step",
+      "valid": true,
+      "source": "sort(intervals.begin(), intervals.end(), byRight);"
+    },
+    {
+      "name": "line comment containing forbidden words",
+      "valid": true,
+      "source": "// int main() and #define are just text\nwork();"
+    },
+    {
+      "name": "block comment containing forbidden words",
+      "valid": true,
+      "source": "/* #include <iostream>; int main() {} */ work();"
+    },
+    {
+      "name": "ordinary literal containing forbidden words",
+      "valid": true,
+      "source": "auto text = \"main() #include <vector> #define ENTRY\";"
+    },
+    {
+      "name": "escaped quotes inside a literal",
+      "valid": true,
+      "source": "auto text = \"\\\"int main() #define ENTRY\\\"\";"
+    },
+    {
+      "name": "escaped backslashes inside a literal",
+      "valid": true,
+      "source": "auto path = \"C:\\\\main\\\\data\";"
+    },
+    {
+      "name": "character literals and escaped quotes",
+      "valid": true,
+      "source": "char a = '#'; char b = '\\''; char c = '\\\\';"
+    },
+    {
+      "name": "prefixed ordinary literals",
+      "valid": true,
+      "source": "auto text = u8\"main() #include\"; auto wide = L\"#define\"; char16_t c = u'#';"
+    },
+    {
+      "name": "default raw literal",
+      "valid": true,
+      "source": "auto text = R\"(main() \"#include\" /* still literal */)\";"
+    },
+    {
+      "name": "custom raw delimiter containing quote-parenthesis text",
+      "valid": true,
+      "source": "auto text = R\"tag(text )\" int main() #define VALUE)tag\";"
+    },
+    {
+      "name": "raw literal reverses a would-be terminator splice",
+      "valid": true,
+      "source": "auto text = R\"tag(text )tag\\\n\" int main() #define VALUE\n)tag\";"
+    },
+    {
+      "name": "spliced raw prefix",
+      "valid": true,
+      "source": "auto text = u\\\n8R\"tag(main() #define VALUE)tag\";"
+    },
+    {
+      "name": "sixteen-character raw delimiter",
+      "valid": true,
+      "source": "auto text = R\"abcdefghijklmnop(main())abcdefghijklmnop\";"
+    },
+    {
+      "name": "spliced ordinary literal",
+      "valid": true,
+      "source": "auto text = \"literal \\\nmain() #define\";"
+    },
+    {
+      "name": "spliced line comment",
+      "valid": true,
+      "source": "// entry spelling \\\n#define ENTRY main\nwork();"
+    },
+    {
+      "name": "spliced block comment delimiters",
+      "valid": true,
+      "source": "/\\\n* int main() #define ENTRY *\\\n/\nwork();"
+    },
+    {
+      "name": "decimal and hex digit separators",
+      "valid": true,
+      "source": "auto n = 1'000 + 0xFF'FF + 0b1010'0011;"
+    },
+    {
+      "name": "floating exponents and separators",
+      "valid": true,
+      "source": "auto n = 1.2'5e+10 + 0x1.f'fp-2;"
+    },
+    {
+      "name": "identifiers merely containing main",
+      "valid": true,
+      "source": "int main_count = 0; int domain = main_count;"
+    },
+    {
+      "name": "unicode identifier boundaries",
+      "valid": true,
+      "source": "int mainλ = 0; int λmain = mainλ;"
+    },
+    {
+      "name": "comment keeps separate identifier tokens",
+      "valid": true,
+      "source": "ma/**/in;"
+    },
+    {
+      "name": "u8 raw literal prefix",
+      "valid": true,
+      "source": "auto text = u8R\"tag(main() #define ENTRY)tag\";"
+    },
+    {
+      "name": "u raw literal prefix",
+      "valid": true,
+      "source": "auto text = uR\"tag(main() #define ENTRY)tag\";"
+    },
+    {
+      "name": "U raw literal prefix",
+      "valid": true,
+      "source": "auto text = UR\"tag(main() #define ENTRY)tag\";"
+    },
+    {
+      "name": "L raw literal prefix",
+      "valid": true,
+      "source": "auto text = LR\"tag(main() #define ENTRY)tag\";"
     }
   ],
   "against_request": [
@@ -150,6 +456,7 @@
       "valid": false,
       "request": {
         "mode": "faithful_transform",
+        "output_kind": "completion",
         "draft_id": "draft-1",
         "draft_version": 3,
         "language": "cpp",
@@ -164,6 +471,7 @@
       },
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "completion",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "model_id": "provider-disabled",
