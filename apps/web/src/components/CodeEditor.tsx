@@ -17,6 +17,7 @@ interface CodeEditorProps {
   onSave?: () => void;
   jumpToLine?: number;
   onCursorChange?: (line: number, column: number) => void;
+  applyChange?: { from: number; to: number; insert: string; token: number } | null;
 }
 
 const editorTheme = EditorView.theme({
@@ -44,7 +45,7 @@ const syntaxColors = HighlightStyle.define([
   { tag: tags.meta, color: '#c586c0' },
 ]);
 
-export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, onCursorChange }: CodeEditorProps) {
+export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, onCursorChange, applyChange }: CodeEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const saveRef = useRef(onSave);
@@ -103,6 +104,14 @@ export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, on
     view.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: 'center' }) });
     view.focus();
   }, [jumpToLine]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view || !applyChange) return;
+    if (applyChange.from < 0 || applyChange.to < applyChange.from || applyChange.to > view.state.doc.length) return;
+    view.dispatch({ changes: { from: applyChange.from, to: applyChange.to, insert: applyChange.insert }, selection: { anchor: applyChange.from + applyChange.insert.length } });
+    view.focus();
+  }, [applyChange]);
 
   return <div ref={hostRef} className="code-editor" aria-label={`${activeFile} 文档编辑器`} />;
 }

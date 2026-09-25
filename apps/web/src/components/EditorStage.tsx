@@ -16,6 +16,7 @@ interface EditorStageProps {
   onCursorChange?: (line: number, column: number) => void;
   cursorPosition?: { line: number; column: number };
   onFileChange: (file: FileId) => void;
+  applyChange?: { from: number; to: number; insert: string; token: number } | null;
 }
 
 const editorFiles: Array<{ id: FileId; icon: string }> = [
@@ -37,6 +38,7 @@ export function EditorStage({
   onCursorChange,
   cursorPosition = { line: 1, column: 1 },
   onFileChange,
+  applyChange,
 }: EditorStageProps) {
   const modeLabel = getModeLabel(mode);
 
@@ -53,7 +55,7 @@ export function EditorStage({
         onFileChange={onFileChange}
         onSaveFile={() => downloadFile(activeFile, code)}
       />
-      <CodeEditor activeFile={activeFile} value={code} onChange={onChange} onSave={onSave} jumpToLine={jumpToLine} onCursorChange={onCursorChange} />
+      <CodeEditor activeFile={activeFile} value={code} onChange={onChange} onSave={onSave} jumpToLine={jumpToLine} onCursorChange={onCursorChange} applyChange={applyChange} />
       {bottomOpen && <BottomPanel />}
       <footer className="statusbar">
         <span><i className="status-ok" /> {activeFile}</span>
