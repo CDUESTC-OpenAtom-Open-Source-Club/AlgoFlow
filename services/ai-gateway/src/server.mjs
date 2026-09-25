@@ -135,6 +135,7 @@ function validateReviewAgainstRequest(result, request) {
   if (result.source_draft_version !== request.draft_version) errors.push('result source_draft_version must match request draft_version');
   if (result.rule_version !== request.rule_version) errors.push('result rule_version must match request rule_version');
   if (result.review_kind !== request.review_kind) errors.push('result review_kind must match request review_kind');
+  if (result.output_kind !== request.output_kind) errors.push('result output_kind must match request output_kind');
   if (result.visibility !== request.visibility) errors.push('result visibility must match request visibility');
   for (const [index, diagnostic] of (result.diagnostics ?? []).entries()) {
     errors.push(...validateRangeWithinCode(diagnostic.range, request.code, `diagnostics[${index}].range`));
@@ -149,6 +150,7 @@ function validateCompletionAgainstRequest(result, request) {
   if (result.draft_id !== request.draft_id) errors.push('result draft_id must match request draft_id');
   if (result.source_draft_version !== request.draft_version) errors.push('result source_draft_version must match request draft_version');
   if (result.rule_version !== request.rule_version) errors.push('result rule_version must match request rule_version');
+  if (result.output_kind !== request.output_kind) errors.push('result output_kind must match request output_kind');
   if (result.visibility !== request.visibility) errors.push('result visibility must match request visibility');
   const sourceIds = new Set(request.idea_segments.map((segment) => segment.id));
   for (const ref of result.source_refs ?? []) {

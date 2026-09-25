@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { validateCompletionFragment } from '../../../packages/contracts/cpp-fragment.mjs';
 
 const schemas = {
   domain: loadSchema('../../../packages/contracts/schemas/domain.schema.json'),
@@ -11,6 +12,8 @@ export const AI_OUTPUT_KINDS = new Set(schemas.domain.$defs.aiOutputKind.enum);
 export const AI_VISIBILITIES = new Set(schemas.domain.$defs.aiVisibility.enum);
 export const REVIEW_KINDS = new Set(schemas.domain.$defs.reviewKind.enum);
 export const DIAGNOSTIC_LEVELS = new Set(schemas.domain.$defs.diagnosticLevel.enum);
+export const REVIEW_OUTPUT_KIND = schemas.ai.$defs.reviewOutputKind.const;
+export const COMPLETION_OUTPUT_KIND = schemas.ai.$defs.completionOutputKind.const;
 
 export function validateAIRequest(request) {
   const errors = validateSchema(request, schemas.ai.$defs.request, 'request');
@@ -50,6 +53,7 @@ export function validateCompletionRequest(request) {
 export function validateCompletionResult(result) {
   const errors = validateSchema(result, schemas.ai.$defs.completionResult, 'completionResult');
   if (errors.length) return errors;
+  errors.push(...validateCompletionFragment(result.suggestion_text));
   const range = result?.replaced_range;
   if (range) {
     if (range.end_line < range.start_line) errors.push('replaced_range end_line must not precede start_line');

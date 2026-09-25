@@ -5,6 +5,7 @@
       "valid": true,
       "request": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-1",
         "draft_version": 3,
         "language": "cpp",
@@ -24,6 +25,7 @@
       "valid": true,
       "request": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-2",
         "draft_version": 1,
         "language": "cpp",
@@ -42,6 +44,7 @@
       "valid": true,
       "request": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-3",
         "draft_version": 2,
         "language": "cpp",
@@ -60,6 +63,7 @@
       "valid": false,
       "request": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-4",
         "draft_version": 1,
         "language": "cpp",
@@ -79,6 +83,7 @@
       "valid": false,
       "request": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-5",
         "draft_version": 1,
         "language": "cpp",
@@ -98,6 +103,7 @@
       "valid": true,
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "model_id": "provider-disabled",
@@ -121,6 +127,7 @@
       "valid": true,
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "model_id": "provider-disabled",
@@ -132,8 +139,8 @@
             "level": "info",
             "range": null,
             "problem": "Complexity is O(n log n), dominated by sorting.",
-            "basis": "The subsequent scan is linear in the number of intervals.",
-            "suggestion": "Document the complexity in a comment."
+            "basis": "The submitted code sorts the intervals; the selection loop is still empty.",
+            "suggestion": "Document the sorting cost separately from the unspecified selection rule."
           }
         ],
         "visibility": "visible"
@@ -144,6 +151,7 @@
       "valid": true,
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-2",
         "source_draft_version": 1,
         "model_id": "provider-disabled",
@@ -156,7 +164,7 @@
             "range": { "start_line": 1, "start_char": 0, "end_line": 1, "end_char": 54 },
             "problem": "Choosing the longest interval first does not maximize the count.",
             "basis": "A long interval can block several shorter non-overlapping ones.",
-            "suggestion": "Sort by right endpoint instead and greedily select non-overlapping intervals."
+            "suggestion": "Check a counterexample to the longest-first rule without replacing the original idea."
           }
         ],
         "visibility": "visible"
@@ -167,6 +175,7 @@
       "valid": true,
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "model_id": "provider-disabled",
@@ -181,6 +190,7 @@
       "valid": false,
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "model_id": "provider-disabled",
@@ -204,6 +214,7 @@
       "valid": false,
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "model_id": "provider-disabled",
@@ -226,6 +237,7 @@
       "valid": false,
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "model_id": "provider-disabled",
@@ -251,6 +263,7 @@
       "valid": false,
       "request": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-1",
         "draft_version": 3,
         "language": "cpp",
@@ -265,6 +278,7 @@
       },
       "result": {
         "mode": "faithful_transform",
+        "output_kind": "review",
         "draft_id": "draft-1",
         "source_draft_version": 3,
         "model_id": "provider-disabled",

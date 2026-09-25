@@ -6,6 +6,7 @@ web workspace, sync API, and AI gateway.
 - `schemas/domain.schema.json`: entity and shared enum definitions.
 - `schemas/sync.schema.json`: sync operation and result definitions.
 - `schemas/ai.schema.json`: AI request and artifact definitions.
+- `cpp-fragment.mjs`: dependency-free lexical gate for IDE C++ completion text.
 - `vectors/*.json`: implementation-neutral contract examples.
 
 The schemas intentionally avoid provider-specific fields. Consumers may generate
@@ -29,12 +30,14 @@ CodeMirror 6 and OpenHarmony editors. Neither replaces local highlighting, brack
 matching, or base diagnostics.
 
 - Review (`reviewRequest` / `reviewResult`): explanation, risk, or complexity
-  review of the current code and user thinking. Each diagnostic records a level,
-  an optional line/character `range` (a null range marks a global suggestion), a
+  review of the current code and user thinking. Both shapes require
+  `output_kind: "review"`. Each diagnostic records a level,
+  a required line/character `range` (explicit `null` marks a global suggestion), a
   problem statement, the reasoning basis, and a suggestion. Suggestions are always
   a separate field — they never embed or overwrite the user's code.
 - Completion (`completionRequest` / `completionResult`): a user-triggered local
-  edit near the cursor. The result records the original `replaced_range`, the
+  edit near the cursor. Both shapes require `output_kind: "completion"`.
+  The result records the original `replaced_range`, the
   `suggestion_text`, the supporting `source_refs`, and the `model_id` /
   `rule_version` provenance. Every source reference must identify an
   `idea_segments[].id` from the same request. The replacement range must contain
@@ -42,8 +45,9 @@ matching, or base diagnostics.
   three lines above and below its line (at most seven original code lines), and
   never cover the entire file, even for short files. The gateway checks these
   request-relative constraints; `suggestion_text` is limited to 500 characters by
-  the shared schema. Completions must never contain a `main` entry point, a complete
-  submission program, or an algorithm step unsupported by those referenced segments.
+  the shared schema. Completions must be ordinary C++ fragments, without macros,
+  other preprocessor directives, a `main` entry point, a complete submission
+  program, or an algorithm step unsupported by those referenced segments.
 
 Both capabilities reuse `mode`, `draft_id`, `draft_version`, `rule_version`, and
 `visibility` semantics, and classify provider failures with the same error codes:
@@ -53,6 +57,53 @@ not satisfy the contract). Structural validation precedes request-relative range
 and source checks so malformed fields cannot become provider-call errors. This
 classification also applies to `/requests`. Results are delivered separately so a
 client can hide, accept, or reject them without mutating the user's source.
+
+### C++ completion validation boundary
+
+Schema validation is only the structural and length gate. After it succeeds,
+`validateCompletionResult` also calls `validateCompletionFragment` from
+`cpp-fragment.mjs`; a JSON Schema validator alone does **not** implement the
+completion policy. The gateway then checks metadata, source references, and the
+replacement range against the request. Reuse the helper and the `fragments`
+section of `vectors/ide-completion-vectors.json` when implementing another client.
+
+The lexical gate handles backslash continuations (LF, CRLF, and CR), line/block
+comments, escaped and prefixed quoted literals, raw strings with custom
+delimiters, and numeric digit separators. Raw-string contents retain their
+original spelling so splicing cannot invent a closing delimiter. Outside comments
+and literals, preprocessing tokens (`#`, `%:`, and the legacy `??=` spelling) and
+the standalone `main` identifier are rejected. This is deliberately conservative:
+even a variable/member/call named exactly `main` is outside the supported subset.
+Unresolved code-token escapes (including universal-character and legacy trigraph
+escapes), unterminated comments/literals, and invalid raw delimiters are rejected.
+Mentions of `main` or `#include` inside ordinary comments/literals remain valid;
+identifiers such as `main_count` are not entry points.
+
+This gate examines generated text, not the user's original file: existing
+preprocessor code and `main` in the request are not deleted or banned. It is not
+a compiler, macro expander, or arbitrary C++ syntax validator. Valid source IDs
+and accepted tokens do not establish algorithmic faithfulness, rule out every
+submission-shaped algorithm, or prove prompt-injection resistance. Provider
+behavior needs separate evaluation; no real Provider is connected in Stage 1.
+
+### IDE compatibility and rollback
+
+Stage 1 intentionally tightens the IDE shapes. Old IDE requests without
+`output_kind` now return `400 INVALID_REQUEST` before calling a Provider. Old
+Provider results without the matching kind or an explicit diagnostic `range`
+return `422 INVALID_AI_ARTIFACT`. Do not infer missing values or turn every omitted
+range into a global diagnostic: the producer must make that choice explicitly.
+Request/result mode, draft, version, rule, visibility, output kind, and review
+kind (where applicable) must match.
+
+Update the IDE caller, Provider/fixture, gateway, and shared contract together.
+The existing `/requests` transform shapes and `aiOutputKind` enum remain limited
+to `pseudocode` / `code_snippet`; IDE kinds do not widen them. `rule_version`
+remains provenance, not a schema-negotiation mechanism. If rolling back an IDE
+integration, disable those capabilities and restore its matching contract,
+gateway, and callers together rather than silently weakening validation. Stage 1
+does not change databases, saved drafts, or client storage, and requires no data
+migration or deletion. Web and phone IDE integration belongs to later stages.
 
 ### Mode semantics for IDE capabilities
 
