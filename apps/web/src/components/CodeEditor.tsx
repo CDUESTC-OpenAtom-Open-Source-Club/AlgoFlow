@@ -1,14 +1,16 @@
 import { useEffect, useRef } from 'react';
 import { cpp } from '@codemirror/lang-cpp';
 import { acceptCompletion, autocompletion, closeBrackets, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { defaultKeymap, history, historyKeymap, indentWithTab, isolateHistory } from '@codemirror/commands';
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
-import { EditorSelection, EditorState } from '@codemirror/state';
+import { EditorSelection, EditorState, Transaction } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, rectangularSelection, hoverTooltip, type Tooltip } from '@codemirror/view';
 import { bracketMatching, foldGutter, HighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 import { lintGutter, linter, type Diagnostic } from '@codemirror/lint';
 import { reviewCpp } from '../code-review';
+import { rangeToOffsets } from '../ai-client.mjs';
+import type { ApplyAIEditorChange } from '../types';
 
 interface CodeEditorProps {
   activeFile: string;
@@ -17,7 +19,7 @@ interface CodeEditorProps {
   onSave?: () => void;
   jumpToLine?: number;
   onCursorChange?: (line: number, column: number) => void;
-  applyChange?: { from: number; to: number; insert: string; token: number } | null;
+  onEditorReady?: (apply: ApplyAIEditorChange | null) => void;
 }
 
 const editorTheme = EditorView.theme({
@@ -45,16 +47,19 @@ const syntaxColors = HighlightStyle.define([
   { tag: tags.meta, color: '#c586c0' },
 ]);
 
-export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, onCursorChange, applyChange }: CodeEditorProps) {
+export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, onCursorChange, onEditorReady }: CodeEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const saveRef = useRef(onSave);
+  const changeRef = useRef(onChange);
   const externalUpdateRef = useRef(false);
   saveRef.current = onSave;
+  changeRef.current = onChange;
 
   useEffect(() => {
     if (!hostRef.current) return;
     const state = EditorState.create({ doc: value, extensions: [
+      EditorState.lineSeparator.of(value.includes('\r\n') ? '\r\n' : '\n'),
       lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), highlightSelectionMatches(), rectangularSelection(), drawSelection(), history(),
       foldGutter(), bracketMatching(), closeBrackets(), indentOnInput(), indentUnit.of('  '), ...(activeFile.endsWith('.cpp') ? [cpp(), syntaxHighlighting(syntaxColors)] : []), editorTheme,
       ...(activeFile.endsWith('.cpp') ? [lintGutter(), linter((editor) => buildDiagnostics(editor.state.doc.toString()), { delay: 350 })] : []),
@@ -69,7 +74,7 @@ export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, on
         { key: 'Tab', run: acceptCompletion }, indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap,
       ]),
       EditorView.updateListener.of((update) => {
-        if (update.docChanged && !externalUpdateRef.current) onChange(update.state.doc.toString());
+        if (update.docChanged && !externalUpdateRef.current) changeRef.current(update.state.sliceDoc());
         if (update.docChanged || update.selectionSet || update.focusChanged) {
           const position = update.state.selection.main.head;
           const line = update.state.doc.lineAt(position);
@@ -79,19 +84,33 @@ export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, on
     ] });
     const view = new EditorView({ state, parent: hostRef.current });
     viewRef.current = view;
+    onEditorReady?.((change) => {
+      if (activeFile !== 'main.cpp' || view.state.sliceDoc() !== change.sourceCode) return false;
+      try {
+        // CodeMirror positions count one separator; the source snapshot can
+        // contain CRLF. Translate the protocol's line/column range against the
+        // editor Text, not raw-file offsets, and preserve its line separator.
+        const { from, to } = rangeToOffsets(view.state.doc.toString(), change.range);
+        const insert = view.state.toText(change.insert);
+        view.dispatch({ changes: { from, to, insert }, selection: { anchor: from + insert.length },
+          annotations: [Transaction.userEvent.of('input.ai-completion'), isolateHistory.of('full')] });
+        view.focus();
+        return true;
+      } catch { return false; }
+    });
     const initialLine = state.doc.lineAt(state.selection.main.head);
     onCursorChange?.(initialLine.number, state.selection.main.head - initialLine.from + 1);
-    return () => { view.destroy(); viewRef.current = null; };
+    return () => { onEditorReady?.(null); view.destroy(); viewRef.current = null; };
     // The editor is recreated only when switching files.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFile, onCursorChange]);
+  }, [activeFile, onCursorChange, onEditorReady]);
 
   useEffect(() => {
     const view = viewRef.current;
-    if (!view || view.state.doc.toString() === value) return;
+    if (!view || view.state.sliceDoc() === value) return;
     externalUpdateRef.current = true;
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
-    externalUpdateRef.current = false;
+    try { view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } }); }
+    finally { externalUpdateRef.current = false; }
     const position = view.state.selection.main.head;
     const line = view.state.doc.lineAt(position);
     onCursorChange?.(line.number, position - line.from + 1);
@@ -104,14 +123,6 @@ export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, on
     view.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: 'center' }) });
     view.focus();
   }, [jumpToLine]);
-
-  useEffect(() => {
-    const view = viewRef.current;
-    if (!view || !applyChange) return;
-    if (applyChange.from < 0 || applyChange.to < applyChange.from || applyChange.to > view.state.doc.length) return;
-    view.dispatch({ changes: { from: applyChange.from, to: applyChange.to, insert: applyChange.insert }, selection: { anchor: applyChange.from + applyChange.insert.length } });
-    view.focus();
-  }, [applyChange]);
 
   return <div ref={hostRef} className="code-editor" aria-label={`${activeFile} 文档编辑器`} />;
 }

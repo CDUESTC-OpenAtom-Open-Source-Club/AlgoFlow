@@ -13,7 +13,7 @@ export type Documents = Record<FileId, string>;
 export type SyncStatus = 'local_only' | 'syncing' | 'synced' | 'conflict' | 'failed';
 
 export type ReviewKind = 'explanation' | 'risk' | 'complexity';
-export type AIRequestState = 'idle' | 'loading' | 'success' | 'unavailable' | 'error' | 'stale' | 'hidden';
+export type AIRequestState = 'loading' | 'success' | 'unavailable' | 'error' | 'cancelled' | 'accepted' | 'rejected';
 
 export interface IdeaSegment {
   id: string;
@@ -25,6 +25,54 @@ export interface AIRange {
   start_char: number;
   end_line: number;
   end_char: number;
+}
+
+export interface AICursor {
+  line: number;
+  char: number;
+}
+
+export interface AISourceRequest {
+  mode: Mode;
+  draft_id: string;
+  draft_version: number;
+  language: 'cpp';
+  rule_version: string;
+  problem_context: string;
+  idea_segments: IdeaSegment[];
+  code: string;
+  visibility: 'visible' | 'hidden';
+}
+
+export interface AIReviewRequest extends AISourceRequest {
+  output_kind: 'review';
+  review_kind: ReviewKind;
+}
+
+export interface AICompletionRequest extends AISourceRequest {
+  output_kind: 'completion';
+  cursor: AICursor;
+}
+
+// Local application ports; these fields are not part of Draft or the wire Schema.
+export interface AIContext {
+  draftId: string;
+  draftVersion: number;
+  fileId: FileId;
+  mode: Mode;
+  code: string;
+  idea: string;
+  problemContext: string;
+}
+
+export interface AIResponse<T> {
+  result: T;
+  isTestData: boolean;
+}
+
+export interface AIClientPort {
+  requestReview(request: AIReviewRequest, options: { signal: AbortSignal }): Promise<AIResponse<AIReviewResult>>;
+  requestCompletion(request: AICompletionRequest, options: { signal: AbortSignal }): Promise<AIResponse<AICompletionResult>>;
 }
 
 export interface AIReviewDiagnostic {
@@ -65,6 +113,7 @@ export interface AIResultRecord {
   id: string;
   draftId: string;
   capability: 'review' | 'completion';
+  mode: Mode;
   reviewKind?: ReviewKind;
   state: AIRequestState;
   result: AIReviewResult | AICompletionResult | null;
@@ -78,8 +127,35 @@ export interface AIResultRecord {
   sourceFile: FileId;
   sourceCode: string;
   sourceIdea: string;
+  sourceProblemContext: string;
+  sourceSegments: IdeaSegment[];
+  sourceCursor: AICursor | null;
   updatedAt: string;
 }
+
+export interface AIResultRepository {
+  listForDraft(draftId: string, mode: Mode): AIResultRecord[];
+  save(record: AIResultRecord): void;
+  update(record: AIResultRecord): void;
+  reconcileSegments(draftId: string, idea: string, fallback?: IdeaSegment[]): IdeaSegment[];
+  removeDraft(draftId: string): void;
+}
+
+export interface AISessionState {
+  reviews: AIResultRecord[];
+  completion: AIResultRecord | null;
+  segments: IdeaSegment[];
+  storageError: string;
+}
+
+export interface AIEditorChange {
+  id: string;
+  sourceCode: string;
+  range: AIRange;
+  insert: string;
+}
+
+export type ApplyAIEditorChange = (change: AIEditorChange) => boolean;
 
 export interface Draft {
   id: string;

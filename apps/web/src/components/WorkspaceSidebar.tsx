@@ -1,5 +1,5 @@
 import { files, modes } from '../data';
-import type { Draft, FileId, Mode, Panel } from '../types';
+import type { Draft, FileId, IdeaSegment, Mode, Panel } from '../types';
 import { Icon } from './Icon';
 
 interface WorkspaceSidebarProps {
@@ -14,6 +14,7 @@ interface WorkspaceSidebarProps {
   onFileChange: (file: FileId) => void;
   onModeChange: (mode: Mode) => void;
   onQueryChange: (query: string) => void;
+  ideaSegments: IdeaSegment[];
 }
 
 export function WorkspaceSidebar({
@@ -28,6 +29,7 @@ export function WorkspaceSidebar({
   onFileChange,
   onModeChange,
   onQueryChange,
+  ideaSegments,
 }: WorkspaceSidebarProps) {
   return (
     <aside className="side-panel">
@@ -47,7 +49,7 @@ export function WorkspaceSidebar({
       {activePanel === 'search' && (
         <SearchPanel query={query} onQueryChange={onQueryChange} />
       )}
-      {activePanel === 'source' && <SourcePanel />}
+      {activePanel === 'source' && <SourcePanel segments={ideaSegments} />}
       {activePanel === 'ai' && <AiPanel mode={mode} onModeChange={onModeChange} />}
       {activePanel === 'versions' && <VersionsPanel />}
     </aside>
@@ -133,11 +135,10 @@ function SearchPanel({ query, onQueryChange }: SearchPanelProps) {
   );
 }
 
-function SourcePanel() {
+function SourcePanel({ segments }: { segments: IdeaSegment[] }) {
   return (
     <div className="panel-content">
-      <SourceCard index="01" title="按右端点排序" segment="idea_segment_1" />
-      <SourceCard index="02" title="依次选择不冲突区间" segment="idea_segment_2" />
+      {segments.map((segment, index) => <SourceCard key={segment.id} index={String(index + 1).padStart(2, '0')} title={segment.content} segment={segment.id} />)}
       <p className="muted-copy">来源轨道将随着编辑内容保持稳定。</p>
     </div>
   );
@@ -184,8 +185,8 @@ function AiPanel({ mode, onModeChange }: AiPanelProps) {
         ))}
       </div>
       <div className="ai-disabled">
-        <strong>AI 未启用</strong>
-        <p>未配置模型服务。你的代码、复写和同步仍可继续。</p>
+        <strong>{mode === 'faithful_transform' ? '忠实转换 · 按需请求' : '该 AI 模式尚未接入'}</strong>
+        <p>在右侧思路检查中请求审查或预览局部补全。未配置模型时会明确显示 AI 不可用。</p>
       </div>
     </div>
   );
