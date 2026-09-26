@@ -1,15 +1,15 @@
 import { useEffect, useRef } from 'react';
 import { cpp } from '@codemirror/lang-cpp';
 import { acceptCompletion, autocompletion, closeBrackets, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
-import { defaultKeymap, history, historyKeymap, indentWithTab, isolateHistory } from '@codemirror/commands';
+import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
-import { EditorSelection, EditorState, Transaction } from '@codemirror/state';
+import { EditorSelection, EditorState } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, rectangularSelection, hoverTooltip, type Tooltip } from '@codemirror/view';
 import { bracketMatching, foldGutter, HighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 import { lintGutter, linter, type Diagnostic } from '@codemirror/lint';
 import { reviewCpp } from '../code-review';
-import { rangeToOffsets } from '../ai-client.mjs';
+import { completionTransaction, editorText, externalDocumentTransaction, lineSeparator, separatorExtension } from '../editor-transactions.mjs';
 import type { ApplyAIEditorChange } from '../types';
 
 interface CodeEditorProps {
@@ -58,8 +58,8 @@ export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, on
 
   useEffect(() => {
     if (!hostRef.current) return;
-    const state = EditorState.create({ doc: value, extensions: [
-      EditorState.lineSeparator.of(value.includes('\r\n') ? '\r\n' : '\n'),
+    const state = EditorState.create({ doc: editorText(value), extensions: [
+      lineSeparator.of(separatorExtension(value)),
       lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), highlightSelectionMatches(), rectangularSelection(), drawSelection(), history(),
       foldGutter(), bracketMatching(), closeBrackets(), indentOnInput(), indentUnit.of('  '), ...(activeFile.endsWith('.cpp') ? [cpp(), syntaxHighlighting(syntaxColors)] : []), editorTheme,
       ...(activeFile.endsWith('.cpp') ? [lintGutter(), linter((editor) => buildDiagnostics(editor.state.doc.toString()), { delay: 350 })] : []),
@@ -90,10 +90,7 @@ export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, on
         // CodeMirror positions count one separator; the source snapshot can
         // contain CRLF. Translate the protocol's line/column range against the
         // editor Text, not raw-file offsets, and preserve its line separator.
-        const { from, to } = rangeToOffsets(view.state.doc.toString(), change.range);
-        const insert = view.state.toText(change.insert);
-        view.dispatch({ changes: { from, to, insert }, selection: { anchor: from + insert.length },
-          annotations: [Transaction.userEvent.of('input.ai-completion'), isolateHistory.of('full')] });
+        view.dispatch(completionTransaction(view.state, change));
         view.focus();
         return true;
       } catch { return false; }
@@ -109,7 +106,7 @@ export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, on
     const view = viewRef.current;
     if (!view || view.state.sliceDoc() === value) return;
     externalUpdateRef.current = true;
-    try { view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } }); }
+    try { view.dispatch(externalDocumentTransaction(view.state, value)); }
     finally { externalUpdateRef.current = false; }
     const position = view.state.selection.main.head;
     const line = view.state.doc.lineAt(position);

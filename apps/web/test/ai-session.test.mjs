@@ -48,3 +48,42 @@ test('recovered results are read-only and hidden state is local', () => {
   session.setContext(context());
   assert.equal(session.getSnapshot().reviews[0].hidden, true); assert.equal(session.getSnapshot().reviews[0].stale, true);
 });
+
+for (const [label, update] of Object.entries({ code: { code: 'new code' }, idea: { idea: 'new idea' },
+  draft: { draftId: 'draft-other' }, file: { fileId: 'idea.md' }, mode: { mode: 'progressive_hint' },
+  version: { draftVersion: 4 }, context: { problemContext: 'new problem' }, cancel: null, dispose: null })) {
+  for (const failure of [false, true]) test(`${label} invalidates pending completion and ignores late ${failure ? 'failure' : 'success'}`, async () => {
+    const pending = deferred(); let signal; let request;
+    const session = new AISession({ requestCompletion: (value, options) => {
+      signal = options.signal; request = value; return pending.promise;
+    } }, repository());
+    session.setContext(context());
+    const run = session.requestCompletion({ line: 3, char: 0 });
+    if (label === 'cancel') session.cancel();
+    else if (label === 'dispose') session.dispose();
+    else session.setContext(context(update));
+    const state = session.getSnapshot();
+    assert.equal(signal.aborted, true);
+    if (failure) pending.reject(new Error('late failure'));
+    else pending.resolve({ result: completionResult(request), isTestData: true });
+    await run;
+    assert.deepEqual(session.getSnapshot(), state);
+    assert.equal(session.canAcceptCompletion(), false);
+  });
+}
+
+test('acceptance applies exactly once and hide/reject never write code', async () => {
+  const session = new AISession(clientFor([]), repository()); session.setContext(context());
+  await session.requestCompletion({ line: 3, char: 0 });
+  const id = session.getSnapshot().completion.id;
+  session.setHidden(id, true);
+  let writes = 0;
+  const apply = () => { writes++; return true; };
+  assert.equal(session.acceptCompletion(apply), false);
+  session.setHidden(id, false);
+  assert.equal(session.acceptCompletion(apply), true);
+  assert.equal(session.acceptCompletion(apply), false);
+  await session.requestCompletion({ line: 3, char: 0 }); session.rejectCompletion();
+  assert.equal(session.acceptCompletion(apply), false);
+  assert.equal(writes, 1);
+});
