@@ -173,5 +173,6 @@
 - Inspector 增加 explanation/risk/complexity 三类可追加审查消息，以及局部补全预览、隐藏和显式接受入口。审查不会写 `.cpp`；补全接受前校验草稿版本、代码快照、文件和过期状态，接受只发起 CodeMirror 局部事务，后续仍需用户保存后才进入普通同步链路。
 - 请求代次和 `AbortController` 防止取消、编辑、切换草稿或迟到响应覆盖新结果；代码/思路快照变化后结果标记为过期，过期补全不可接受。Web 端接口类型可供后续 OpenHarmony 端镜像使用，本阶段未修改手机端。
 - 测试数据 Provider、真实模型接入、云服务部署和新的提示代码生成入口均未在本阶段实现；`run-demo-gateway.mjs` 为未跟踪个人脚本，未纳入提交。
-- 实际验证：`node --test test/*.test.mjs`（Web 2/2）；`npx tsc -p tsconfig.app.json --noEmit`（通过）；`npx tsc -p tsconfig.node.json --noEmit`（通过）；`npm run build`（Vite 构建通过）；`node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`（379/379）；`git diff --check`（通过）。
-- 未执行：浏览器人工交互、OpenHarmony 构建/设备验收、真实 Provider 联调和云端部署；这些不因 Web 构建通过而视为完成。
+- 修复记录：同源 `/ai-api` 开发代理、重复审查消息追加、稳定思路片段恢复、CRLF 范围换算、结果分区与缓存错误恢复、请求代次/取消竞态、测试数据隔离和 CodeMirror 可撤销接受事务均已补齐；新增 Web 端客户端、存储和会话回归覆盖。
+- 实际验证：`node --test apps/web/test/*.test.mjs`（13/13）；`node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`（379/379）；`npx tsc -p apps/web/tsconfig.app.json --noEmit`（通过）；`npx tsc -p apps/web/tsconfig.node.json --noEmit`（通过）；`npm run build`（Vite 构建通过）；`git diff --check`（通过）。
+- 未执行：真实 Provider 联调、OpenHarmony 构建/设备验收和云端部署。当前环境的 Computer Use RPC 未配置，无法完成浏览器人工交互验收；因此不把浏览器验收写成已通过。测试 Provider、真实模型接入、云服务部署和新的提示代码生成入口仍未在本阶段实现。

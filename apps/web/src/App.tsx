@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ActivityBar } from './components/ActivityBar';
 import { EditorStage } from './components/EditorStage';
 import { InspectorPanel } from './components/InspectorPanel';
@@ -9,9 +9,10 @@ import { BrowserWorkspaceRepository, queueUpsert } from './storage.mjs';
 import { LocalSyncClient, synchronizeWorkspace } from './sync-client.mjs';
 import type { ConflictRecord, Documents, Draft, FileId, Mode, Panel, SyncStatus, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
-import { AIClientError, WebAIClient, createIdeaSegments, rangeToOffsets, toCursor } from './ai-client.mjs';
+import { WebAIClient, toCursor } from './ai-client.mjs';
 import { BrowserAIResultRepository } from './ai-result-storage.mjs';
-import type { AICompletionResult, AIRequestState, AIResultRecord, AIReviewDiagnostic, ReviewKind } from './types';
+import { AISession } from './ai-session.mjs';
+import type { AIContext, ApplyAIEditorChange } from './types';
 
 interface ConflictChoice {
   copy: Draft;
@@ -43,35 +44,27 @@ export function App() {
   const [conflict, setConflict] = useState<ConflictChoice | null>(() => unresolvedConflict(workspace));
   const [jumpToLine, setJumpToLine] = useState(0);
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
-  const [applyChange, setApplyChange] = useState<{ from: number; to: number; insert: string; token: number } | null>(null);
-  const [aiRecords, setAiRecords] = useState<AIResultRecord[]>([]);
-  const aiRepository = useMemo(() => new BrowserAIResultRepository(), []);
-  const requestGeneration = useRef(0);
-  const requestControllers = useRef(new Map<string, AbortController>());
-  const lastDocuments = useRef(documents);
+  const [aiSession] = useState(() => new AISession(aiClient, new BrowserAIResultRepository()));
+  const aiState = useSyncExternalStore(aiSession.subscribe, aiSession.getSnapshot, aiSession.getSnapshot);
+  const editorApply = useRef<ApplyAIEditorChange | null>(null);
+  const editEpoch = useRef(0);
+  const handleEditorReady = useCallback((apply: ApplyAIEditorChange | null) => { editorApply.current = apply; }, []);
   const handleCursorChange = useCallback((line: number, column: number) => {
     setCursorPosition({ line, column });
   }, []);
 
-  useEffect(() => {
-    const draftId = currentDraft?.id ?? '';
-    if (lastDocuments.current['main.cpp'] !== documents['main.cpp'] || lastDocuments.current['idea.md'] !== documents['idea.md']) {
-      const current = aiRepository.invalidateSource(draftId, documents['main.cpp'], documents['idea.md']);
-      setAiRecords(current);
-    } else {
-      setAiRecords(aiRepository.listForDraft(draftId));
-    }
-    lastDocuments.current = documents;
-  }, [aiRepository, currentDraft?.id, documents]);
+  useLayoutEffect(() => {
+    if (currentDraft) aiSession.setContext(makeAIContext(currentDraft, documents, activeFile, mode));
+  }, [aiSession, currentDraft, documents, activeFile, mode]);
 
-  const invalidateAI = useCallback(() => {
-    requestGeneration.current += 1;
-    for (const controller of requestControllers.current.values()) controller.abort();
-    requestControllers.current.clear();
-    setAiRecords((records) => records.map((record) => ({ ...record, stale: true, state: record.state === 'loading' ? 'stale' : record.state })));
-  }, [aiRepository, currentDraft?.id]);
+  useEffect(() => () => aiSession.dispose(), [aiSession]);
+
+  useEffect(() => {
+    for (const draft of workspace.drafts) if (draft.deleted) aiSession.removeDraft(draft.id);
+  }, [aiSession, workspace.drafts]);
 
   const flushQueue = useCallback(async () => {
+    const startedAt = editEpoch.current;
     const state = repository.load();
     if (!navigator.onLine) {
       setSyncState('local_only');
@@ -83,11 +76,15 @@ export function App() {
     repository.save(result.state);
     setWorkspace(result.state);
     const draft = result.state.drafts.find((item) => item.id === result.state.selected_id) ?? result.state.drafts[0];
-    if (draft) setDocuments(draftToDocuments(draft));
+    if (draft && startedAt === editEpoch.current) {
+      aiSession.cancel();
+      setDocuments(draftToDocuments(draft));
+      setMode(draft.ai_mode);
+    }
     setSyncState(result.status);
     const pendingConflict = unresolvedConflict(result.state);
     if (pendingConflict) setConflict(pendingConflict);
-  }, [clientId, repository]);
+  }, [aiSession, repository]);
 
   useEffect(() => {
     void flushQueue();
@@ -102,9 +99,23 @@ export function App() {
   }, [flushQueue]);
 
   function updateActiveDocument(value: string) {
-    setDocuments((current) => ({ ...current, [activeFile]: value }));
+    const next = { ...documents, [activeFile]: value };
+    editEpoch.current += 1;
+    if (currentDraft) aiSession.setContext(makeAIContext(currentDraft, next, activeFile, mode));
+    setDocuments(next);
     setSaved(false);
-    invalidateAI();
+  }
+
+  function selectFile(file: FileId) {
+    if (currentDraft) aiSession.setContext(makeAIContext(currentDraft, documents, file, mode));
+    setActiveFile(file);
+  }
+
+  function selectMode(nextMode: Mode) {
+    editEpoch.current += 1;
+    if (currentDraft) aiSession.setContext(makeAIContext(currentDraft, documents, activeFile, nextMode));
+    setMode(nextMode);
+    setSaved(false);
   }
 
   function saveWorkspace() {
@@ -143,6 +154,8 @@ export function App() {
     const state = repository.load();
     const draft = state.drafts.find((item) => item.id === draftId);
     if (!draft) return;
+    editEpoch.current += 1;
+    aiSession.setContext(makeAIContext(draft, draftToDocuments(draft), activeFile, draft.ai_mode));
     const next = { ...state, selected_id: draftId };
     repository.save(next);
     setWorkspace(next);
@@ -150,76 +163,12 @@ export function App() {
     setMode(draft.ai_mode);
     setSaved(true);
     setSyncState(draft.sync_status);
-    invalidateAI();
-  }
-
-  function makeBaseRequest(outputKind: 'review' | 'completion', extra: Record<string, unknown> = {}) {
-    const draft = currentDraft;
-    if (!draft) throw new Error('没有选中的草稿');
-    return {
-      problem_context: documents['idea.md'] || draft.title,
-      mode: 'faithful_transform', draft_id: draft.id, draft_version: draft.version,
-      language: 'cpp', rule_version: '1.0.0', idea_segments: createIdeaSegments(documents['idea.md']),
-      output_kind: outputKind, visibility: 'visible', code: documents['main.cpp'], ...extra
-    };
-  }
-
-  async function requestReview(kind: ReviewKind) {
-    const draft = currentDraft; if (!draft) return;
-    const generation = ++requestGeneration.current;
-    requestControllers.current.get(`review:${kind}`)?.abort();
-    const controller = new AbortController(); requestControllers.current.set(`review:${kind}`, controller);
-    const recordBase = { id: crypto.randomUUID(), draftId: draft.id, capability: 'review' as const, reviewKind: kind, state: 'loading' as AIRequestState, result: null, isTestData: false, hidden: false, stale: false, requestGeneration: generation, sourceDraftVersion: draft.version, sourceFile: activeFile, sourceCode: documents['main.cpp'], sourceIdea: documents['idea.md'], updatedAt: new Date().toISOString() };
-    setAiRecords((records) => [...records.filter((item) => !(item.draftId === draft.id && item.capability === 'review' && item.reviewKind === kind)), recordBase]);
-    try {
-      const response = await aiClient.requestReview(makeBaseRequest('review', { review_kind: kind }), { signal: controller.signal });
-      if (generation !== requestGeneration.current || controller.signal.aborted) return;
-      const record = { ...recordBase, state: 'success' as AIRequestState, result: response.result, isTestData: response.isTestData, updatedAt: new Date().toISOString() };
-      aiRepository.save(record); setAiRecords((records) => [...records.filter((item) => item.id !== recordBase.id && !(item.draftId === draft.id && item.capability === 'review' && item.reviewKind === kind)), record]);
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      const code = error instanceof AIClientError ? error.code : 'AI_PROVIDER_ERROR';
-      const record = { ...recordBase, state: code === 'AI_NOT_ENABLED' ? 'unavailable' as AIRequestState : 'error' as AIRequestState, errorCode: code, errorMessage: error instanceof Error ? error.message : '请求失败', updatedAt: new Date().toISOString() };
-      aiRepository.save(record); setAiRecords((records) => [...records.filter((item) => item.id !== recordBase.id), record]);
-    }
-  }
-
-  async function requestCompletion() {
-    const draft = currentDraft; if (!draft || activeFile !== 'main.cpp') return;
-    const generation = ++requestGeneration.current;
-    requestControllers.current.get('completion')?.abort();
-    const controller = new AbortController(); requestControllers.current.set('completion', controller);
-    try {
-      const response = await aiClient.requestCompletion(makeBaseRequest('completion', { cursor: toCursor(cursorPosition.line, cursorPosition.column) }), { signal: controller.signal });
-      if (generation !== requestGeneration.current || controller.signal.aborted) return;
-      const record: AIResultRecord = { id: crypto.randomUUID(), draftId: draft.id, capability: 'completion', state: 'success', result: response.result, isTestData: response.isTestData, hidden: false, stale: false, requestGeneration: generation, sourceDraftVersion: draft.version, sourceFile: activeFile, sourceCode: documents['main.cpp'], sourceIdea: documents['idea.md'], updatedAt: new Date().toISOString() };
-      aiRepository.save(record); setAiRecords((records) => [...records.filter((item) => item.capability !== 'completion' || item.draftId !== draft.id), record]);
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      const record: AIResultRecord = { id: crypto.randomUUID(), draftId: draft.id, capability: 'completion', state: error instanceof AIClientError && error.code === 'AI_NOT_ENABLED' ? 'unavailable' : 'error', result: null, errorCode: error instanceof AIClientError ? error.code : 'AI_PROVIDER_ERROR', errorMessage: error instanceof Error ? error.message : '请求失败', isTestData: false, hidden: false, stale: false, requestGeneration: generation, sourceDraftVersion: draft.version, sourceFile: activeFile, sourceCode: documents['main.cpp'], sourceIdea: documents['idea.md'], updatedAt: new Date().toISOString() };
-      aiRepository.save(record); setAiRecords((records) => [...records.filter((item) => item.capability !== 'completion' || item.draftId !== draft.id), record]);
-    }
-  }
-
-  function hideReview(kind: ReviewKind) {
-    const record = aiRecords.find((item) => item.capability === 'review' && item.reviewKind === kind);
-    if (record) aiRepository.setHidden(record);
-    setAiRecords((records) => records.map((item) => item.capability === 'review' && item.reviewKind === kind ? { ...item, hidden: true, state: 'hidden' } : item));
-  }
-
-  function acceptCompletion() {
-    const record = aiRecords.find((item) => item.capability === 'completion');
-    const result = record?.result as AICompletionResult | null;
-    if (!record || !result || record.stale || record.sourceCode !== documents['main.cpp'] || record.sourceDraftVersion !== currentDraft?.version || activeFile !== 'main.cpp') return;
-    const offsets = rangeToOffsets(documents['main.cpp'], result.replaced_range);
-    setApplyChange({ ...offsets, insert: result.suggestion_text, token: Date.now() });
-    const hidden = { ...record, state: 'hidden' as AIRequestState, hidden: true };
-    aiRepository.setHidden(hidden);
-    setAiRecords((records) => records.map((item) => item.id === record.id ? hidden : item));
   }
 
   function keepConflictCopy() {
     if (!conflict) return;
+    editEpoch.current += 1;
+    aiSession.cancel();
     const state = repository.load();
     const copy: Draft = {
       ...conflict.copy,
@@ -238,6 +187,8 @@ export function App() {
 
   function useServerVersion() {
     if (!conflict) return;
+    editEpoch.current += 1;
+    aiSession.cancel();
     const state = repository.load();
     let next = replaceDraft(
       { ...state, selected_id: conflict.server.id, drafts: state.drafts.filter((draft) => draft.id !== conflict.copy.id) },
@@ -281,9 +232,10 @@ export function App() {
           query={query}
           saved={saved}
           onDraftChange={selectDraft}
-          onFileChange={setActiveFile}
-          onModeChange={setMode}
+          onFileChange={selectFile}
+          onModeChange={selectMode}
           onQueryChange={setQuery}
+          ideaSegments={aiState.segments}
         />
         <EditorStage
           activeFile={activeFile}
@@ -297,8 +249,9 @@ export function App() {
           jumpToLine={jumpToLine}
           cursorPosition={cursorPosition}
           onCursorChange={handleCursorChange}
-          onFileChange={setActiveFile}
-          applyChange={applyChange}
+          onFileChange={selectFile}
+          editorKey={`${currentDraft?.id}:${activeFile}`}
+          onEditorReady={handleEditorReady}
         />
         <InspectorPanel
           hidden={inspectorHidden}
@@ -306,19 +259,26 @@ export function App() {
           onJumpToLine={setJumpToLine}
           onHide={() => setInspectorHidden(true)}
           onShow={() => setInspectorHidden(false)}
-          reviewState={Object.fromEntries((['explanation', 'risk', 'complexity'] as ReviewKind[]).map((kind) => [kind, aiRecords.find((item) => item.capability === 'review' && item.reviewKind === kind)?.state ?? 'idle'])) as Record<ReviewKind, AIRequestState>}
-          reviewMessages={aiRecords.filter((item) => item.capability === 'review' && !item.hidden && item.result).map((item) => ({ kind: item.reviewKind!, diagnostics: (item.result as { diagnostics: AIReviewDiagnostic[] }).diagnostics, isTestData: item.isTestData, stale: item.stale }))}
-          completion={(() => { const item = aiRecords.find((record) => record.capability === 'completion' && !record.hidden && record.result); return item ? { result: item.result as AICompletionResult, isTestData: item.isTestData, stale: item.stale } : null; })()}
-          completionState={aiRecords.find((item) => item.capability === 'completion')?.state ?? 'idle'}
-          onReview={requestReview}
-          onCompletion={requestCompletion}
-          onAcceptCompletion={acceptCompletion}
-          onHideAI={hideReview}
-          errorMessages={aiRecords.filter((item) => (item.state === 'error' || item.state === 'unavailable') && item.errorMessage).map((item) => item.errorMessage ?? '请求失败')}
+          aiState={aiState}
+          mode={mode}
+          activeFile={activeFile}
+          canAcceptCompletion={aiSession.canAcceptCompletion()}
+          onReview={(kind) => { void aiSession.requestReview(kind); }}
+          onCompletion={() => { void aiSession.requestCompletion(toCursor(cursorPosition.line, cursorPosition.column)); }}
+          onAcceptCompletion={() => { aiSession.acceptCompletion(change => editorApply.current?.(change) ?? false); }}
+          onRejectCompletion={() => aiSession.rejectCompletion()}
+          onCancel={() => aiSession.cancel()}
+          onToggleResult={(id, hidden) => aiSession.setHidden(id, hidden)}
+          onRetryStorage={() => aiSession.retryStorage()}
         />
       </main>
     </div>
   );
+}
+
+function makeAIContext(draft: Draft, documents: Documents, fileId: FileId, mode: Mode): AIContext {
+  return { draftId: draft.id, draftVersion: draft.version, fileId, mode,
+    code: documents['main.cpp'], idea: documents['idea.md'], problemContext: draft.title || '当前草稿' };
 }
 
 function getClientId(): string {

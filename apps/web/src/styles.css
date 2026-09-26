@@ -739,6 +739,8 @@ h2 {
 }
 
 .inspector {
+  overflow: auto;
+  overscroll-behavior: contain;
   min-width: 0;
   padding: 21px 17px;
   border-left: 1px solid #d2d2c8;
@@ -906,6 +908,30 @@ h2 {
   border-radius: 6px;
   background: #fbfaf5;
   font-size: 11px;
+}
+
+.ai-review-chat,
+.completion-section {
+  min-width: 0;
+}
+
+.ai-chat-log {
+  max-height: 34vh;
+  overflow: auto;
+  padding-right: 3px;
+}
+
+.ai-help,
+.ai-provenance {
+  color: var(--md-on-surface-variant);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.outline-button:disabled,
+.quiet-button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
 }
 
 .ai-result.stale { opacity: .65; }
