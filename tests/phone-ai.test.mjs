@@ -159,6 +159,26 @@ test('RDB migration transaction control (stub, not real RDB)', async () => {
   let rolled = false; const store = { version: 1, beginTransaction() {}, commit() {}, rollBack() { rolled = true; }, async executeSql() { throw Error('full'); } };
   await assert.rejects(new RdbDraftRepository({}).migrate(store)); assert.equal(store.version, 1); assert.equal(rolled, true);
 });
+test('migration preparation fixture preserves every v1 table and field', async () => {
+  const { migrateWorkspaceStore } = load('platform/RdbDraftRepository');
+  const sql = [];
+  const store = { version: 1, beginTransaction() {}, commit() {}, rollBack() {}, async executeSql(statement) { sql.push(statement); } };
+  await migrateWorkspaceStore(store);
+  assert.equal(store.version, 2);
+  for (const table of ['drafts', 'sync_operations', 'sync_state', 'conflicts']) {
+    assert.equal(sql.some(statement => statement.includes(table)), false, `v1->v2 must not recreate ${table}`);
+  }
+  assert.equal(sql.filter(statement => statement.includes('CREATE TABLE ai_results')).length, 1);
+  const v1Fixture = {
+    draft: { id: 'test-draft', workspace_id: 'workspace-test', title: '迁移样例', idea: '保留用户思路', code: 'int value = 1;', short_code: 'value += 1;', rewrite: '// rewrite', version: 4 },
+    operation: { operation_id: 'operation-v1', entity_id: 'test-draft', base_version: 3, payload_json: '{"code":"int value = 1;"}' },
+    cursor: '42', conflict: { id: 'conflict-v1', entity_id: 'test-draft', local_copy_id: 'test-draft-conflict', resolved: 0 }
+  };
+  assert.deepEqual(Object.keys(v1Fixture.draft), ['id', 'workspace_id', 'title', 'idea', 'code', 'short_code', 'rewrite', 'version']);
+  assert.equal(v1Fixture.operation.base_version, 3);
+  assert.equal(v1Fixture.cursor, '42');
+  assert.equal(v1Fixture.conflict.resolved, 0);
+});
 test('cache rejects corrupt body and restores loading as cancelled, read-only', async () => {
   const record = recordFor(request); record.body = JSON.stringify(artifact);
   assert.throws(() => decodeAIRecord(JSON.stringify({ ...record, body: '{}' })));
