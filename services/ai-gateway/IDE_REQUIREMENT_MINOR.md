@@ -166,6 +166,16 @@
 - Gateway 已向 `generate`、`review`、`complete` 传递 `AbortSignal`，客户端断开后不写响应；三类能力均有断开回归。服务端主动超时的 `502 AI_PROVIDER_ERROR` 保持不变。
 - 阶段 2 当前仍未提交；待补充独立入口的启动验收和取消场景说明后再创建 commit。
 
+## 2026-09-26 浏览器补验记录
+
+- 使用 Codex 内置浏览器访问独立本地端口 14173，测试 Provider 位于 18789；没有使用真实模型，没有操作现有草稿或上传验收内容。
+- 发现并修复浏览器原生 fetch 的接收对象错误：作为客户端实例方法调用会失败，现显式以 globalThis 调用；新增回归，避免 Node 环境宽松行为掩盖浏览器异常。
+- 页面已验证：三类审查成功并显示“测试数据”；重复风险审查追加消息；隐藏最近结果后刷新只恢复最近一条且保留隐藏状态；恢复显示；补全预览不写代码，显式接受产生未保存修改，Ctrl+Z 恢复原文；拒绝不写代码；刷新后的补全及切换 idea.md 后的补全禁止接受。
+- 延迟场景已在响应前取消，页面显示“请求已取消”；未单独采集 Provider 端 AbortSignal 的浏览器链路证据，服务端断开测试仍由既有回归覆盖。
+- 在同一来源关闭 VITE_AI_ALLOW_TEST_DATA 后，测试缓存不展示；请求测试 Provider 显示“AI 不可用：当前配置不允许测试数据”。这验证普通开发配置隔离，不等同于部署后的生产反向代理验收。
+- 实际执行合并 Node 回归 393/393（Web 14，Gateway/Sync 379）；npm run build 通过（含 app/node TypeScript 检查），仍有既有的大于 500 kB chunk 提示。
+- 尚未覆盖的浏览器矩阵：CRLF 多行插入/外部换行格式变化、同步更新期间竞态、多草稿切换、生产静态托管链路。阶段三不得据此称为全矩阵验收完成，手机端和真实模型仍未验收。
+
 ## 2026-09-26 阶段 3 Web 实施记录
 
 - 新增 Web `WebAIClient`，调用 `/reviews`、`/completions` 并保留 `/requests` 兼容入口；按 HTTP 分类显示 `AI_NOT_ENABLED`、`AI_PROVIDER_ERROR` 和 `INVALID_AI_ARTIFACT`，仅从 `X-AlgoFlow-Test-Data: true` 响应头识别“测试数据”。

@@ -56,7 +56,7 @@ export class WebAIClient {
   async #request(path, body, { signal } = {}) {
     let response;
     try {
-      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      response = await this.fetchImpl.call(globalThis, `${this.baseUrl}${path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
