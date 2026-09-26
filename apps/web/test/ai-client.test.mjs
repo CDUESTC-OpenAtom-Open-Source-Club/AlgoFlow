@@ -38,6 +38,14 @@ test('the browser uses a same-origin AI route by default', () => {
   assert.equal(new WebAIClient().baseUrl, '/ai-api');
 });
 
+test('native fetch receives the browser global as its receiver', async () => {
+  const client = new WebAIClient('/ai-api', { fetchImpl: async function () {
+    assert.equal(this, globalThis);
+    return new Response(JSON.stringify(result));
+  } });
+  assert.deepEqual((await client.requestReview(request)).result, result);
+});
+
 test('inserting or reordering idea lines keeps their existing source IDs', () => {
   const original = createIdeaSegments('sort\nvisit');
   const inserted = createIdeaSegments('check\nsort\nvisit', original);
