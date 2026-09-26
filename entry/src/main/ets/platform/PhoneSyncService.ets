@@ -41,7 +41,13 @@ export class PhoneSyncService {
     let hadConflict = false;
     for (const operation of pending) {
       try {
+        this.repository.markInFlight(operation.operation_id);
         const result = await client.push(operation);
+        const newer = this.repository.listPendingOperations().find(item => item.entity_id === operation.entity_id && item.operation_id !== operation.operation_id);
+        if (newer !== undefined) {
+          this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.LOCAL_ONLY);
+          return new SyncRunResult(SyncRunStatus.LOCAL_ONLY, '同步期间产生新编辑，已保留本地内容；再次同步时进行版本检查');
+        }
         hilog.info(DOMAIN, TAG,
           '[AlgoFlow] Sync operation result. entity_id=%{public}s server_version=%{public}s status=%{public}s',
           safeLogValue(operation.entity_id), result.version?.toString() ?? 'none', result.status);

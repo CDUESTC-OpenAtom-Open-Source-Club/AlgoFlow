@@ -4,24 +4,65 @@ import { AIProvider } from '../domain/AIProvider';
 import { AIArtifact, AIErrorCode, AIOutputKind, AIMode, AIRequest, AIRequestSegment, AIResult,
   AIVisibility, CodeMapping, PseudocodeStep } from '../domain/Models';
 import { AIContractGuard } from '../domain/AIContractGuard';
+import { IDECapability, IDEProvider, IDEReply, IDERequest, IDERecord, buildIDERequest } from '../domain/IDEAIModels';
+import { parseIDEResult } from '../domain/IDEAIContract';
+import { DEBUG } from 'BuildProfile';
 
 const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8788';
 const RULE_VERSION = '1.0.0';
 
-export class HttpAIProvider implements AIProvider {
+export class HttpAIProvider implements AIProvider, IDEProvider {
+  private allowTestData: boolean = false;
   private baseUrl: string;
-  private maxRetries: number;
   private readTimeoutMs: number;
   private activeRequest: http.HttpRequest | null = null;
   private generation: number = 0;
   private cancelledGeneration: number = -1;
 
-  constructor(baseUrl: string = DEFAULT_BASE_URL, maxRetries: number = 2, readTimeoutMs: number = 10000) {
+  constructor(baseUrl: string = DEFAULT_BASE_URL, maxRetries: number = 0, readTimeoutMs: number = 10000, allowTestData: boolean = false) {
     this.baseUrl = trimBaseUrl(baseUrl);
-    this.maxRetries = Math.max(0, maxRetries);
     this.readTimeoutMs = readTimeoutMs;
+    this.allowTestData = DEBUG && allowTestData;
+  }
+
+  async request(body: IDERequest, capability: IDECapability): Promise<IDEReply> {
+    this.cancel();
+    const generation = ++this.generation;
+    const reply = new IDEReply();
+    if (body.mode !== AIMode.FAITHFUL_TRANSFORM) {
+      reply.errorCode = 'AI_MODE_NOT_AVAILABLE'; reply.message = '当前模式尚未接入'; return reply;
+    }
+    const transport = http.createHttp(); this.activeRequest = transport;
+    try {
+      const path = capability === IDECapability.TRANSFORM ? '/requests' : capability === IDECapability.REVIEW ? '/reviews' : '/completions';
+      const response = await transport.request(`${this.baseUrl}${path}`, {
+        method: http.RequestMethod.POST, header: { 'Content-Type': 'application/json' }, extraData: JSON.stringify(body),
+        expectDataType: http.HttpDataType.STRING, connectTimeout: 5000, readTimeout: this.readTimeoutMs
+      });
+      if (generation !== this.generation || this.isCancelled(generation)) {
+        reply.errorCode = 'CANCELLED'; reply.message = '请求已取消'; return reply;
+      }
+      const headers = response.header as Record<string, string>;
+      const marker = Object.keys(headers).find(key => key.toLowerCase() === 'x-algoflow-test-data');
+      const testData = marker !== undefined && String(headers[marker]).trim().toLowerCase() === 'true';
+      if (testData && !this.allowTestData) {
+        reply.errorCode = 'AI_NOT_ENABLED'; reply.message = 'AI 不可用：当前配置不允许测试数据'; return reply;
+      }
+      reply.isTestData = testData;
+      if (response.responseCode !== 200) {
+        const error = mapHttpError(response.responseCode, ''); reply.errorCode = error.code; reply.message = error.message; return reply;
+      }
+      reply.body = typeof response.result === 'string' ? response.result : JSON.stringify(response.result);
+      return reply;
+    } catch (error) {
+      reply.errorCode = generation !== this.generation || this.isCancelled(generation) ? 'CANCELLED' : 'NETWORK_ERROR';
+      reply.message = reply.errorCode === 'CANCELLED' ? '请求已取消' : 'AI 服务不可达，请检查地址或网络后重试'; return reply;
+    } finally {
+      if (this.activeRequest === transport) this.activeRequest = null;
+      transport.destroy();
+    }
   }
 
   cancel(): void {
@@ -32,83 +73,20 @@ export class HttpAIProvider implements AIProvider {
   }
 
   async generate(request: AIRequest): Promise<AIResult> {
-    const generation = ++this.generation;
-    const modeUnavailable = validateModeAvailability(request.mode);
-    if (modeUnavailable.length > 0) {
-      return AIResult.failure(AIErrorCode.AI_MODE_NOT_AVAILABLE, modeUnavailable);
+    const record = new IDERecord(); record.capability = IDECapability.TRANSFORM;
+    record.context.draftId = request.draftId; record.context.version = request.draftVersion;
+    record.context.mode = request.mode; record.context.segments = request.ideaSegments;
+    record.context.problemContext = request.problemContext;
+    const reply = await this.request(buildIDERequest(record), IDECapability.TRANSFORM);
+    if (reply.errorCode.length > 0) {
+      const code = reply.errorCode === 'CANCELLED' ? AIErrorCode.CANCELLED : reply.errorCode === 'NETWORK_ERROR' ? AIErrorCode.NETWORK_ERROR : parseErrorCode(reply.errorCode);
+      return AIResult.failure(code, reply.message);
     }
-    hilog.info(DOMAIN, TAG,
-      '[AlgoFlow] AI request started. draft_id=%{public}s mode=%{public}s version=%{public}s',
-      safeLogValue(request.draftId), request.mode, request.draftVersion.toString());
-    const body = JSON.stringify(new AIRequestBody(request));
-    let lastError: AIErrorCode = AIErrorCode.NETWORK_ERROR;
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      if (this.isCancelled(generation)) {
-        return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
-      }
-      try {
-        const result = await this.post(body);
-        if (this.isCancelled(generation)) {
-          return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
-        }
-        if (result.statusCode >= 200 && result.statusCode < 300) {
-          return this.parseSuccess(result.body, request);
-        }
-        const mapped = mapHttpError(result.statusCode, result.body);
-        if (result.statusCode >= 500 && attempt < this.maxRetries) {
-          lastError = mapped.code;
-          hilog.warn(DOMAIN, TAG,
-            '[AlgoFlow] AI provider transient failure. status=%{public}s attempt=%{public}s',
-            result.statusCode.toString(), attempt.toString());
-          await sleep(500 * (attempt + 1));
-          if (this.isCancelled(generation)) {
-            return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
-          }
-          continue;
-        }
-        hilog.warn(DOMAIN, TAG,
-          '[AlgoFlow] AI request rejected. status=%{public}s code=%{public}s',
-          result.statusCode.toString(), mapped.code);
-        return AIResult.failure(mapped.code, mapped.message);
-      } catch (error) {
-        if (this.isCancelled(generation)) {
-          return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
-        }
-        lastError = AIErrorCode.NETWORK_ERROR;
-        hilog.warn(DOMAIN, TAG,
-          '[AlgoFlow] AI transport failed. attempt=%{public}s', attempt.toString());
-        if (attempt < this.maxRetries) {
-          await sleep(500 * (attempt + 1));
-          if (this.isCancelled(generation)) {
-            return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
-          }
-          continue;
-        }
-        return AIResult.failure(AIErrorCode.NETWORK_ERROR, 'AI 服务不可达，请检查网络或稍后重试');
-      }
-    }
-    return AIResult.failure(lastError, 'AI 请求失败');
+    try { parseIDEResult(reply.body, record); }
+    catch (error) { return AIResult.failure(AIErrorCode.INVALID_AI_ARTIFACT, 'AI 产物不符合契约'); }
+    return this.parseSuccess(reply.body, request);
   }
 
-  private async post(body: string): Promise<HttpResult> {
-    const request = http.createHttp();
-    this.activeRequest = request;
-    try {
-      const response = await request.request(`${this.baseUrl}/requests`, {
-        method: http.RequestMethod.POST,
-        header: { 'Content-Type': 'application/json' },
-        extraData: body,
-        expectDataType: http.HttpDataType.STRING,
-        connectTimeout: 5000,
-        readTimeout: this.readTimeoutMs
-      });
-      const responseBody = typeof response.result === 'string' ? response.result : JSON.stringify(response.result);
-      return new HttpResult(response.responseCode, responseBody);
-    } finally {
-      if (this.activeRequest === request) this.activeRequest = null;
-      request.destroy();
-    }
-  }
 
   private isCancelled(generation: number): boolean {
     return this.cancelledGeneration === generation;
@@ -202,15 +180,6 @@ class AIErrorPayload {
   errors: string[] = [];
 }
 
-class HttpResult {
-  statusCode: number;
-  body: string;
-
-  constructor(statusCode: number, body: string) {
-    this.statusCode = statusCode;
-    this.body = body;
-  }
-}
 
 class MappedError {
   code: AIErrorCode;
@@ -288,10 +257,6 @@ function parseAIVisibility(value: string): AIVisibility {
   return value === AIVisibility.HIDDEN ? AIVisibility.HIDDEN : AIVisibility.VISIBLE;
 }
 
-function validateModeAvailability(mode: AIMode): string {
-  if (mode === AIMode.FAITHFUL_TRANSFORM) return '';
-  return '该 AI 模式尚未接入，保持不可用';
-}
 
 function trimBaseUrl(value: string): string {
   const trimmed = value.trim();
@@ -299,11 +264,6 @@ function trimBaseUrl(value: string): string {
   return trimmed.endsWith('/') ? trimmed.substring(0, trimmed.length - 1) : trimmed;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise<void>((resolve: () => void) => {
-    setTimeout(resolve, ms);
-  });
-}
 
 function safeLogValue(value: string): string {
   return value.replace(/[^a-zA-Z0-9._:-]/g, '_').substring(0, 96);

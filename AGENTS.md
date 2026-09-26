@@ -136,6 +136,14 @@ src/
 
 ### 3.2 OpenHarmony 手机端代码组织基线
 
+issue #5 阶段四新增 `IDEAISession` 独立用例、`IDEProvider` 可取消端口和 `RdbAIResultRepository`。页面只通过用例发起三类审查、忠实局部补全及兼容 `/requests`；单次操作只请求一次，取消调用原生 HTTP destroy。局部补全显式接受后仅调用普通 main.cpp 本地保存/离线排队，不自动同步；撤回必须匹配接受后上下文，编辑、切稿、同步变化或重启后失效。
+
+当前阶段不接云服务，云服务厂商仍未确定；本文其他位置的华为云描述属于历史候选方案，不构成当前部署授权。
+
+本地数据库版本为 v2，事务迁移只新增独立 `ai_results`，不改变同步 Schema。按草稿/模式/能力/审查类型及测试分区保留最新结果；会话历史仅内存追加，旧消息隐藏不能覆盖最新槽位。旧 `artifact_hidden` 保留兼容，新 AI 操作不读写它、不保存 Draft、不入同步。恢复结果只读过期，未完成请求恢复为取消；迁移/读写失败不得删除数据库，版本高于当前实现时拒绝初始化和写入。
+
+测试数据只能由响应头识别，Debug 页面需显式启用，Release 的 BuildProfile.DEBUG=false 强制拒绝测试响应及缓存。Node 手机用例测试使用真实 ArkTS 源码加 SDK 替身，不等于设备或真实 RDB 验证；设备 RDB 测试在 `entry/src/ohosTest/ets/test/AIStorage.test.ets`，只使用独立测试数据库。阶段四工程交付不代表阶段五双端验收或 issue #5 整体完成，实际证据见 `services/ai-gateway/IDE_REQUIREMENT_MINOR.md`。
+
 当前手机端源码位于 `entry/src/main/ets`：
 
 ```text

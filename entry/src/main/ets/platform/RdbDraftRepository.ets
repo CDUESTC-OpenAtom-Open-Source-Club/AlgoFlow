@@ -7,10 +7,60 @@ import { AIArtifact, AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Mo
 import { ConflictRecord, DraftPayload, SyncOperation, SyncOperationType, draftToPayload,
   payloadToDraft } from '../domain/SyncModels';
 import { SyncRepository } from '../domain/SyncRepository';
+import { AIResultRepository } from '../domain/IDEAIModels';
+import { RdbAIResultRepository } from './RdbAIResultRepository';
 
 const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
+export async function migrateWorkspaceStore(store: relationalStore.RdbStore): Promise<void> {
+    if (store.version > DATABASE_VERSION) {
+      throw new Error(`Unsupported database version ${store.version}`);
+    }
+    if (store.version === 0) {
+      store.beginTransaction();
+      try {
+        await store.executeSql('CREATE TABLE IF NOT EXISTS drafts (' +
+          'id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, title TEXT NOT NULL, idea TEXT NOT NULL, ' +
+          'code TEXT NOT NULL, short_code TEXT NOT NULL, rewrite TEXT NOT NULL, version INTEGER NOT NULL, ' +
+          'created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted INTEGER NOT NULL, ' +
+          'last_modified_client_id TEXT NOT NULL, sync_status TEXT NOT NULL, ai_mode TEXT NOT NULL, ' +
+          'artifact_hidden INTEGER NOT NULL, idea_segments_json TEXT NOT NULL)');
+        await store.executeSql('CREATE TABLE IF NOT EXISTS sync_operations (' +
+          'operation_id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, ' +
+          'operation_type TEXT NOT NULL, base_version INTEGER NOT NULL, client_id TEXT NOT NULL, ' +
+          'occurred_at TEXT NOT NULL, payload_json TEXT NOT NULL)');
+        await store.executeSql('CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_operations_entity ' +
+          'ON sync_operations(entity_type, entity_id)');
+        await store.executeSql('CREATE TABLE IF NOT EXISTS sync_state (' +
+          'state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL)');
+        await store.executeSql('CREATE TABLE IF NOT EXISTS conflicts (' +
+          'id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, local_copy_id TEXT NOT NULL, ' +
+          'server_entity_json TEXT NOT NULL, created_at TEXT NOT NULL, resolved INTEGER NOT NULL)');
+        store.version = 1;
+        store.commit();
+      } catch (error) {
+        store.rollBack();
+        if (store.version === 1) store.version = 0;
+        throw new Error(error instanceof Error ? error.message : 'RDB migration failed');
+      }
+    }
+    if (store.version === 1) {
+      store.beginTransaction();
+      try {
+        await store.executeSql('CREATE TABLE ai_results (' +
+          'draft_id TEXT NOT NULL, mode TEXT NOT NULL, slot TEXT NOT NULL, is_test INTEGER NOT NULL, ' +
+          'result_id TEXT NOT NULL, updated_at TEXT NOT NULL, record_json TEXT NOT NULL, ' +
+          'PRIMARY KEY (draft_id, mode, slot, is_test))');
+        store.version = 2;
+        store.commit();
+      } catch (error) {
+        store.rollBack();
+        if (store.version === 2) store.version = 1;
+        throw new Error('AI 结果数据库升级失败，原工作区未删除');
+      }
+    }
+  }
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8787';
 const STORE_CONFIG: relationalStore.StoreConfig = {
   name: 'algoflow_workspace.db',
@@ -18,6 +68,10 @@ const STORE_CONFIG: relationalStore.StoreConfig = {
 };
 
 export class RdbDraftRepository implements DraftRepository, SyncRepository {
+  private inFlight: string[] = [];
+  markInFlight(operationId: string): void {
+    if (!this.inFlight.includes(operationId)) this.inFlight.push(operationId);
+  }
   private context: common.Context;
   private store?: relationalStore.RdbStore;
   private drafts: Draft[] = [];
@@ -33,11 +87,14 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
 
   async initialize(): Promise<void> {
     if (this.store !== undefined) return;
-    this.store = await relationalStore.getRdbStore(this.context, STORE_CONFIG);
-    await this.migrate(this.store);
-    await this.loadState(this.store);
-    await this.loadDrafts(this.store);
-    await this.loadOperations(this.store);
+    const store = await relationalStore.getRdbStore(this.context, STORE_CONFIG);
+    await this.migrate(store);
+    this.store = store;
+    try {
+      await this.loadState(store);
+      await this.loadDrafts(store);
+      await this.loadOperations(store);
+    } catch (error) { this.store = undefined; throw new Error('RDB initialization failed'); }
   }
 
   list(): Draft[] {
@@ -76,6 +133,10 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
 
   async flush(): Promise<void> {
     await this.writeChain;
+  }
+
+  aiResults(allowTestData: boolean = false): AIResultRepository {
+    return new RdbAIResultRepository(this.requireStore(), allowTestData);
   }
 
   getClientId(): string { return this.clientId; }
@@ -124,36 +185,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   }
 
   private async migrate(store: relationalStore.RdbStore): Promise<void> {
-    if (store.version > DATABASE_VERSION) {
-      throw new Error(`Unsupported database version ${store.version}`);
-    }
-    if (store.version === 0) {
-      store.beginTransaction();
-      try {
-        await store.executeSql('CREATE TABLE IF NOT EXISTS drafts (' +
-          'id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, title TEXT NOT NULL, idea TEXT NOT NULL, ' +
-          'code TEXT NOT NULL, short_code TEXT NOT NULL, rewrite TEXT NOT NULL, version INTEGER NOT NULL, ' +
-          'created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted INTEGER NOT NULL, ' +
-          'last_modified_client_id TEXT NOT NULL, sync_status TEXT NOT NULL, ai_mode TEXT NOT NULL, ' +
-          'artifact_hidden INTEGER NOT NULL, idea_segments_json TEXT NOT NULL)');
-        await store.executeSql('CREATE TABLE IF NOT EXISTS sync_operations (' +
-          'operation_id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, ' +
-          'operation_type TEXT NOT NULL, base_version INTEGER NOT NULL, client_id TEXT NOT NULL, ' +
-          'occurred_at TEXT NOT NULL, payload_json TEXT NOT NULL)');
-        await store.executeSql('CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_operations_entity ' +
-          'ON sync_operations(entity_type, entity_id)');
-        await store.executeSql('CREATE TABLE IF NOT EXISTS sync_state (' +
-          'state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL)');
-        await store.executeSql('CREATE TABLE IF NOT EXISTS conflicts (' +
-          'id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, local_copy_id TEXT NOT NULL, ' +
-          'server_entity_json TEXT NOT NULL, created_at TEXT NOT NULL, resolved INTEGER NOT NULL)');
-        store.version = 1;
-        store.commit();
-      } catch (error) {
-        store.rollBack();
-        throw new Error(error instanceof Error ? error.message : 'RDB migration failed');
-      }
-    }
+    await migrateWorkspaceStore(store);
   }
 
   private async loadState(store: relationalStore.RdbStore): Promise<void> {
@@ -261,7 +293,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   private queueOperation(draft: Draft, operationType: SyncOperationType): void {
     const existing = this.operations.find((operation: SyncOperation) => operation.entity_id === draft.id);
     const operation = new SyncOperation();
-    operation.operation_id = existing !== undefined && existing.operation_id.trim().length > 0
+    operation.operation_id = existing !== undefined && existing.operation_id.trim().length > 0 && !this.inFlight.includes(existing.operation_id)
       ? existing.operation_id : createOperationId();
     operation.entity_id = draft.id;
     operation.operation_type = operationType;
@@ -271,6 +303,9 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     operation.payload = draftToPayload(draft);
     this.operations = this.operations.filter((item: SyncOperation) => item.entity_id !== draft.id);
     this.operations.push(operation);
+    if (existing !== undefined && existing.operation_id !== operation.operation_id) {
+      this.enqueue(async () => this.deleteOperation(existing.operation_id));
+    }
     this.enqueue(async () => this.persistOperation(operation));
   }
 
@@ -300,6 +335,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
         draft.version, draft.createdAt, draft.updatedAt, draft.deleted ? 1 : 0, draft.lastModifiedClientId,
         draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0, JSON.stringify(draft.ideaSegments)
       ]);
+    if (draft.deleted) await store.executeSql('DELETE FROM ai_results WHERE draft_id = ?', [draft.id]);
   }
 
   private async persistOperation(operation: SyncOperation): Promise<void> {
@@ -328,6 +364,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
 
   private requireStore(): relationalStore.RdbStore {
     if (this.store === undefined) throw new Error('RDB repository is not initialized');
+    if (this.store.version !== DATABASE_VERSION) throw new Error('Unsupported database version');
     return this.store;
   }
 }
