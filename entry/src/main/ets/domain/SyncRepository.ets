@@ -8,6 +8,7 @@ export interface SyncRepository {
   getBaseUrl(): string;
   setBaseUrl(baseUrl: string): void;
   listPendingOperations(): SyncOperation[];
+  markInFlight(operationId: string): void;
   hasPendingOperation(entityId: string): boolean;
   removeOperation(operationId: string): void;
   applyServerDraft(draft: Draft): void;

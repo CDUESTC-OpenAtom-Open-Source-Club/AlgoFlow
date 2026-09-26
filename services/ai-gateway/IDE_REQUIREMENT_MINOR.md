@@ -174,6 +174,18 @@
 - 以 `VITE_AI_ALLOW_TEST_DATA=true` 构建生产产物，本机静态服务和 `/ai-api` 路由已在浏览器验证；测试响应仍被拒绝，切换无 Provider 后明确提示未配置模型。测试缓存隔离由既有浏览器补验与仓储回归覆盖；未部署生产服务。
 - Node 合并回归 415/415，生产构建（含 app/node TypeScript）通过；保留大于 500 kB chunk 的既有提示。验收辅助页面不属于生产构建入口；辅助服务只显式启动且只监听 127.0.0.1。
 
+## 2026-09-26 阶段四手机工程交付与验收边界
+
+- Web 收尾提交：`fd569e0`（`fix(web): verify newline edits and preserve concurrent work`）。手机工程另行提交，提交标识见 Git 日志中的 `feat(phone): add isolated AI review and completion workflow`。
+- 手机新增 `IDEAIModels`、`IDEAIContract`、`IDEAISession` 和 `RdbAIResultRepository`；更新 Index、ViewModel、HttpAIProvider、RdbDraftRepository、PhoneSyncService 及取消/同步端口。审查会话追加、局部补全预览/接受/拒绝/隐藏、只读旧结果和受上下文保护的撤回均由独立用例控制。兼容 `/requests` 使用相同单次网络调用及严格产物门禁，旧入口不自动写代码。
+- 原生 HTTP destroy 执行取消，代次阻止迟到响应恢复权限。代码、思路、文件、模式、草稿、版本、页面离开或新请求使旧结果失效。补全接受只修改 main.cpp，进入既有本地保存与队列，不自动调用同步；同步期间新保存分配新 operation_id，返回旧响应时保留新编辑，后续同步显式处理版本冲突。
+- RDB v1→v2 事务仅新增 ai_results，主键分为草稿/模式/槽位/测试标志；失败回滚，高版本拒绝。普通草稿、队列、游标、冲突和 artifact_hidden 保留兼容，AI 新操作不写 artifact_hidden。旧消息更新按 result_id 限定；测试结果不能落入正常缓存。重启只读过期，loading 恢复 cancelled；墓碑/删除清理结果，迟到保存不能复活已删除草稿的结果。失败显示重试，不删除用户库。
+- 数据库恢复策略：升级失败先保留原库并解决空间/权限等实际原因，再重试；不手工降版本、不删除数据库。v2 之后若需退回 v1 应使用升级前备份，禁止旧应用写入 v2。损坏记录保留原数据并报告错误，修复/导出应另行评审。
+- Node.js v24.14.1 / Windows PowerShell，实际执行 `node --test --test-reporter=spec apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`：519/519 通过，0 失败、0 跳过。其中手机 104 项执行真实 .ets 代码的 Node 类型转换版本，SDK 网络与 RDB 使用替身；包含公共 C++ 59 个向量、审查/补全契约、取消竞态、来源/范围、CRLF 接受/撤回、稳定 ID、槽位与同步保留。Node 类型转换有实验 API 提示，不能替代 ArkTS 编译或真实 RDB 验收。
+- 使用锁定 DevEco 6.0.0 / API 20 工具链构建。环境：DEVECO_SDK_HOME=`C:/Program Files/Huawei/DevEco Studio/sdk`，JAVA_HOME=`C:/Program Files/Huawei/DevEco Studio/jbr`；调用 `tools/node/node.exe tools/hvigor/bin/hvigorw.js --mode module -p product=default -p module=entry@default -p buildMode=debug assembleHap --no-daemon`，Release 将 buildMode 改为 release，测试 HAP 将 module 改为 entry@ohosTest。Debug、Release、ohosTest 均通过编译打包；未签名，保留 SDK deprecated/可能抛异常及 Release 混淆提示。Release 生成的 BuildProfile 明确 DEBUG=false；测试响应及测试缓存开关在发布模式强制关闭。
+- `entry/src/ohosTest/ets/test/AIStorage.test.ets` 已接入测试套件并编译，使用独立测试数据库覆盖首次建库、升级保留、回滚重试、重开恢复、旧消息槽位、损坏记录、写入失败、删除清理与高版本拒绝。**未在真实 RDB 执行**。`hdc list targets` 实际返回 `[Empty]`，无 signingConfigs，未安装设备、未验证设备输入/滚动/取消/隐藏/接受/撤回/进程重启。
+- 状态：工程完成、设备待验。未接真实模型，未做阶段五双端验收，未做云部署、#25 提示代码生成或正式签名；云服务厂商仍未确定。阶段四不等于 issue #5 整体完成。分支 pr18；不合并、不推送，个人 run-demo-gateway.mjs 不提交。
+
 ## 2026-09-26 浏览器补验记录
 
 - 使用 Codex 内置浏览器访问独立本地端口 14173，测试 Provider 位于 18789；没有使用真实模型，没有操作现有草稿或上传验收内容。

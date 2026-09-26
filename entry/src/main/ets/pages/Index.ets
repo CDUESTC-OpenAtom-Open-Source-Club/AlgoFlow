@@ -3,6 +3,9 @@ import { AIArtifact, AIMode, AIResultStatus, Draft, IdeaSegment, PseudocodeStep,
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
 import { saveCardSnapshot } from '../platform/CardSnapshot';
+import { DEBUG } from 'BuildProfile';
+import { IDECapability, IDERecord, IDEState, ReviewKind, SourceCursor } from '../domain/IDEAIModels';
+import { rangeOffsets } from '../domain/IDEAIContract';
 
 enum WorkspaceTool {
   NONE = 'none', FILES = 'files', IDEA = 'idea', SNIPPET = 'snippet', AI = 'ai',
@@ -118,6 +121,46 @@ struct Index {
   @State aiMessage: string = '';
   @State aiError: boolean = false;
   @State aiResult: AIArtifact | null = null;
+  @State aiRecords: IDERecord[] = [];
+  @State aiStorageError: string = '';
+  @State allowTestData: boolean = false;
+  @State canWithdrawAI: boolean = false;
+  private aiRepository: RdbDraftRepository | null = null;
+  private editEpoch: number = 0;
+
+  aboutToDisappear(): void { this.viewModel.aiSession?.dispose(); }
+  onPageHide(): void { this.viewModel.cancelAI(); }
+
+  private configureAISession(): void {
+    if (this.aiRepository === null) return;
+    this.viewModel.configureAI(this.aiRepository.aiResults(this.allowTestData), this.allowTestData);
+    const session = this.viewModel.aiSession;
+    if (session === null) return;
+    session.onChange = () => {
+      this.aiRecords = session.records.slice();
+      this.aiLoading = session.records.some(record => record.state === IDEState.LOADING);
+      this.aiStorageError = session.storageError;
+      this.canWithdrawAI = session.canWithdraw();
+    };
+    this.viewModel.selectAIContext(this.selectedId, this.activeFile);
+  }
+
+  private requestIDE(capability: IDECapability, kind: ReviewKind = ReviewKind.EXPLANATION): void {
+    this.viewModel.selectAIContext(this.selectedId, this.activeFile);
+    const cursor = new SourceCursor(); cursor.line = this.activeLine + 1; cursor.char = this.activeColumn;
+    this.viewModel.aiSession?.request(capability, kind, cursor);
+  }
+
+  private resultText(record: IDERecord): string {
+    const result = this.viewModel.aiSession?.result(record);
+    if (result === null || result === undefined) return record.message || record.errorCode;
+    if (record.capability === IDECapability.TRANSFORM) return result.transformText;
+    if (record.capability === IDECapability.COMPLETION) {
+      const offsets = rangeOffsets(record.context.code, result.range);
+      return `范围 ${JSON.stringify(result.range)}\n建议：\n${result.suggestion}\n来源：${result.sourceRefs.join(', ')}\n原范围：\n${record.context.code.substring(offsets[0], offsets[1])}`;
+    }
+    return result.diagnostics.map(item => `${item.level} ${item.problem}\n依据：${item.basis}\n建议：${item.suggestion}\n范围：${JSON.stringify(item.range)}`).join('\n\n') || '未发现诊断项';
+  }
 
   aboutToAppear(): void {
     this.initializeWorkspace();
@@ -128,6 +171,8 @@ struct Index {
       const repository = new RdbDraftRepository(getContext(this));
       this.viewModel = new DraftWorkspaceViewModel(repository, repository);
       await this.viewModel.initialize();
+      this.aiRepository = repository;
+      this.configureAISession();
       const routedDraftId = AppStorage.get<string>('routeDraftId');
       const resolvedRouteId = routedDraftId === 'latest' ? this.viewModel.ensureStarterDraft() : routedDraftId;
       this.selectedId = resolvedRouteId !== undefined && this.viewModel.getDraft(resolvedRouteId) !== undefined
@@ -144,6 +189,8 @@ struct Index {
   }
 
   private loadSelectedDraft(): void {
+    this.editEpoch++;
+    this.viewModel.selectAIContext(this.selectedId, this.activeFile);
     this.drafts = this.viewModel.listDrafts();
     const draft = this.viewModel.getDraft(this.selectedId);
     if (draft === undefined) return;
@@ -153,7 +200,7 @@ struct Index {
     this.shortCode = draft.shortCode;
     this.rewrite = draft.rewrite;
     this.mode = draft.aiMode;
-    this.artifactHidden = draft.artifactHidden;
+    this.artifactHidden = false;
     this.syncStatus = draft.syncStatus;
     this.segments = draft.ideaSegments;
     this.aiResult = this.viewModel.getArtifact(this.selectedId, draft.aiMode) ?? null;
@@ -196,6 +243,7 @@ struct Index {
   }
 
   private updateDocument(value: string): void {
+    this.editEpoch++;
     this.setCurrentValue(value);
     this.saved = false;
     this.syncStatus = SyncStatus.LOCAL_ONLY;
@@ -413,6 +461,8 @@ struct Index {
   private selectFile(file: EditorFile): void {
     if (this.activeFile === file) return;
     this.activeFile = file;
+    this.editEpoch++;
+    this.viewModel.selectAIContext(this.selectedId, file);
     this.resetEditorPosition();
     this.refreshEditorFeatures();
   }
@@ -466,6 +516,7 @@ struct Index {
   }
 
   private async synchronize(): Promise<void> {
+    const epoch = this.editEpoch;
     this.viewModel.setSyncBaseUrl(this.syncBaseUrl);
     this.syncStatus = SyncStatus.SYNCING;
     this.syncMessage = '正在连接 sync-api...';
@@ -488,6 +539,7 @@ struct Index {
     else this.syncStatus = SyncStatus.LOCAL_ONLY;
     this.syncMessage = result.message;
     this.drafts = this.viewModel.listDrafts();
+    if (epoch !== this.editEpoch) return;
     this.selectRemoteDraftIfPlaceholder();
     const draft = this.viewModel.getDraft(this.selectedId);
     if (draft !== undefined) {
@@ -497,6 +549,7 @@ struct Index {
       this.shortCode = draft.shortCode;
       this.rewrite = draft.rewrite;
       this.segments = draft.ideaSegments;
+      this.viewModel.selectAIContext(this.selectedId, this.activeFile);
       saveCardSnapshot(getContext(this), draft);
     }
   }
@@ -517,6 +570,7 @@ struct Index {
   }
 
   private chooseMode(nextMode: AIMode): void {
+    this.editEpoch++;
     this.viewModel.setMode(this.selectedId, nextMode);
     this.mode = nextMode;
     this.saved = false;
@@ -527,28 +581,12 @@ struct Index {
   }
 
   private async runAI(): Promise<void> {
-    this.aiLoading = true;
-    this.aiError = false;
-    this.aiMessage = '正在连接 AI Gateway...';
-    this.aiResult = null;
-    this.viewModel.setAIBaseUrl(this.aiBaseUrl);
-    const result = await this.viewModel.requestAI(this.selectedId, this.mode);
-    this.aiLoading = false;
-    if (result.status === AIResultStatus.SUCCESS && result.artifact !== null) {
-      this.aiResult = result.artifact;
-      this.aiMessage = '转换完成，结果已按模式隔离保存';
-      this.saved = false;
-      this.syncStatus = SyncStatus.LOCAL_ONLY;
-    } else {
-      this.aiError = true;
-      this.aiMessage = result.message;
-    }
+    this.requestIDE(IDECapability.TRANSFORM);
   }
 
   private toggleArtifact(): void {
-    this.viewModel.toggleArtifact(this.selectedId);
     this.artifactHidden = !this.artifactHidden;
-    this.saved = false;
+    this.viewModel.aiSession?.records.forEach(record => this.viewModel.aiSession?.setHidden(record.id, this.artifactHidden));
   }
 
   private lineNumbers(): string {
@@ -862,7 +900,7 @@ struct Index {
       TextInput({ text: this.title, placeholder: '草稿标题' }).width('100%').height(36).fontSize(11)
         .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
         .border({ width: 1, color: '#3A3A3D' }).borderRadius(4)
-        .onChange((value: string) => { this.title = value; this.saved = false; })
+        .onChange((value: string) => { this.title = value; this.editEpoch++; this.saveDraft(); })
     }.width('100%').backgroundColor('#161618')
   }
 
@@ -898,7 +936,7 @@ struct Index {
       Text('该内容不会覆盖 main.cpp。').fontSize(10).fontColor('#8E8E93').margin({ top: 3, bottom: 8 })
       TextArea({ text: this.shortCode, placeholder: '// 局部 C++ 片段' }).width('100%').height(145)
         .fontSize(12).lineHeight(20).fontFamily('monospace').fontColor('#E8ECE9').backgroundColor('#0A0A0C')
-        .border({ width: 1, color: '#3A3A3D' }).borderRadius(4).onChange((value: string) => { this.shortCode = value; this.saved = false; })
+        .border({ width: 1, color: '#3A3A3D' }).borderRadius(4).onChange((value: string) => { this.shortCode = value; this.editEpoch++; this.saveDraft(); })
     }.width('100%').backgroundColor('#161618')
   }
 
@@ -906,6 +944,41 @@ struct Index {
   AIPanel() {
     Column({ space: 7 }) {
       Text('AI 模式').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+      Text('审查只分析；局部补全接受后才保存 main.cpp，不自动同步。').fontSize(10).fontColor('#8E8E93')
+      Row({ space: 4 }) {
+        Button('解释').fontSize(10).onClick(() => this.requestIDE(IDECapability.REVIEW, ReviewKind.EXPLANATION))
+        Button('风险').fontSize(10).onClick(() => this.requestIDE(IDECapability.REVIEW, ReviewKind.RISK))
+        Button('复杂度').fontSize(10).onClick(() => this.requestIDE(IDECapability.REVIEW, ReviewKind.COMPLEXITY))
+      }
+      Button('忠实局部补全').onClick(() => this.requestIDE(IDECapability.COMPLETION))
+      Button('撤回本次补全').enabled(this.canWithdrawAI)
+        .onClick(() => { this.viewModel.aiSession?.withdraw((value: string) => this.updateDocument(value)); })
+      if (DEBUG) {
+        Button(this.allowTestData ? '测试数据：已显式启用' : '启用测试数据（仅 Debug）').fontSize(10)
+          .onClick(() => { this.allowTestData = !this.allowTestData; this.configureAISession(); })
+      }
+      if (this.aiStorageError.length > 0) {
+        Text(this.aiStorageError).fontColor('#FF9A94').fontSize(10)
+        Button('重试本地存储').onClick(() => { this.viewModel.aiSession?.retryStorage(); })
+      }
+      ForEach(this.aiRecords, (record: IDERecord) => {
+        Column({ space: 5 }) {
+          Text(`${record.capability}/${record.reviewKind} · ${record.state}${record.stale ? ' · 过期只读' : ''}${record.isTestData ? ' · 测试数据' : ''}`)
+            .fontSize(10).fontColor('#79C0FF')
+          Text(`草稿版本 ${record.context.version} · 规则 1.0.0 · ${this.viewModel.aiSession?.result(record)?.modelId ?? ''}`)
+            .fontSize(9).fontColor('#8E8E93')
+          if (!record.hidden) {
+            Text(this.resultText(record)).fontSize(11).fontColor('#ECECED').copyOption(CopyOptions.LocalDevice)
+          }
+          Button(record.hidden ? '显示' : '隐藏').fontSize(10)
+            .onClick(() => this.viewModel.aiSession?.setHidden(record.id, !record.hidden))
+          if (record.capability === IDECapability.COMPLETION) {
+            Button('接受到 main.cpp').enabled(this.viewModel.aiSession?.canAccept(record) ?? false)
+              .onClick(() => { this.viewModel.aiSession?.accept(record.id, (value: string) => this.updateDocument(value)); })
+            Button('拒绝').onClick(() => this.viewModel.aiSession?.reject(record.id))
+          }
+        }.width('100%').padding(6).backgroundColor('#1C1C1E')
+      }, (record: IDERecord) => `${record.id}-${record.state}-${record.hidden}-${record.stale}`)
       Row({ space: 7 }) {
         this.ModeButton('忠实转换', AIMode.FAITHFUL_TRANSFORM)
         this.ModeButton('可行性', AIMode.FEASIBILITY_ANALYSIS)
@@ -951,7 +1024,7 @@ struct Index {
       TextInput({ text: this.aiBaseUrl, placeholder: 'http://电脑局域网IP:8788' }).width('100%').height(30).fontSize(9)
         .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
         .border({ width: 1, color: '#3A3A3D' }).borderRadius(4)
-        .onChange((value: string) => { this.aiBaseUrl = value; this.viewModel.setAIBaseUrl(value); })
+        .onChange((value: string) => { this.aiBaseUrl = value; this.viewModel.setAIBaseUrl(value, this.allowTestData); })
     }.width('100%')
   }
 

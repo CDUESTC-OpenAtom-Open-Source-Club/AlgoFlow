@@ -5,10 +5,16 @@ import { AIProvider } from '../domain/AIProvider';
 import { SyncRepository } from '../domain/SyncRepository';
 import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
 import { HttpAIProvider } from '../platform/HttpAIProvider';
+import { IDEAISession } from './IDEAISession';
+import { AIResultRepository, IDEContext } from '../domain/IDEAIModels';
 
 const RULE_VERSION = '1.0.0';
 
 export class DraftWorkspaceViewModel {
+  aiSession: IDEAISession | null = null;
+  private aiFile: string = 'main.cpp';
+  private aiDraft: string = '';
+  private syncing: boolean = false;
   private repository: DraftRepository;
   private syncRepository?: SyncRepository;
   private aiProvider: AIProvider;
@@ -28,10 +34,34 @@ export class DraftWorkspaceViewModel {
     await this.repository.initialize();
   }
 
+  configureAI(repository: AIResultRepository, allowTestData: boolean): void {
+    this.aiSession?.dispose();
+    this.aiSession = new IDEAISession(new HttpAIProvider(this.aiBaseUrl, 0, 10000, allowTestData), repository);
+  }
+
+  selectAIContext(id: string, file: string): void {
+    this.aiDraft = id; this.aiFile = file;
+    const draft = this.repository.get(id);
+    if (draft === undefined) { this.aiSession?.cancel(); return; }
+    const context = new IDEContext(); context.draftId = draft.id; context.version = draft.version;
+    context.file = file; context.mode = draft.aiMode; context.code = draft.code; context.idea = draft.idea;
+    context.problemContext = draft.title || '当前草稿';
+    context.segments = draft.ideaSegments.map(segment => new AIRequestSegment(segment.id, segment.content));
+    this.aiSession?.setContext(context);
+  }
+
   async synchronize(): Promise<SyncRunResult | undefined> {
     if (this.syncRepository === undefined || this.syncRepository.listPendingOperations === undefined) return undefined;
-    await this.repository.flush();
-    return await new PhoneSyncService(this.syncRepository).synchronize();
+    if (this.syncing) return undefined;
+    this.syncing = true;
+    this.cancelAI();
+    try {
+      await this.repository.flush();
+      const result = await new PhoneSyncService(this.syncRepository).synchronize();
+      await this.repository.flush();
+      this.selectAIContext(this.aiDraft, this.aiFile);
+      return result;
+    } finally { this.syncing = false; }
   }
 
   getSyncBaseUrl(): string {
@@ -42,13 +72,13 @@ export class DraftWorkspaceViewModel {
     this.syncRepository?.setBaseUrl(baseUrl);
   }
 
-  setAIBaseUrl(baseUrl: string): void {
+  setAIBaseUrl(baseUrl: string, allowTestData: boolean = false): void {
     this.aiRequestGeneration += 1;
-    if (this.aiProvider instanceof HttpAIProvider) {
-      (this.aiProvider as HttpAIProvider).cancel();
-    }
+    this.aiRequestInFlight = false;
+    this.aiProvider.cancel();
     this.aiBaseUrl = baseUrl;
     this.aiProvider = new HttpAIProvider(baseUrl);
+    this.aiSession?.setProvider(new HttpAIProvider(baseUrl, 0, 10000, allowTestData));
   }
 
   getAIBaseUrl(): string {
@@ -61,9 +91,9 @@ export class DraftWorkspaceViewModel {
 
   cancelAI(): void {
     this.aiRequestGeneration += 1;
-    if (this.aiProvider instanceof HttpAIProvider) {
-      (this.aiProvider as HttpAIProvider).cancel();
-    }
+    this.aiRequestInFlight = false;
+    this.aiProvider.cancel();
+    this.aiSession?.cancel();
   }
 
   async requestAI(id: string, mode: AIMode): Promise<AIResult> {
@@ -95,7 +125,7 @@ export class DraftWorkspaceViewModel {
       }
       return result;
     } finally {
-      this.aiRequestInFlight = false;
+      if (requestGeneration === this.aiRequestGeneration) this.aiRequestInFlight = false;
     }
   }
 
@@ -110,9 +140,8 @@ export class DraftWorkspaceViewModel {
     if (draft === undefined) return;
     const others = draft.aiArtifacts.filter((item: AIArtifact) => item.mode !== artifact.mode);
     draft.aiArtifacts = others.concat([artifact.clone()]);
-    draft.updatedAt = new Date().toISOString();
-    draft.syncStatus = SyncStatus.LOCAL_ONLY;
-    this.repository.save(draft);
+    // Legacy compatibility callers may inspect the in-memory artifact only.
+    // The UI uses IDEAISession for durable results, never Draft persistence.
   }
 
   ensureStarterDraft(): string {
@@ -132,6 +161,7 @@ export class DraftWorkspaceViewModel {
   getDraft(id: string): Draft | undefined { return this.repository.get(id); }
 
   update(id: string, title: string, idea: string, code: string, shortCode: string, rewrite: string): void {
+    this.cancelAI();
     const draft = this.repository.get(id);
     if (draft === undefined) return;
     draft.title = title;
@@ -143,18 +173,25 @@ export class DraftWorkspaceViewModel {
     draft.updatedAt = new Date().toISOString();
     draft.syncStatus = SyncStatus.LOCAL_ONLY;
     this.repository.save(draft);
+    this.selectAIContext(id, this.aiFile);
   }
 
   private buildIdeaSegments(draft: Draft, idea: string): IdeaSegment[] {
     const contents = idea.split('\n').map((item: string) => item.trim())
       .filter((item: string) => item.length > 0);
+    const used: string[] = [];
+    const matches = contents.map((content: string) => {
+      const found = draft.ideaSegments.find(item => item.content.trim() === content && !used.includes(item.id));
+      if (found !== undefined) used.push(found.id);
+      return found;
+    });
     const segments: IdeaSegment[] = [];
     contents.forEach((content: string, position: number) => {
-      const sameContent = draft.ideaSegments.find((item: IdeaSegment) =>
-        item.content === content && segments.find((used: IdeaSegment) => used.id === item.id) === undefined);
-      const samePosition = draft.ideaSegments.find((item: IdeaSegment) =>
-        item.position === position && segments.find((used: IdeaSegment) => used.id === item.id) === undefined);
+      const sameContent = matches[position];
+      const samePosition = contents.length === draft.ideaSegments.length ? draft.ideaSegments.find((item: IdeaSegment) =>
+        item.position === position && !used.includes(item.id)) : undefined;
       const matched = sameContent === undefined ? samePosition : sameContent;
+      if (matched !== undefined && !used.includes(matched.id)) used.push(matched.id);
       const id = matched === undefined ? `idea_segment_${Date.now()}_${this.segmentSequence++}` : matched.id;
       segments.push(new IdeaSegment(id, content, position));
     });
@@ -162,24 +199,23 @@ export class DraftWorkspaceViewModel {
   }
 
   setMode(id: string, mode: AIMode): void {
+    this.cancelAI();
     const draft = this.repository.get(id);
     if (draft === undefined) return;
     draft.aiMode = mode;
     draft.updatedAt = new Date().toISOString();
     draft.syncStatus = SyncStatus.LOCAL_ONLY;
     this.repository.save(draft);
+    this.selectAIContext(id, this.aiFile);
   }
 
   toggleArtifact(id: string): void {
-    const draft = this.repository.get(id);
-    if (draft === undefined) return;
-    draft.artifactHidden = !draft.artifactHidden;
-    draft.updatedAt = new Date().toISOString();
-    draft.syncStatus = SyncStatus.LOCAL_ONLY;
-    this.repository.save(draft);
+    this.aiSession?.records.forEach(record => this.aiSession?.setHidden(record.id, !record.hidden));
   }
 
   deleteDraft(id: string): string {
+    this.cancelAI();
+    this.aiSession?.removeDraft(id);
     this.repository.delete(id);
     const remaining = this.repository.list();
     return remaining.length > 0 ? remaining[0].id : this.createDraft();
@@ -187,6 +223,5 @@ export class DraftWorkspaceViewModel {
 }
 
 function buildProblemContext(draft: Draft): string {
-  if (draft.title.length > 0 && draft.title !== '未命名思路') return draft.title;
-  return draft.idea.trim();
+  return draft.title || '当前草稿';
 }
