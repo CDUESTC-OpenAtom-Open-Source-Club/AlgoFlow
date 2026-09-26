@@ -48,6 +48,10 @@ export function App() {
   const aiState = useSyncExternalStore(aiSession.subscribe, aiSession.getSnapshot, aiSession.getSnapshot);
   const editorApply = useRef<ApplyAIEditorChange | null>(null);
   const editEpoch = useRef(0);
+  const hasUnsavedEdits = useRef(false);
+  const syncRunning = useRef(false);
+  const syncAgain = useRef(false);
+  const inFlightOperations = useRef(new Set<string>());
   const handleEditorReady = useCallback((apply: ApplyAIEditorChange | null) => { editorApply.current = apply; }, []);
   const handleCursorChange = useCallback((line: number, column: number) => {
     setCursorPosition({ line, column });
@@ -64,19 +68,36 @@ export function App() {
   }, [aiSession, workspace.drafts]);
 
   const flushQueue = useCallback(async () => {
+    if (syncRunning.current) { syncAgain.current = true; return; }
+    syncRunning.current = true;
+    try {
+    do {
+    syncAgain.current = false;
     const startedAt = editEpoch.current;
     const state = repository.load();
+    repository.save(state);
     if (!navigator.onLine) {
       setSyncState('local_only');
       setWorkspace(state);
       return;
     }
     setSyncState('syncing');
+    inFlightOperations.current = new Set(state.operations.map(operation => operation.operation_id));
     const result = await synchronizeWorkspace(state, syncClient);
+    // A save or selection during the request belongs to a newer local state.
+    // Retry against that state; operation IDs make a repeated push idempotent.
+    if (JSON.stringify(repository.load()) !== JSON.stringify(state)) {
+      syncAgain.current = true;
+      continue;
+    }
     repository.save(result.state);
-    setWorkspace(result.state);
+    setWorkspace(previous => {
+      if (!hasUnsavedEdits.current) return result.state;
+      const local = previous.drafts.find(draft => draft.id === previous.selected_id);
+      return local ? replaceDraft({ ...result.state, selected_id: previous.selected_id }, local) : result.state;
+    });
     const draft = result.state.drafts.find((item) => item.id === result.state.selected_id) ?? result.state.drafts[0];
-    if (draft && startedAt === editEpoch.current) {
+    if (draft && startedAt === editEpoch.current && !hasUnsavedEdits.current) {
       aiSession.cancel();
       setDocuments(draftToDocuments(draft));
       setMode(draft.ai_mode);
@@ -84,6 +105,11 @@ export function App() {
     setSyncState(result.status);
     const pendingConflict = unresolvedConflict(result.state);
     if (pendingConflict) setConflict(pendingConflict);
+    } while (syncAgain.current);
+    } finally {
+      inFlightOperations.current.clear();
+      syncRunning.current = false;
+    }
   }, [aiSession, repository]);
 
   useEffect(() => {
@@ -99,6 +125,7 @@ export function App() {
   }, [flushQueue]);
 
   function updateActiveDocument(value: string) {
+    hasUnsavedEdits.current = true;
     const next = { ...documents, [activeFile]: value };
     editEpoch.current += 1;
     if (currentDraft) aiSession.setContext(makeAIContext(currentDraft, next, activeFile, mode));
@@ -112,6 +139,7 @@ export function App() {
   }
 
   function selectMode(nextMode: Mode) {
+    hasUnsavedEdits.current = true;
     editEpoch.current += 1;
     if (currentDraft) aiSession.setContext(makeAIContext(currentDraft, documents, activeFile, nextMode));
     setMode(nextMode);
@@ -134,8 +162,14 @@ export function App() {
     };
     const next = replaceDraft({ ...base, online: navigator.onLine }, updated);
     queueUpsert(next, updated);
+    // Never mutate the payload of an operation that may already be committed.
+    // A fresh operation with the old base preserves the newer edit as a
+    // conflict if the earlier push won the race.
+    next.operations = next.operations.map(operation => inFlightOperations.current.has(operation.operation_id)
+      ? { ...operation, operation_id: crypto.randomUUID() } : operation);
     repository.save(next);
     setWorkspace(next);
+    hasUnsavedEdits.current = false;
     setSaved(true);
     setSyncState(navigator.onLine ? 'syncing' : 'local_only');
     if (navigator.onLine) void flushQueue();
@@ -161,6 +195,7 @@ export function App() {
     setWorkspace(next);
     setDocuments(draftToDocuments(draft));
     setMode(draft.ai_mode);
+    hasUnsavedEdits.current = false;
     setSaved(true);
     setSyncState(draft.sync_status);
   }
@@ -180,6 +215,9 @@ export function App() {
     repository.save(next);
     setWorkspace(next);
     setDocuments(draftToDocuments(copy));
+    hasUnsavedEdits.current = false;
+    setSaved(true);
+    setMode(copy.ai_mode);
     setConflict(null);
     setSyncState(navigator.onLine ? 'syncing' : 'local_only');
     if (navigator.onLine) void flushQueue();
@@ -198,6 +236,8 @@ export function App() {
     repository.save(next);
     setWorkspace(next);
     setDocuments(draftToDocuments(conflict.server));
+    hasUnsavedEdits.current = false;
+    setMode(conflict.server.ai_mode);
     setConflict(null);
     setSaved(true);
     setSyncState('synced');
