@@ -114,6 +114,11 @@ export class PhoneSyncService {
         skipped += 1;
         continue;
       }
+      const local = this.repository.getDraft(change.entity.id);
+      if (local !== undefined && change.entity.version < local.version) {
+        skipped += 1;
+        continue;
+      }
       this.repository.applyServerDraft(payloadToDraft(change.entity));
       applied += 1;
       hilog.info(DOMAIN, TAG,

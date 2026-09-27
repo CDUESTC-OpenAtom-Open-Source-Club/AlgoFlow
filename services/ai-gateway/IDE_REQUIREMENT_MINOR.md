@@ -285,3 +285,10 @@
 - Gateway 服务端超时现在会先中止传给 Provider 的同一 `AbortSignal`，然后保持既定 `502 AI_PROVIDER_ERROR`；客户端断开仍不写响应，Provider 产物契约、来源或范围错误仍返回 `422 INVALID_AI_ARTIFACT`。
 - 新增回归覆盖 Gateway 超时触发 Provider abort，以及手机端连续请求只保留新代次、迟到成功/失败均不能恢复补全接受权限。未引入自动重试，也未改变 `/requests` 兼容入口。
 - 实际验证：Windows PowerShell、Node.js v24.14.1；执行 `node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，525/525 通过；执行 `node --check services/ai-gateway/src/server.mjs` 和 `git diff --check`，均通过。API 20 工具链构建可复用阶段四结果。当前 `hdc list targets` 无设备，未执行原生 HTTP 到 Provider 的端到端取消、设备安装/交互、真实 RDB 或真实 Provider；状态为“工程准备完成、设备待验”，不标记 T5 或 issue #5 整体完成。
+
+## 2026-09-27 阶段五 T6 验收准备交付
+
+- 新增 `services/ai-gateway/T6_SYNC_ACCEPTANCE_RUNBOOK.md`，固定接受后仅本地排队、手动同步、Web/手机双向编辑、离线恢复、并发冲突、同步期间继续编辑和远端墓碑清理的验收矩阵。
+- 新增手机回归：接受回调只更新本地草稿、不启动同步；同步期间较新编辑保留新操作身份；版本冲突保留服务器版本和本地冲突副本；远端墓碑只清理对应 `ai_results`，不写入同步操作表；pull 拒绝低于本地版本的旧变更并清空已删除草稿的会话结果。
+- Web/sync-api 既有回归继续覆盖双客户端冲突副本、离线队列恢复、幂等操作、游标失败不推进及手机草稿拉取路径；本轮未改变同步协议或 AI 结果隔离边界。
+- 实际验证：Windows PowerShell、Node.js v24.14.1；执行 `node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，530/530 通过；执行 API 20 `entry@ohosTest` Debug HAP 构建，成功（保留未配置 signingConfigs 的既有跳过签名警告）；执行 `git diff --check`，通过。当前 `hdc list targets` 无设备，未执行手机安装、局域网双端、真实 RDB、输入/交互或重启验收；状态为“工程准备完成、设备待验”，不标记 T6 或 issue #5 整体完成。

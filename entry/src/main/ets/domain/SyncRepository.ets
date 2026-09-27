@@ -3,6 +3,7 @@ import { ConflictRecord, SyncOperation } from './SyncModels';
 
 export interface SyncRepository {
   getClientId(): string;
+  getDraft(id: string): Draft | undefined;
   getCursor(): string;
   setCursor(cursor: string): void;
   getBaseUrl(): string;

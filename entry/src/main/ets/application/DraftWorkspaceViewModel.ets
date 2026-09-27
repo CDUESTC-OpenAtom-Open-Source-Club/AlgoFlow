@@ -42,7 +42,7 @@ export class DraftWorkspaceViewModel {
   selectAIContext(id: string, file: string): void {
     this.aiDraft = id; this.aiFile = file;
     const draft = this.repository.get(id);
-    if (draft === undefined) { this.aiSession?.cancel(); return; }
+    if (draft === undefined) { void this.aiSession?.removeDraft(id); return; }
     const context = new IDEContext(); context.draftId = draft.id; context.version = draft.version;
     context.file = file; context.mode = draft.aiMode; context.code = draft.code; context.idea = draft.idea;
     context.problemContext = draft.title || '当前草稿';
