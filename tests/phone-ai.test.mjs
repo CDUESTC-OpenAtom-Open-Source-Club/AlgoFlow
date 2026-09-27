@@ -130,6 +130,30 @@ test('completion accepts once, preserves CRLF and withdraws only unchanged conte
   f.session.accept(f.session.records.at(-1).id, apply);
   apply(context.code + '// new'); assert.equal(f.session.canWithdraw(), false);
 });
+test('accepted main.cpp completion leaves short code isolated and context switch disables withdraw', async () => {
+  const f = fixture(); const context = recordFor(request).context; context.file = 'main.cpp';
+  const { Draft } = load('domain/Models');
+  const { DraftWorkspaceViewModel } = load('application/DraftWorkspaceViewModel');
+  const draft = new Draft(context.draftId, 'fixture'); draft.code = context.code;
+  draft.idea = 'Sort'; draft.shortCode = 'int helper() { return 1; }';
+  const draftRepository = { get: id => id === draft.id ? draft : undefined, save: value => Object.assign(draft, value),
+    list: () => [draft], delete() {} };
+  const viewModel = new DraftWorkspaceViewModel(draftRepository, undefined, { cancel() {} });
+  await f.session.setContext(context);
+  const work = f.session.request('completion', 'explanation', request.cursor); f.pending[0](reply()); await work;
+  const apply = code => {
+    viewModel.update(draft.id, draft.title, draft.idea, code, draft.shortCode, draft.rewrite);
+    context.code = code; f.session.setContext(context);
+  };
+  const record = f.session.records[0];
+  assert.equal(f.session.accept(record.id, apply), true);
+  assert.equal(draft.code, context.code);
+  assert.equal(draft.shortCode, 'int helper() { return 1; }');
+  assert.equal(f.session.canWithdraw(), true);
+  await f.session.setContext({ ...context, draftId: 'other-draft' });
+  assert.equal(f.session.canWithdraw(), false);
+  assert.equal(draft.shortCode, 'int helper() { return 1; }');
+});
 test('review slots, hidden old message, AI-only persistence and retry', async () => {
   const f = fixture(); await f.session.setContext(recordFor(request).context);
   for (const kind of ['explanation', 'risk', 'complexity', 'risk']) {

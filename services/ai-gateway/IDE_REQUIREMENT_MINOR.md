@@ -251,6 +251,13 @@
 - 实际进程级冒烟：启动 `ALGFLOW_TEST_AI_SCENARIO=delay` 的 `test-provider.mjs` 于 `127.0.0.1:18989`，使用隔离草稿 `t3-isolated-20260927-01` 发起 `/reviews` 请求并在响应前由 `curl --max-time 1` 关闭连接；日志以同一 `call_id=review-1` 观察到 `request_started` 与 `request_aborted`，之后停止测试进程。该证据证明本地 Gateway 到测试 Provider 的取消信号链路，不代表手机原生取消或真实 Provider 验收。
 - 本阶段仍不部署云服务、不接真实模型；设备、真实 RDB、手机局域网和签名验收保持待验。
 
+## 2026-09-27 阶段五 T4 验收准备交付
+
+- 新增 `services/ai-gateway/DEVICE_ACCEPTANCE_RUNBOOK.md`，固定 API 20 构建/安装前检查、隔离数据库、局域网前置、T4-01 至 T4-10 执行矩阵和证据要求。
+- 新增 Node 回归确认局部补全只通过 `main.cpp` 回调写入，独立短代码保持不变；接受后切换草稿上下文会立即禁用撤回，短代码仍保持不变。
+- 本轮只完成准备材料和替身回归。当前 `hdc list targets` 无设备，真实 RDB、安装、输入/滚动、进程重启、接受/撤回和设备日志均未执行，阶段五 T4 与 issue #5 不标记设备验收通过。
+- 实际执行 `node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`：523/523 通过；`tests/phone-ai.test.mjs` 定向回归为 108/108。实际执行 API 20 `entry@ohosTest` Debug HAP 构建成功，仅有未配置 `signingConfigs` 的既有跳过签名警告；这些结果仍不等于真实设备/RDB 验收。
+
 ## 2026-09-26 浏览器补验记录
 
 - 使用 Codex 内置浏览器访问独立本地端口 14173，测试 Provider 位于 18789；没有使用真实模型，没有操作现有草稿或上传验收内容。
