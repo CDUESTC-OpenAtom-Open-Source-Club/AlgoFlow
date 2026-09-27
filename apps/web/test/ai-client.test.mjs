@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createIdeaSegments, rangeToOffsets, toCursor, WebAIClient } from '../src/ai-client.mjs';
+import { canUseTestData, createIdeaSegments, rangeToOffsets, toCursor, WebAIClient } from '../src/ai-client.mjs';
 
 const request = {
   mode: 'faithful_transform', draft_id: 'draft-test', draft_version: 1,
@@ -32,6 +32,34 @@ test('client classifies unavailable provider', async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({ code: 'AI_NOT_ENABLED' }), { status: 503 });
   try { await assert.rejects(new WebAIClient('http://example.test').requestReview({}), (error) => error.code === 'AI_NOT_ENABLED' && error.status === 503); }
   finally { globalThis.fetch = originalFetch; }
+});
+
+test('release client rejects a marked test response even when the payload is valid', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify(result), {
+    status: 200,
+    headers: { 'X-AlgoFlow-Test-Data': 'true' },
+  });
+  try {
+    await assert.rejects(
+      new WebAIClient('http://example.test', { allowTestData: false }).requestReview(request),
+      (error) => error.code === 'AI_NOT_ENABLED' && error.status === 503 && error.isTestData === true,
+    );
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('client does not infer test data from a model name without the response header', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ ...result, model_id: 'test-data-provider' }), { status: 200 });
+  try {
+    const response = await new WebAIClient('http://example.test').requestReview(request);
+    assert.equal(response.isTestData, false);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('release build gate wins over an explicit test-data option', () => {
+  assert.equal(canUseTestData(true, false), false);
+  assert.equal(canUseTestData(false, true), false);
 });
 
 test('the browser uses a same-origin AI route by default', () => {

@@ -19,6 +19,24 @@ test('test and normal result partitions never leak across configuration', () => 
   assert.equal(normal.load().every(r => !r.isTestData), true); assert.equal(testRepo.load().length, 2);
 });
 
+test('normal repository refuses test writes and never reads the test partition', () => {
+  const storage = memoryStorage();
+  const debugRepo = new BrowserAIResultRepository({ storage, allowTestData: true });
+  const releaseRepo = new BrowserAIResultRepository({ storage, allowTestData: false });
+  const testRecord = resultRecord({ isTestData: true });
+  debugRepo.save(testRecord);
+  assert.deepEqual(releaseRepo.load(), []);
+  assert.throws(() => releaseRepo.save(testRecord), /禁止保存测试数据/);
+  assert.equal(storage.entries.has('algoflow.ai-results.v2.test'), true);
+});
+
+test('normal draft cleanup does not parse or rewrite a corrupt test partition', () => {
+  const storage = memoryStorage({ 'algoflow.ai-results.v2.test': '{bad' });
+  const repo = new BrowserAIResultRepository({ storage, allowTestData: false });
+  assert.doesNotThrow(() => repo.removeDraft('draft-test'));
+  assert.equal(storage.entries.get('algoflow.ai-results.v2.test'), '{bad');
+});
+
 test('corrupt cache is reported without deleting workspace data', () => {
   const storage = memoryStorage({ 'algoflow.ai-results.v2.normal': '{bad' }); const repo = new BrowserAIResultRepository({ storage });
   assert.throws(() => repo.load(), /本地缓存不可读取/); assert.equal(storage.entries.has('algoflow.ai-results.v2.normal'), true);

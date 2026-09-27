@@ -292,3 +292,10 @@
 - 新增手机回归：接受回调只更新本地草稿、不启动同步；同步期间较新编辑保留新操作身份；版本冲突保留服务器版本和本地冲突副本；远端墓碑只清理对应 `ai_results`，不写入同步操作表；pull 拒绝低于本地版本的旧变更并清空已删除草稿的会话结果。
 - Web/sync-api 既有回归继续覆盖双客户端冲突副本、离线队列恢复、幂等操作、游标失败不推进及手机草稿拉取路径；本轮未改变同步协议或 AI 结果隔离边界。
 - 实际验证：Windows PowerShell、Node.js v24.14.1；执行 `node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，530/530 通过；执行 API 20 `entry@ohosTest` Debug HAP 构建，成功（保留未配置 signingConfigs 的既有跳过签名警告）；执行 `git diff --check`，通过。当前 `hdc list targets` 无设备，未执行手机安装、局域网双端、真实 RDB、输入/交互或重启验收；状态为“工程准备完成、设备待验”，不标记 T6 或 issue #5 整体完成。
+
+## 2026-09-27 阶段五 T7 验收准备交付
+
+- 新增 `services/ai-gateway/T7_RELEASE_DATA_ACCEPTANCE_RUNBOOK.md`，固定正常交付配置的测试响应拒绝、测试/正常缓存分区、无 Provider 不可用和无自动回退验收边界；测试 Provider、真实模型、云服务和正式签名仍不在范围内。
+- Web 回归新增：Release 客户端即使收到结构合法且带 `X-AlgoFlow-Test-Data: true` 的响应也返回 `AI_NOT_ENABLED`；只有响应头能标记测试数据，`model_id` 不得推断来源；正常仓储拒绝测试写入且不读取测试分区。手机 Node 替身回归新增 Release 仓储在执行 SQL 前拒绝测试写入。
+- 实际验证（Windows PowerShell、Node.js v24.14.1）：`node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，536/536 通过；先设置 `$env:VITE_AI_ALLOW_TEST_DATA='true'` 再执行 `npm run build`（Web TypeScript 检查与 Vite 生产构建）通过；`node --check services/ai-gateway/src/server.mjs` 与 `git diff --check` 通过。
+- 手机 Release/真实 RDB/设备安装与交互尚未执行；`hdc list targets` 无设备时只交付工程准备成果，不标记 T7、阶段五或 issue #5 整体完成。未接入真实模型或云服务，云服务厂商仍未确定；个人 `run-demo-gateway.mjs` 保持未提交。
