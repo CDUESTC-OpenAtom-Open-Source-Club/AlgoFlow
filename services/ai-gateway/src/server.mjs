@@ -53,7 +53,7 @@ export function createAIGateway({
       if (!hasGenerate) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
       let artifact;
       try {
-        artifact = await withTimeout(aiProvider.generate({ request: body, templates, signal: abortController.signal }), timeoutMs);
+        artifact = await withTimeout(aiProvider.generate({ request: body, templates, signal: abortController.signal }), timeoutMs, abortController);
       } catch {
         if (requestClosed) return;
         writeProviderError(response);
@@ -77,7 +77,7 @@ export function createAIGateway({
       if (!hasReview) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
       let result;
       try {
-        result = await withTimeout(aiProvider.review({ request: body, signal: abortController.signal }), timeoutMs);
+        result = await withTimeout(aiProvider.review({ request: body, signal: abortController.signal }), timeoutMs, abortController);
       } catch {
         if (requestClosed) return;
         writeProviderError(response);
@@ -101,7 +101,7 @@ export function createAIGateway({
       if (!hasComplete) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
       let result;
       try {
-        result = await withTimeout(aiProvider.complete({ request: body, signal: abortController.signal }), timeoutMs);
+        result = await withTimeout(aiProvider.complete({ request: body, signal: abortController.signal }), timeoutMs, abortController);
       } catch {
         if (requestClosed) return;
         writeProviderError(response);
@@ -211,10 +211,12 @@ function validateRangeWithinCode(range, code, path) {
   return errors;
 }
 
-function withTimeout(promise, timeoutMs) {
+function withTimeout(promise, timeoutMs, abortController = null) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
+      // A Gateway timeout is a provider cancellation, but remains a 502 to the client.
+      abortController?.abort();
       const error = new Error('AI provider timed out');
       error.code = 'AI_PROVIDER_TIMEOUT';
       reject(error);
