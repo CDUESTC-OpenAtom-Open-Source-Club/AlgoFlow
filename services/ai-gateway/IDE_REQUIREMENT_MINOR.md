@@ -244,6 +244,13 @@
 - 新增 Node 回归覆盖三类审查/补全槽位、测试与正常缓存并存、隐藏/重试失败恢复，以及 AI 结果保存与删除仅操作 `ai_results`；不产生 `drafts`、`sync_operations`、`sync_state` 或 `conflicts` 写入。
 - 本轮准备测试使用 Node SDK 替身和隔离记录，未执行真实 RDB 写入失败、进程重启或设备交互；结果只能作为工程准备证据，不能标记设备验收通过。
 
+## 2026-09-27 阶段五 T3 验收准备交付
+
+- 新增 `services/ai-gateway/LOCAL_TEST_RUNBOOK.md`，固定本地测试 Provider、sync-api 的启动/停止、隔离草稿命名、端口配置、手机局域网前置条件和清理边界。测试 Provider 与正式 Gateway 入口分离，个人根目录 `run-demo-gateway.mjs` 未纳入提交。
+- 独立测试 Provider 新增脱敏阶段日志：`request_started`、`request_completed`、`request_failed`、`request_aborted`。日志只包含能力、调用代次、隔离草稿 ID 和场景，不记录代码、思路或凭据。
+- 实际进程级冒烟：启动 `ALGFLOW_TEST_AI_SCENARIO=delay` 的 `test-provider.mjs` 于 `127.0.0.1:18989`，使用隔离草稿 `t3-isolated-20260927-01` 发起 `/reviews` 请求并在响应前由 `curl --max-time 1` 关闭连接；日志以同一 `call_id=review-1` 观察到 `request_started` 与 `request_aborted`，之后停止测试进程。该证据证明本地 Gateway 到测试 Provider 的取消信号链路，不代表手机原生取消或真实 Provider 验收。
+- 本阶段仍不部署云服务、不接真实模型；设备、真实 RDB、手机局域网和签名验收保持待验。
+
 ## 2026-09-26 浏览器补验记录
 
 - 使用 Codex 内置浏览器访问独立本地端口 14173，测试 Provider 位于 18789；没有使用真实模型，没有操作现有草稿或上传验收内容。
