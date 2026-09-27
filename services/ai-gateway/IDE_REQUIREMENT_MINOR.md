@@ -2,7 +2,7 @@
 
 - 优先级：次要（P2）
 - 所属：`services/ai-gateway`
-- 状态：阶段 1–4 工程已交付，Web 收尾已验收；手机设备与真实 RDB 实测待完成；阶段 5 计划讨论中，真实 Provider 接入暂缓
+- 状态：工程实现范围已完成（可关闭 issue #5）；设备、真实 RDB、真实 Provider 与云部署按已确认范围延期
 - 提出方：AlgoFlow Web / OpenHarmony IDE
 
 ## 背景
@@ -299,3 +299,14 @@
 - Web 回归新增：Release 客户端即使收到结构合法且带 `X-AlgoFlow-Test-Data: true` 的响应也返回 `AI_NOT_ENABLED`；只有响应头能标记测试数据，`model_id` 不得推断来源；正常仓储拒绝测试写入且不读取测试分区。手机 Node 替身回归新增 Release 仓储在执行 SQL 前拒绝测试写入。
 - 实际验证（Windows PowerShell、Node.js v24.14.1）：`node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，536/536 通过；先设置 `$env:VITE_AI_ALLOW_TEST_DATA='true'` 再执行 `npm run build`（Web TypeScript 检查与 Vite 生产构建）通过；`node --check services/ai-gateway/src/server.mjs` 与 `git diff --check` 通过。
 - 手机 Release/真实 RDB/设备安装与交互尚未执行；`hdc list targets` 无设备时只交付工程准备成果，不标记 T7、阶段五或 issue #5 整体完成。未接入真实模型或云服务，云服务厂商仍未确定；个人 `run-demo-gateway.mjs` 保持未提交。
+
+## 2026-09-28 工程完成与范围调整
+
+- 本次与组织仓库 `origin/main`（`746ef41`）的对比基线为合并基点；当前分支 `pr18` 在该基线之上包含 issue #5 的工程实现。对比结果为 57 个已跟踪文件、5896 行新增、284 行删除；根目录 `CONTEXT.md` 和 `run-demo-gateway.mjs` 为未跟踪个人文件，不计入组织仓库对比。
+- 已修正 Web AI 缓存槽位遗漏 `isTestData` 的问题。正常与测试结果按独立槽位共存，`listForDraft()` 按正常结果在前、测试结果在后返回；测试结果继续显示明确的测试标记。
+- 已修正手机旧 `/requests` 转换结果的隐藏状态：`artifact_hidden` 通过 `DraftWorkspaceViewModel` 持久化，加载时恢复，并只控制旧转换结果区域；新的 `ai_results` 会话不读写该字段。
+- 兼容 `requestAI()` 仍返回 `AIResult`，请求通过 `IDEAISession.requestTransform()` 委托 Provider，并移除成功结果写入 `Draft.aiArtifacts` 的路径；新的 AI 结果只进入独立 AI 结果仓储。
+- 共享诊断级别已补齐 `hint`：Web 类型、UI“提示”标签、OpenHarmony 解析器和手机文本展示均与 Schema 镜像一致，并加入 Web/手机回归向量。
+- 同步边界补充修正：Web 保存只轮换当前草稿的在途 operation ID；契约文档已与 Gateway 超时中止 Provider 的实际 `AbortSignal` 行为一致。
+- 实际验证环境：Windows PowerShell、Node.js v24.14.1。执行 `node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，539/539 通过；`npx tsc -p tsconfig.app.json --noEmit`、`npx tsc -p tsconfig.node.json --noEmit`、`npm run build` 和 `git diff --check` 均通过。构建保留既有的大于 500 kB chunk 提示。
+- 工程完成不等于设备或生产验收：当前没有可用 `hdc` 设备，未执行真实 RDB 写入、手机安装/交互、真实 Provider/模型、云部署、正式签名或对抗评测。上述内容作为延期项，不阻塞本期工程实现范围关闭。

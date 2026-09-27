@@ -61,6 +61,12 @@ for (const vector of reviewVectors.results) {
     else assert.throws(() => parseIDEResult(JSON.stringify(vector.result), record));
   });
 }
+test('phone review parser accepts the shared hint diagnostic level', () => {
+  const result = { ...reviewVectors.results[0].result, diagnostics: [{ ...reviewVectors.results[0].result.diagnostics[0], level: 'hint', range: null }] };
+  const record = recordFor({ ...request, draft_id: result.draft_id, draft_version: result.source_draft_version }, 'review');
+  record.reviewKind = result.review_kind;
+  assert.doesNotThrow(() => parseIDEResult(JSON.stringify(result), record));
+});
 test('completion rejects bad types, provenance, cursor exclusion, 501 chars and full-file replacement', () => {
   const record = recordFor(request);
   for (const patch of [{ suggestion_text: {} }, { suggestion_text: 'x'.repeat(501) }, { source_refs: ['other'] },

@@ -19,6 +19,15 @@ test('test and normal result partitions never leak across configuration', () => 
   assert.equal(normal.load().every(r => !r.isTestData), true); assert.equal(testRepo.load().length, 2);
 });
 
+test('normal and test results occupy independent slots and list normal first', () => {
+  const storage = memoryStorage();
+  const repo = new BrowserAIResultRepository({ storage, allowTestData: true });
+  const normal = resultRecord({ isTestData: false, updatedAt: '2026-09-26T02:00:00.000Z' });
+  const testResult = resultRecord({ isTestData: true, updatedAt: '2026-09-26T01:00:00.000Z' });
+  repo.save(testResult); repo.save(normal);
+  assert.deepEqual(repo.listForDraft('draft-test').map(item => item.isTestData), [false, true]);
+});
+
 test('normal repository refuses test writes and never reads the test partition', () => {
   const storage = memoryStorage();
   const debugRepo = new BrowserAIResultRepository({ storage, allowTestData: true });

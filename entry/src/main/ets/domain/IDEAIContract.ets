@@ -36,7 +36,7 @@ export function parseIDEResult(body: string, record: IDERecord): IDEResult {
       const entry = object(item); exact(entry, ['id', 'level', 'range', 'problem', 'basis', 'suggestion']);
       const diagnostic = new IDEDiagnostic(); diagnostic.id = text(entry['id']);
       requireValue(!seen.includes(diagnostic.id)); seen.push(diagnostic.id);
-      diagnostic.level = text(entry['level']); requireValue(['info', 'warning', 'error'].includes(diagnostic.level));
+      diagnostic.level = text(entry['level']); requireValue(['info', 'warning', 'error', 'hint'].includes(diagnostic.level));
       diagnostic.problem = text(entry['problem']); diagnostic.basis = text(entry['basis']); diagnostic.suggestion = text(entry['suggestion']);
       diagnostic.range = entry['range'] === null ? null : range(entry['range']);
       if (diagnostic.range !== null) rangeOffsets(record.context.code, diagnostic.range);

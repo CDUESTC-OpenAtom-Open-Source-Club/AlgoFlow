@@ -165,7 +165,7 @@ export function App() {
     // Never mutate the payload of an operation that may already be committed.
     // A fresh operation with the old base preserves the newer edit as a
     // conflict if the earlier push won the race.
-    next.operations = next.operations.map(operation => inFlightOperations.current.has(operation.operation_id)
+    next.operations = next.operations.map(operation => operation.entity_id === updated.id && inFlightOperations.current.has(operation.operation_id)
       ? { ...operation, operation_id: crypto.randomUUID() } : operation);
     repository.save(next);
     setWorkspace(next);

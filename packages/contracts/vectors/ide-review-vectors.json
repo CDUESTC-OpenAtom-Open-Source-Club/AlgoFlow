@@ -112,7 +112,7 @@
         "diagnostics": [
           {
             "id": "diag_1",
-            "level": "warning",
+            "level": "hint",
             "range": { "start_line": 3, "start_char": 2, "end_line": 3, "end_char": 2 },
             "problem": "The selection loop is empty, so no interval is chosen.",
             "basis": "The greedy selection step from idea_segment_2 is not implemented.",

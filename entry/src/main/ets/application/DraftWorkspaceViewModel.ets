@@ -1,6 +1,6 @@
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIArtifact, AIErrorCode, AIMode, AIOutputKind, AIRequest, AIRequestSegment, AIResult,
-  AIResultStatus, AIVisibility, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIErrorCode, AIMode, AIOutputKind, AIRequest, AIRequestSegment, AIResult,
+  AIVisibility, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
 import { AIProvider } from '../domain/AIProvider';
 import { SyncRepository } from '../domain/SyncRepository';
 import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
@@ -116,12 +116,9 @@ export class DraftWorkspaceViewModel {
     const requestGeneration = ++this.aiRequestGeneration;
     this.aiRequestInFlight = true;
     try {
-      const result = await this.aiProvider.generate(request);
+      const result = await IDEAISession.requestTransform(this.aiProvider, request);
       if (requestGeneration !== this.aiRequestGeneration) {
         return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
-      }
-      if (result.status === AIResultStatus.SUCCESS && result.artifact !== null) {
-        this.saveArtifact(id, result.artifact);
       }
       return result;
     } finally {
@@ -129,19 +126,17 @@ export class DraftWorkspaceViewModel {
     }
   }
 
+  setArtifactHidden(id: string, hidden: boolean): void {
+    const draft = this.repository.get(id);
+    if (draft === undefined) return;
+    draft.artifactHidden = hidden;
+    this.repository.save(draft);
+  }
+
   getArtifact(id: string, mode: AIMode): AIArtifact | undefined {
     const draft = this.repository.get(id);
     if (draft === undefined) return undefined;
     return draft.artifactForMode(mode);
-  }
-
-  private saveArtifact(id: string, artifact: AIArtifact): void {
-    const draft = this.repository.get(id);
-    if (draft === undefined) return;
-    const others = draft.aiArtifacts.filter((item: AIArtifact) => item.mode !== artifact.mode);
-    draft.aiArtifacts = others.concat([artifact.clone()]);
-    // Legacy compatibility callers may inspect the in-memory artifact only.
-    // The UI uses IDEAISession for durable results, never Draft persistence.
   }
 
   ensureStarterDraft(): string {
