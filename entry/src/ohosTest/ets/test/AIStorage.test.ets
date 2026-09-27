@@ -1,10 +1,10 @@
 import { describe, it, expect } from '@ohos/hypium';
 import { abilityDelegatorRegistry } from '@kit.TestKit';
 import { relationalStore } from '@kit.ArkData';
-import { migrateWorkspaceStore } from '../../../main/ets/platform/RdbDraftRepository';
+import { migrateWorkspaceStore, RdbDraftRepository } from '../../../main/ets/platform/RdbDraftRepository';
 import { RdbAIResultRepository } from '../../../main/ets/platform/RdbAIResultRepository';
 import { IDERecord, IDEState } from '../../../main/ets/domain/IDEAIModels';
-import { AIMode } from '../../../main/ets/domain/Models';
+import { AIMode, Draft } from '../../../main/ets/domain/Models';
 
 // Only isolated test databases are touched. Run on a signed API 20 test target.
 export default function aiStorageTest() {
@@ -63,7 +63,10 @@ export default function aiStorageTest() {
         await repository.save(record, true);
         const newer = new IDERecord(); newer.id = 'result-2'; newer.context.draftId = 'test-draft'; newer.updatedAt = record.updatedAt;
         await repository.save(newer, true);
-        record.hidden = true; await repository.save(record, false);
+        const testRepository = new RdbAIResultRepository(store, true);
+        const testRecord = new IDERecord(); testRecord.id = 'result-test'; testRecord.context.draftId = 'test-draft';
+        testRecord.hidden = true; testRecord.isTestData = true; testRecord.updatedAt = new Date(Date.now() + 1).toISOString();
+        await testRepository.save(testRecord, true);
         await store.close();
         store = await relationalStore.getRdbStore(context, config);
         const reopened = new RdbAIResultRepository(store, false);
@@ -71,13 +74,22 @@ export default function aiStorageTest() {
         expect(results.length).assertEqual(1); expect(results[0].id).assertEqual('result-2');
         expect(results[0].hidden).assertFalse(); expect(results[0].stale).assertTrue();
         expect(results[0].state).assertEqual(IDEState.CANCELLED);
+        const reopenedWithTests = new RdbAIResultRepository(store, true);
+        const allResults = await reopenedWithTests.list('test-draft', AIMode.FAITHFUL_TRANSFORM);
+        expect(allResults.length).assertEqual(2);
+        const restoredTest = allResults.find((item: IDERecord) => item.isTestData);
+        expect(restoredTest !== undefined).assertTrue();
+        expect(restoredTest?.hidden).assertTrue();
         await store.executeSql("UPDATE ai_results SET record_json = '{}' ");
         let corrupt = false;
         try { await reopened.list('test-draft', AIMode.FAITHFUL_TRANSFORM); } catch (error) { corrupt = true; }
         expect(corrupt).assertTrue();
         await reopened.removeDraft('test-draft');
         expect((await reopened.list('test-draft', AIMode.FAITHFUL_TRANSFORM)).length).assertEqual(0);
-        await store.executeSql("UPDATE drafts SET deleted = 1 WHERE id = 'test-draft'");
+        await reopened.save(newer, true);
+        const tombstone = new Draft('test-draft', '迁移样例'); tombstone.deleted = true; tombstone.version = 5;
+        const draftRepository = new RdbDraftRepository(context, store);
+        draftRepository.applyServerDraft(tombstone); await draftRepository.flush();
         await reopened.save(newer, true);
         expect((await reopened.list('test-draft', AIMode.FAITHFUL_TRANSFORM)).length).assertEqual(0);
         store.version = 3;

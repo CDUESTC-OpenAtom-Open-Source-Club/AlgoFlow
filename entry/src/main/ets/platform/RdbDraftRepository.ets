@@ -81,8 +81,9 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   private baseUrl: string = DEFAULT_BASE_URL;
   private writeChain: Promise<void> = Promise.resolve();
 
-  constructor(context: common.Context) {
+  constructor(context: common.Context, existingStore?: relationalStore.RdbStore) {
     this.context = context;
+    this.store = existingStore;
   }
 
   async initialize(): Promise<void> {
