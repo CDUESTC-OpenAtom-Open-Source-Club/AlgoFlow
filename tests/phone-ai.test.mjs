@@ -178,6 +178,25 @@ test('accepted main.cpp completion leaves short code isolated and context switch
   assert.equal(f.session.canWithdraw(), false);
   assert.equal(draft.shortCode, 'int helper() { return 1; }');
 });
+test('accepted completion updates the local draft without starting synchronization', async () => {
+  const { Draft, IdeaSegment } = load('domain/Models');
+  const draft = new Draft('local-only', 'Sort intervals');
+  draft.idea = 'Sort intervals'; draft.code = request.code; draft.ideaSegments = [new IdeaSegment('idea-1', 'Sort intervals', 0)];
+  let saves = 0;
+  const repository = { get: () => draft, save() { saves++; } };
+  let syncCalls = 0;
+  const syncRepository = { listPendingOperations() { syncCalls++; return []; } };
+  const viewModel = new (load('application/DraftWorkspaceViewModel').DraftWorkspaceViewModel)(repository, syncRepository, { cancel() {} });
+  const f = fixture(); const context = recordFor(request).context;
+  await f.session.setContext(context);
+  viewModel.aiSession = f.session;
+  const work = f.session.request('completion', 'explanation', request.cursor); f.pending[0](reply()); await work;
+  const record = f.session.records[0];
+  assert.equal(f.session.accept(record.id, value => viewModel.update(draft.id, draft.title, draft.idea, value, draft.shortCode, draft.rewrite)), true);
+  assert.equal(saves, 1);
+  assert.equal(syncCalls, 0);
+  assert.notEqual(draft.code, request.code);
+});
 test('review slots, hidden old message, AI-only persistence and retry', async () => {
   const f = fixture(); await f.session.setContext(recordFor(request).context);
   for (const kind of ['explanation', 'risk', 'complexity', 'risk']) {
@@ -276,6 +295,30 @@ test('AI result persistence only targets ai_results and deletion is isolated', a
   assert.equal(calls.some(([sql]) => /(?:UPDATE|INSERT|DELETE)\s+(?:drafts|sync_operations|sync_state|conflicts)/i.test(sql)), false);
   assert.equal(calls.some(([sql]) => sql.includes('DELETE FROM ai_results WHERE result_id')), false);
 });
+test('remote tombstone persists as a delete and clears only the AI result table', async () => {
+  const { RdbDraftRepository } = load('platform/RdbDraftRepository');
+  const { Draft } = load('domain/Models');
+  const calls = [];
+  const repo = new RdbDraftRepository({});
+  repo.store = { version: 2, async executeSql(sql, args) { calls.push([sql, args]); } };
+  const tombstone = new Draft('sync-delete', 'Deleted remotely');
+  tombstone.deleted = true; tombstone.version = 4;
+  repo.applyServerDraft(tombstone);
+  await repo.flush();
+  assert.equal(calls.some(([sql]) => sql.startsWith('DELETE FROM ai_results WHERE draft_id = ?')), true);
+  assert.equal(calls.some(([sql]) => /(?:UPDATE|INSERT|DELETE)\s+sync_operations/i.test(sql)), false);
+});
+test('remote tombstone clears the in-memory AI session for the deleted draft', async () => {
+  const { DraftWorkspaceViewModel } = load('application/DraftWorkspaceViewModel');
+  const f = fixture(); const context = recordFor(request).context;
+  await f.session.setContext(context);
+  const work = f.session.request('completion', 'explanation', request.cursor); f.pending[0](reply()); await work;
+  assert.equal(f.session.records.length, 1);
+  const viewModel = new DraftWorkspaceViewModel({ get: () => undefined }, undefined, { cancel() {} });
+  viewModel.aiSession = f.session;
+  viewModel.selectAIContext(context.draftId, 'main.cpp');
+  assert.equal(f.session.records.length, 0);
+});
 test('stable thought IDs preserve moves, prepend, duplicates and restored edits', () => {
   const { DraftWorkspaceViewModel } = load('application/DraftWorkspaceViewModel');
   const { Draft } = load('domain/Models');
@@ -350,4 +393,55 @@ test('sync response preserves newer local edit and rotates operation identity', 
     assert.equal(repo.listPendingOperations()[0].payload.code, 'newer');
     await repo.flush();
   } finally { HttpSyncClient.prototype.push = oldPush; }
+});
+test('phone sync preserves server version and creates a local conflict copy', async () => {
+  const { PhoneSyncService } = load('platform/PhoneSyncService');
+  const { HttpSyncClient } = load('platform/HttpSyncClient');
+  const localPayload = { id: 'shared', title: 'Local', code: 'local edit', version: 0, deleted: false };
+  const serverPayload = { ...localPayload, title: 'Server', code: 'server edit', version: 1, last_modified_client_id: 'web' };
+  const operation = { operation_id: 'phone-conflict-op', entity_id: 'shared', payload: localPayload };
+  const applied = []; let removed = ''; let conflictCopy; let conflictRecord;
+  const repository = {
+    listPendingOperations: () => [operation], markInFlight() {}, getBaseUrl: () => 'http://sync', getCursor: () => '0',
+    getClientId: () => 'phone', getDraft: () => undefined, setCursor() {}, setDraftSyncStatus() {}, hasPendingOperation: () => false,
+    removeOperation(id) { removed = id; }, applyServerDraft(draft) { applied.push(draft); },
+    saveConflictDraft(copy, record) { conflictCopy = copy; conflictRecord = record; }
+  };
+  const oldPush = HttpSyncClient.prototype.push;
+  const oldPull = HttpSyncClient.prototype.pull;
+  HttpSyncClient.prototype.push = async () => ({ status: 'conflict', server_entity: serverPayload });
+  HttpSyncClient.prototype.pull = async () => ({ changes: [], next_cursor: '0' });
+  try {
+    const result = await new PhoneSyncService(repository).synchronize();
+    assert.equal(result.status, 'conflict');
+    assert.equal(applied[0].code, 'server edit');
+    assert.equal(conflictCopy.code, 'local edit');
+    assert.equal(conflictCopy.id.startsWith('shared-conflict-'), true);
+    assert.equal(conflictRecord.entity_id, 'shared');
+    assert.equal(removed, 'phone-conflict-op');
+  } finally {
+    HttpSyncClient.prototype.push = oldPush;
+    HttpSyncClient.prototype.pull = oldPull;
+  }
+});
+test('phone sync ignores an older remote change during pull', async () => {
+  const { PhoneSyncService } = load('platform/PhoneSyncService');
+  const { HttpSyncClient } = load('platform/HttpSyncClient');
+  const local = { id: 'ordered', version: 3, code: 'newer' };
+  const repository = {
+    listPendingOperations: () => [], markInFlight() {}, getBaseUrl: () => 'http://sync', getCursor: () => '2',
+    getClientId: () => 'phone', getDraft: () => local, setCursor(cursor) { this.cursor = cursor; }, cursor: '2',
+    setDraftSyncStatus() {}, hasPendingOperation: () => false, removeOperation() {}, applyServerDraft() { this.applied = true; },
+    saveConflictDraft() {}
+  };
+  const oldPull = HttpSyncClient.prototype.pull;
+  HttpSyncClient.prototype.pull = async () => ({ changes: [{ entity_type: 'draft', entity: {
+    id: 'ordered', version: 2, code: 'older', last_modified_client_id: 'web'
+  } }], next_cursor: '3' });
+  try {
+    const result = await new PhoneSyncService(repository).synchronize();
+    assert.equal(result.status, 'synced');
+    assert.equal(repository.applied, undefined);
+    assert.equal(repository.cursor, '3');
+  } finally { HttpSyncClient.prototype.pull = oldPull; }
 });

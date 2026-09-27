@@ -141,6 +141,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   }
 
   getClientId(): string { return this.clientId; }
+  getDraft(id: string): Draft | undefined { return this.drafts.find((draft: Draft) => draft.id === id); }
   getCursor(): string { return this.cursor; }
   getBaseUrl(): string { return this.baseUrl; }
 
