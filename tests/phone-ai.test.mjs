@@ -188,6 +188,46 @@ test('cache rejects corrupt body and restores loading as cancelled, read-only', 
   assert.equal(restored.stale, true); assert.equal(restored.state, 'cancelled');
   record.isTestData = true; assert.deepEqual(await repo.list(record.context.draftId, record.context.mode), []);
 });
+test('RDB AI results keep capability and test partitions independent', async () => {
+  const normalReview = recordFor(request, 'review'); normalReview.reviewKind = 'risk';
+  normalReview.body = JSON.stringify({ mode: artifact.mode, source_draft_version: artifact.source_draft_version,
+    model_id: artifact.model_id, rule_version: artifact.rule_version, output_kind: 'review', visibility: artifact.visibility,
+    draft_id: normalReview.context.draftId, review_kind: 'risk', diagnostics: [] });
+  const testReview = structuredClone(normalReview); testReview.id = 'test-review'; testReview.isTestData = true;
+  const normalCompletion = recordFor(request, 'completion'); normalCompletion.id = 'normal-completion';
+  normalCompletion.body = JSON.stringify(artifact);
+  const rows = [normalReview, testReview, normalCompletion].map(record => ({ value: JSON.stringify(record) }));
+  const calls = [];
+  const resultSet = {
+    index: -1,
+    goToFirstRow() { this.index = 0; return rows.length > 0; },
+    goToNextRow() { this.index++; return this.index < rows.length; },
+    getString() { return rows[this.index].value; }, close() {}
+  };
+  const repo = new RdbAIResultRepository({ async querySql(sql, args) { calls.push([sql, args]); return resultSet; } }, true);
+  const records = await repo.list(request.draft_id, 'faithful_transform');
+  assert.equal(records.length, 3);
+  assert.equal(records.filter(record => record.isTestData).length, 1);
+  assert.equal(records.filter(record => record.capability === 'review').length, 2);
+  assert.equal(calls[0][1].at(-1), 1);
+  assert.equal(resultSlot(normalReview), 'review:risk');
+});
+test('AI result persistence only targets ai_results and deletion is isolated', async () => {
+  const record = recordFor(request, 'completion'); record.body = JSON.stringify(artifact);
+  const testRecord = structuredClone(record); testRecord.isTestData = true;
+  const calls = [];
+  const store = { async executeSql(sql, args) { calls.push([sql, args]); } };
+  const repo = new RdbAIResultRepository(store, false);
+  await repo.save(record, true);
+  const debugRepo = new RdbAIResultRepository(store, true);
+  await debugRepo.save(testRecord, true); await repo.removeDraft(record.context.draftId);
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0][0].startsWith('INSERT OR REPLACE INTO ai_results'), true);
+  assert.equal(calls[1][0].startsWith('INSERT OR REPLACE INTO ai_results'), true);
+  assert.equal(calls[2][0], 'DELETE FROM ai_results WHERE draft_id = ?');
+  assert.equal(calls.some(([sql]) => /(?:UPDATE|INSERT|DELETE)\s+(?:drafts|sync_operations|sync_state|conflicts)/i.test(sql)), false);
+  assert.equal(calls.some(([sql]) => sql.includes('DELETE FROM ai_results WHERE result_id')), false);
+});
 test('stable thought IDs preserve moves, prepend, duplicates and restored edits', () => {
   const { DraftWorkspaceViewModel } = load('application/DraftWorkspaceViewModel');
   const { Draft } = load('domain/Models');

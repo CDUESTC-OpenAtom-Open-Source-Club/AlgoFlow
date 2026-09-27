@@ -238,6 +238,12 @@
 - 实际执行 API 20 Debug 测试 HAP 构建：`tools/node/node.exe tools/hvigor/bin/hvigorw.js --mode module -p product=default -p module=entry@ohosTest -p buildMode=debug assembleHap --no-daemon`，构建成功；仅有未配置 `signingConfigs` 的既有跳过签名警告。该构建仍不等于真实 RDB 或设备验收，`hdc list targets` 当前为 `[Empty]`，设备安装/交互和真实 RDB 仍未执行。
 - 状态：T1 工程准备完成、设备与真实 RDB 待验；不标记设备验收通过，不接入真实 Provider/云服务，不修改或合并 `main`。个人 `run-demo-gateway.mjs` 保持未提交。
 
+## 2026-09-27 阶段五 T2 验收准备交付
+
+- 修正 `RdbAIResultRepository.list()` 的去重键：同一草稿、模式和能力槽位下，正常结果与测试结果按 `is_test` 分区独立保留，避免 Debug 测试数据覆盖正常缓存。
+- 新增 Node 回归覆盖三类审查/补全槽位、测试与正常缓存并存、隐藏/重试失败恢复，以及 AI 结果保存与删除仅操作 `ai_results`；不产生 `drafts`、`sync_operations`、`sync_state` 或 `conflicts` 写入。
+- 本轮准备测试使用 Node SDK 替身和隔离记录，未执行真实 RDB 写入失败、进程重启或设备交互；结果只能作为工程准备证据，不能标记设备验收通过。
+
 ## 2026-09-26 浏览器补验记录
 
 - 使用 Codex 内置浏览器访问独立本地端口 14173，测试 Provider 位于 18789；没有使用真实模型，没有操作现有草稿或上传验收内容。

@@ -18,7 +18,7 @@ export class RdbAIResultRepository implements AIResultRepository {
         const record = decodeAIRecord(rows.getString(0));
         if (record.isTestData && !this.allowTestData) continue;
         if (record.context.draftId !== draftId || record.context.mode !== mode) throw new Error('AI 缓存来源不匹配');
-        const index = records.findIndex(item => resultSlot(item) === resultSlot(record));
+        const index = records.findIndex(item => storageSlot(item) === storageSlot(record));
         if (index >= 0) records.splice(index, 1);
         record.stale = true;
         if (record.state === IDEState.LOADING) { record.state = IDEState.CANCELLED; record.message = '上次请求已结束，请重新发起'; }
@@ -34,7 +34,6 @@ export class RdbAIResultRepository implements AIResultRepository {
     if (latest) {
       await this.store.executeSql('INSERT OR REPLACE INTO ai_results (draft_id, mode, slot, is_test, result_id, updated_at, record_json) SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND deleted = 0)',
         [record.context.draftId, record.context.mode, slot, record.isTestData ? 1 : 0, record.id, record.updatedAt, json, record.context.draftId]);
-      if (record.isTestData) await this.store.executeSql('DELETE FROM ai_results WHERE result_id = ? AND is_test = 0', [record.id]);
     } else {
       await this.store.executeSql('UPDATE ai_results SET record_json = ? WHERE draft_id = ? AND mode = ? AND slot = ? AND is_test = ? AND result_id = ?',
         [json, record.context.draftId, record.context.mode, slot, record.isTestData ? 1 : 0, record.id]);
@@ -46,6 +45,9 @@ export class RdbAIResultRepository implements AIResultRepository {
 }
 export function resultSlot(record: IDERecord): string {
   return record.capability === IDECapability.REVIEW ? `review:${record.reviewKind}` : record.capability;
+}
+function storageSlot(record: IDERecord): string {
+  return `${resultSlot(record)}:${record.isTestData ? 'test' : 'normal'}`;
 }
 export function decodeAIRecord(json: string): IDERecord {
   const record = JSON.parse(json) as IDERecord;
