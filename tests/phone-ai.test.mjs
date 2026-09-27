@@ -115,6 +115,30 @@ for (const change of ['code', 'idea', 'draftId', 'file', 'version', 'mode', 'can
     assert.equal(f.session.records.some(r => f.session.canAccept(r)), false);
   });
 }
+
+test('phone issues one request per operation and late success or failure never re-arms acceptance', async () => {
+  const pending = [];
+  let calls = 0;
+  const provider = {
+    cancel() {},
+    request() { calls++; return new Promise((resolve, reject) => pending.push({ resolve, reject })); }
+  };
+  const repo = { async list() { return []; }, async save() {}, async removeDraft() {} };
+  const session = new IDEAISession(provider, repo);
+  const context = recordFor(request).context;
+  await session.setContext(context);
+  const first = session.request('completion', 'explanation', request.cursor);
+  await new Promise(resolve => setImmediate(resolve));
+  const second = session.request('completion', 'explanation', request.cursor);
+  assert.equal(calls, 2);
+  pending[0].resolve(reply());
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(session.records.some(record => session.canAccept(record)), false);
+  pending[1].reject(new Error('late provider failure'));
+  await Promise.all([first, second]);
+  assert.equal(session.records.some(record => session.canAccept(record)), false);
+  assert.equal(session.records.every(record => record.stale || record.state !== 'success'), true);
+});
 test('completion accepts once, preserves CRLF and withdraws only unchanged content', async () => {
   const f = fixture(), context = recordFor(request).context; context.code = context.code.replaceAll('\n', '\r\n');
   await f.session.setContext(context);

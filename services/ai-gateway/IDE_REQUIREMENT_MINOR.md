@@ -278,3 +278,10 @@
 - 修复记录：同源 `/ai-api` 开发代理、重复审查消息追加、稳定思路片段恢复、CRLF 范围换算、结果分区与缓存错误恢复、请求代次/取消竞态、测试数据隔离和 CodeMirror 可撤销接受事务均已补齐；新增 Web 端客户端、存储和会话回归覆盖。
 - 实际验证：`node --test apps/web/test/*.test.mjs`（13/13）；`node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`（379/379）；`npx tsc -p apps/web/tsconfig.app.json --noEmit`（通过）；`npx tsc -p apps/web/tsconfig.node.json --noEmit`（通过）；`npm run build`（Vite 构建通过）；`git diff --check`（通过）。
 - 未执行：真实 Provider 联调、OpenHarmony 构建/设备验收和云端部署。当前环境的 Computer Use RPC 未配置，无法完成浏览器人工交互验收；因此不把浏览器验收写成已通过。测试 Provider、真实模型接入、云服务部署和新的提示代码生成入口仍未在本阶段实现。
+
+## 2026-09-27 阶段五 T5 验收准备交付
+
+- 新增 `services/ai-gateway/T5_CANCELLATION_ACCEPTANCE_RUNBOOK.md`，固定客户端取消、编辑/切换上下文、离开页面、新请求和迟到回调的验收矩阵；明确每个操作只发起一次请求，失败必须由用户主动重试。
+- Gateway 服务端超时现在会先中止传给 Provider 的同一 `AbortSignal`，然后保持既定 `502 AI_PROVIDER_ERROR`；客户端断开仍不写响应，Provider 产物契约、来源或范围错误仍返回 `422 INVALID_AI_ARTIFACT`。
+- 新增回归覆盖 Gateway 超时触发 Provider abort，以及手机端连续请求只保留新代次、迟到成功/失败均不能恢复补全接受权限。未引入自动重试，也未改变 `/requests` 兼容入口。
+- 实际验证：Windows PowerShell、Node.js v24.14.1；执行 `node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，525/525 通过；执行 `node --check services/ai-gateway/src/server.mjs` 和 `git diff --check`，均通过。API 20 工具链构建可复用阶段四结果。当前 `hdc list targets` 无设备，未执行原生 HTTP 到 Provider 的端到端取消、设备安装/交互、真实 RDB 或真实 Provider；状态为“工程准备完成、设备待验”，不标记 T5 或 issue #5 整体完成。

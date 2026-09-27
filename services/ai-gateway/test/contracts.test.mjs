@@ -1141,6 +1141,27 @@ test('AI gateway returns a classified timeout when the completion provider stall
   assert.deepEqual(response.body, { code: 'AI_PROVIDER_ERROR' });
 });
 
+test('AI gateway aborts the Provider signal when its timeout expires', async (t) => {
+  let signal;
+  const server = createAIGateway({
+    aiProvider: {
+      async review(input) {
+        signal = input.signal;
+        return new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('provider stopped')), { once: true });
+        });
+      }
+    },
+    timeoutMs: 20
+  });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/reviews', validReviewRequest);
+  assert.equal(response.statusCode, 502);
+  assert.deepEqual(response.body, { code: 'AI_PROVIDER_ERROR' });
+  assert.equal(signal.aborted, true);
+});
+
 test('AI gateway reports enabled capabilities on the status endpoint', async (t) => {
   const aiProvider = { async review() { return validReviewResult; } };
   const server = createAIGateway({ aiProvider });
