@@ -142,7 +142,8 @@ prompt-injection resistance or safe provider behavior. Provider-level injection
 handling requires separate adversarial evaluation after a real model is
 configured.
 
-The provider timeout limits how long the gateway waits for a response and returns
-`502 AI_PROVIDER_ERROR`. It does not cancel the underlying promise, which may continue running
-after the HTTP response has timed out. Future HTTP provider adapters should
-accept an `AbortSignal` and propagate cancellation to the outbound request.
+The provider timeout limits how long the gateway waits for a response, aborts the
+same `AbortSignal` passed to the provider, and returns `502 AI_PROVIDER_ERROR`.
+Provider adapters must accept that signal and propagate cancellation to their
+outbound request so a timed-out call does not continue running after the HTTP
+response has ended.

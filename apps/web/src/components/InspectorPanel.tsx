@@ -140,8 +140,8 @@ function reviewLabel(kind: ReviewKind): string {
   return ({ explanation: '解释', risk: '风险', complexity: '复杂度' })[kind];
 }
 
-function levelLabel(level: 'info' | 'warning' | 'error'): string {
-  return { info: '信息', warning: '警告', error: '错误' }[level];
+function levelLabel(level: 'info' | 'warning' | 'error' | 'hint'): string {
+  return { info: '信息', warning: '警告', error: '错误', hint: '提示' }[level];
 }
 
 function ResultHeading({ record, title, onToggle }: { record: AIResultRecord; title: string; onToggle: (id: string, hidden: boolean) => void }) {

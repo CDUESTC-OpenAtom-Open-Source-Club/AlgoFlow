@@ -27,6 +27,18 @@ test('client maps test marker and cursor/range helpers', async () => {
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test('client preserves hint diagnostics from the shared contract', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    ...result,
+    diagnostics: [{ id: 'hint-1', level: 'hint', range: null, problem: 'p', basis: 'b', suggestion: 's' }],
+  }), { status: 200 });
+  try {
+    const response = await new WebAIClient('http://example.test').requestReview(request);
+    assert.equal(response.result.diagnostics[0].level, 'hint');
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test('client classifies unavailable provider', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({ code: 'AI_NOT_ENABLED' }), { status: 503 });

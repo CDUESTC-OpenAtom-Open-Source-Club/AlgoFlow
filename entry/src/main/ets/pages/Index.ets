@@ -159,7 +159,7 @@ struct Index {
       const offsets = rangeOffsets(record.context.code, result.range);
       return `范围 ${JSON.stringify(result.range)}\n建议：\n${result.suggestion}\n来源：${result.sourceRefs.join(', ')}\n原范围：\n${record.context.code.substring(offsets[0], offsets[1])}`;
     }
-    return result.diagnostics.map(item => `${item.level} ${item.problem}\n依据：${item.basis}\n建议：${item.suggestion}\n范围：${JSON.stringify(item.range)}`).join('\n\n') || '未发现诊断项';
+    return result.diagnostics.map(item => `${diagnosticLevelLabel(item.level)} ${item.problem}\n依据：${item.basis}\n建议：${item.suggestion}\n范围：${JSON.stringify(item.range)}`).join('\n\n') || '未发现诊断项';
   }
 
   aboutToAppear(): void {
@@ -200,7 +200,7 @@ struct Index {
     this.shortCode = draft.shortCode;
     this.rewrite = draft.rewrite;
     this.mode = draft.aiMode;
-    this.artifactHidden = false;
+    this.artifactHidden = draft.artifactHidden;
     this.syncStatus = draft.syncStatus;
     this.segments = draft.ideaSegments;
     this.aiResult = this.viewModel.getArtifact(this.selectedId, draft.aiMode) ?? null;
@@ -586,7 +586,7 @@ struct Index {
 
   private toggleArtifact(): void {
     this.artifactHidden = !this.artifactHidden;
-    this.viewModel.aiSession?.records.forEach(record => this.viewModel.aiSession?.setHidden(record.id, this.artifactHidden));
+    this.viewModel.setArtifactHidden(this.selectedId, this.artifactHidden);
   }
 
   private lineNumbers(): string {
@@ -1007,7 +1007,7 @@ struct Index {
       }
       if (this.aiError) {
         Text(this.aiMessage).fontSize(10).lineHeight(16).fontColor('#FF9A94').margin({ top: 4 })
-      } else if (this.aiResult !== null) {
+      } else if (this.aiResult !== null && !this.artifactHidden) {
         this.AIResultList()
       } else if (!this.aiLoading) {
         Text(this.aiMessage.length === 0 ? '未发起转换。忠实转换严格映射思路来源，越界新增步骤将被拒绝。' : this.aiMessage)
@@ -1351,6 +1351,13 @@ struct Index {
       }
     }.width('100%').height('100%').backgroundColor('#0A0A0C')
   }
+}
+
+function diagnosticLevelLabel(level: string): string {
+  if (level === 'error') return '错误';
+  if (level === 'warning') return '警告';
+  if (level === 'hint') return '提示';
+  return '信息';
 }
 
 function reviewCpp(source: string): ReviewIssue[] {

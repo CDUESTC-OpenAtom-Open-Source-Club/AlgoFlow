@@ -40,7 +40,8 @@ export class BrowserAIResultRepository {
   /** @param {string} draftId @param {import('./types').Mode} [mode] */
   listForDraft(draftId, mode = 'faithful_transform') {
     const records = this.load().filter(item => item.draftId === draftId && item.mode === mode)
-      .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
+      // Keep the normal partition first so debug/test rows are visibly separate.
+      .sort((left, right) => Number(left.isTestData) - Number(right.isTestData) || left.updatedAt.localeCompare(right.updatedAt));
     return records.filter((record, index) => !records.slice(index + 1).some(item => sameSlot(item, record)));
   }
 
@@ -99,7 +100,8 @@ export class BrowserAIResultRepository {
 
 /** @param {import('./types').AIResultRecord} left @param {import('./types').AIResultRecord} right */
 function sameSlot(left, right) {
-  return left.draftId === right.draftId && left.mode === right.mode && left.capability === right.capability && left.reviewKind === right.reviewKind;
+  return left.draftId === right.draftId && left.mode === right.mode && left.capability === right.capability &&
+    left.reviewKind === right.reviewKind && left.isTestData === right.isTestData;
 }
 
 /** @param {unknown} value @param {boolean} [legacy] @returns {import('./types').AIResultRecord} */

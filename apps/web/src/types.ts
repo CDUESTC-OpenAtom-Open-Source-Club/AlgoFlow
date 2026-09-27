@@ -77,7 +77,7 @@ export interface AIClientPort {
 
 export interface AIReviewDiagnostic {
   id: string;
-  level: 'info' | 'warning' | 'error';
+  level: 'info' | 'warning' | 'error' | 'hint';
   range: AIRange | null;
   problem: string;
   basis: string;

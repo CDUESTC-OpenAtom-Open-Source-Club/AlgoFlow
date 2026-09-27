@@ -1,4 +1,5 @@
-import { AIMode } from '../domain/Models';
+import { AIErrorCode, AIRequest, AIResult, AIMode } from '../domain/Models';
+import { AIProvider } from '../domain/AIProvider';
 import { AIResultRepository, IDECapability, IDEContext, IDEProvider, IDERecord, IDEResult, IDEState,
   ReviewKind, SourceCursor, buildIDERequest } from '../domain/IDEAIModels';
 import { parseIDEResult, rangeOffsets } from '../domain/IDEAIContract';
@@ -19,6 +20,13 @@ export class IDEAISession {
 
   constructor(provider: IDEProvider, repository: AIResultRepository) {
     this.provider = provider; this.repository = repository;
+  }
+  static async requestTransform(provider: AIProvider, request: AIRequest): Promise<AIResult> {
+    try {
+      return await provider.generate(request);
+    } catch (error) {
+      return AIResult.failure(AIErrorCode.AI_PROVIDER_ERROR, 'AI 服务异常，请主动重试');
+    }
   }
   setProvider(provider: IDEProvider): void { this.cancel(); this.provider = provider; }
   async setContext(context: IDEContext): Promise<void> {
