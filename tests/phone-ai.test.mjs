@@ -351,6 +351,13 @@ test('transport one attempt, error categories, header-only test marker and Relea
     status = 200; result = await provider.request(body, 'completion'); assert.equal(result.isTestData, false);
   }
 });
+test('Release AI result storage rejects test writes before touching the database', async () => {
+  const record = recordFor(request, 'completion'); record.body = JSON.stringify(artifact); record.isTestData = true;
+  const calls = [];
+  const repo = new RdbAIResultRepository({ async executeSql(sql, args) { calls.push([sql, args]); } }, false);
+  await assert.rejects(repo.save(record, true), /禁止保存测试数据/);
+  assert.equal(calls.length, 0);
+});
 test('native cancellation destroys transport and late response stays cancelled', async () => {
   let finish, destroyed = 0;
   const http = { RequestMethod: { POST: 'POST' }, HttpDataType: { STRING: 'STRING' }, createHttp() {

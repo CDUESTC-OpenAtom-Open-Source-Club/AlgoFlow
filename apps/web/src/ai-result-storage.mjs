@@ -1,4 +1,4 @@
-import { ALLOW_TEST_AI, createIdeaSegments, parseCompletionResult, parseReviewResult } from './ai-client.mjs';
+import { ALLOW_TEST_AI, canUseTestData, createIdeaSegments, parseCompletionResult, parseReviewResult } from './ai-client.mjs';
 
 const LEGACY_KEY = 'algoflow.ai-results.v1';
 const NORMAL_KEY = 'algoflow.ai-results.v2.normal';
@@ -9,7 +9,7 @@ export class BrowserAIResultRepository {
   /** @param {{storage?: Pick<Storage, 'getItem' | 'setItem'>, allowTestData?: boolean}} [options] */
   constructor({ storage, allowTestData = ALLOW_TEST_AI } = {}) {
     this.storage = storage;
-    this.allowTestData = allowTestData;
+    this.allowTestData = canUseTestData(allowTestData);
   }
 
   /** @returns {import('./types').AIResultRecord[]} */
@@ -29,7 +29,7 @@ export class BrowserAIResultRepository {
 
   /** @param {import('./types').AIResultRecord} record */
   update(record) {
-    if (record.isTestData && !this.allowTestData) return;
+    if (record.isTestData && !this.allowTestData) throw new Error('当前配置禁止保存测试数据');
     const records = this.#partition(record.isTestData);
     // Hiding an older chat message must never resurrect it as the latest result.
     if (!records.some(item => item.id === record.id && sameSlot(item, record))) return;
@@ -62,7 +62,7 @@ export class BrowserAIResultRepository {
 
   /** @param {string} draftId */
   removeDraft(draftId) {
-    for (const isTestData of [false, true]) {
+    for (const isTestData of this.allowTestData ? [false, true] : [false]) {
       this.#write(isTestData ? TEST_KEY : NORMAL_KEY, this.#partition(isTestData).filter(item => item.draftId !== draftId));
     }
     const rows = this.#read(SEGMENTS_KEY);

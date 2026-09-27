@@ -5,6 +5,17 @@ import { validateCompletionFragment } from '../../../packages/contracts/cpp-frag
 const TEST_DATA_HEADER = 'X-AlgoFlow-Test-Data';
 export const ALLOW_TEST_AI = import.meta.env?.DEV === true && import.meta.env?.VITE_AI_ALLOW_TEST_DATA === 'true';
 
+/**
+ * Vite replaces import.meta.env.DEV with false in release bundles. The optional
+ * build flag keeps Node contract tests able to inject an explicit test mode
+ * while making an explicit constructor option harmless in a release bundle.
+ * @param {boolean} requested
+ * @param {boolean | undefined} [isDev]
+ */
+export function canUseTestData(requested, isDev = import.meta.env?.DEV) {
+  return requested === true && isDev !== false;
+}
+
 /** @type {Record<number, [string, string]>} */
 const HTTP_ERRORS = {
   400: ['INVALID_REQUEST', '请求参数无效，请检查思路和代码内容'],
@@ -30,7 +41,7 @@ export class WebAIClient {
   constructor(baseUrl = import.meta.env?.VITE_AI_GATEWAY_BASE || '/ai-api', { fetchImpl = globalThis.fetch, allowTestData = ALLOW_TEST_AI } = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.fetchImpl = fetchImpl;
-    this.allowTestData = allowTestData;
+    this.allowTestData = canUseTestData(allowTestData);
   }
 
   /** @param {import('./types').AIReviewRequest} request @param {{signal?: AbortSignal}} [options] */
@@ -69,7 +80,7 @@ export class WebAIClient {
     }
     const isTestData = response.headers.get(TEST_DATA_HEADER)?.trim().toLowerCase() === 'true';
     if (isTestData && !this.allowTestData) {
-      throw new AIClientError('AI_NOT_ENABLED', 'AI 不可用：当前配置不允许测试数据，请检查服务配置', 503);
+      throw new AIClientError('AI_NOT_ENABLED', 'AI 不可用：当前配置不允许测试数据，请检查服务配置', 503, true);
     }
     if (!response.ok) {
       const [code, message] = HTTP_ERRORS[response.status] ?? ['AI_HTTP_ERROR', `AI 服务请求失败（HTTP ${response.status}）`];
