@@ -6,6 +6,7 @@ const DEFAULT_HOST = process.env.ALGFLOW_TEST_AI_HOST ?? '127.0.0.1';
 const DEFAULT_PORT = Number.parseInt(process.env.ALGFLOW_TEST_AI_PORT ?? '8789', 10);
 const scenario = process.env.ALGFLOW_TEST_AI_SCENARIO ?? 'success';
 const allowedScenarios = new Set(['success', 'empty', 'invalid', 'delay', 'failure']);
+let callSequence = 0;
 
 if (!allowedScenarios.has(scenario)) throw new Error(`Unknown test scenario: ${scenario}`);
 if (!Number.isInteger(DEFAULT_PORT) || DEFAULT_PORT < 0 || DEFAULT_PORT > 65535) throw new Error('Test AI port must be between 0 and 65535');
@@ -28,7 +29,7 @@ server.listen(DEFAULT_PORT, DEFAULT_HOST, () => {
 function createTestProvider(selectedScenario) {
   return {
     async generate({ request, signal }) {
-      await applyScenario(selectedScenario, signal);
+      await applyScenario(selectedScenario, signal, request, 'generate');
       if (selectedScenario === 'empty') return {
         mode: request.mode, pseudocode: [], code_snippet: null, code_mappings: [],
         assumptions: [], missing_information: ['test-data: no steps returned'], risk_flags: [],
@@ -46,7 +47,7 @@ function createTestProvider(selectedScenario) {
       };
     },
     async review({ request, signal }) {
-      await applyScenario(selectedScenario, signal);
+      await applyScenario(selectedScenario, signal, request, 'review');
       if (selectedScenario === 'invalid') return { diagnostics: 'invalid' };
       if (selectedScenario === 'empty') return baseReview(request, []);
       return baseReview(request, [{
@@ -55,7 +56,7 @@ function createTestProvider(selectedScenario) {
       }]);
     },
     async complete({ request, signal }) {
-      await applyScenario(selectedScenario, signal);
+      await applyScenario(selectedScenario, signal, request, 'complete');
       if (selectedScenario === 'empty') return {
         mode: request.mode, draft_id: request.draft_id, source_draft_version: request.draft_version,
         model_id: 'test-data-provider', rule_version: request.rule_version, output_kind: request.output_kind,
@@ -83,13 +84,31 @@ function baseReview(request, diagnostics) {
   };
 }
 
-async function applyScenario(selectedScenario, signal) {
-  if (selectedScenario === 'failure') throw new Error('test provider failure');
-  if (selectedScenario !== 'delay') return;
+async function applyScenario(selectedScenario, signal, request, capability) {
+  const callId = `${capability}-${++callSequence}`;
+  const draftId = String(request?.draft_id ?? 'unknown').replace(/[^a-zA-Z0-9._:-]/g, '_').slice(0, 96);
+  console.log(`[AlgoFlow] test-provider request_started capability=${capability} call_id=${callId} draft_id=${draftId} scenario=${selectedScenario}`);
+  if (selectedScenario === 'failure') {
+    console.log(`[AlgoFlow] test-provider request_failed capability=${capability} call_id=${callId} draft_id=${draftId}`);
+    throw new Error('test provider failure');
+  }
+  if (selectedScenario !== 'delay') {
+    console.log(`[AlgoFlow] test-provider request_completed capability=${capability} call_id=${callId} draft_id=${draftId}`);
+    return;
+  }
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, 5000);
-    const abort = () => { clearTimeout(timer); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); };
+    let timer;
+    const abort = () => {
+      clearTimeout(timer);
+      console.log(`[AlgoFlow] test-provider request_aborted capability=${capability} call_id=${callId} draft_id=${draftId}`);
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    };
+    const complete = () => {
+      signal.removeEventListener('abort', abort);
+      console.log(`[AlgoFlow] test-provider request_completed capability=${capability} call_id=${callId} draft_id=${draftId}`);
+      resolve();
+    };
     if (signal.aborted) abort();
-    else signal.addEventListener('abort', abort, { once: true });
+    else { timer = setTimeout(complete, 5000); signal.addEventListener('abort', abort, { once: true }); }
   });
 }
