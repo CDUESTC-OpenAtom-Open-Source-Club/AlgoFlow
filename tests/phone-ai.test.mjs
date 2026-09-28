@@ -274,6 +274,24 @@ test('migration preparation fixture preserves every v1 table and field', async (
   assert.equal(v1Fixture.cursor, '42');
   assert.equal(v1Fixture.conflict.resolved, 0);
 });
+
+test('AI Gateway URL uses the existing sync_state persistence', async () => {
+  const { RdbDraftRepository } = load('platform/RdbDraftRepository');
+  const calls = [];
+  const repo = new RdbDraftRepository({});
+  repo.store = { version: 2, async executeSql(sql, args) { calls.push([sql, args]); },
+    async querySql() {
+      const rows = [{ key: 'ai_base_url', value: 'http://192.168.1.10:8788' }]; let index = -1;
+      return { goToFirstRow() { index = 0; return true; }, goToNextRow() { index++; return index < rows.length; },
+        getColumnIndex(column) { return column === 'state_key' ? 0 : 1; },
+        getString(column) { return column === 0 ? rows[index].key : rows[index].value; }, close() {} };
+    } };
+  await repo.loadState(repo.store);
+  assert.equal(repo.getAIBaseUrl(), 'http://192.168.1.10:8788');
+  repo.setAIBaseUrl('http://192.168.1.20:8788/'); await repo.flush();
+  assert.equal(repo.getAIBaseUrl(), 'http://192.168.1.20:8788');
+  assert.equal(calls.some(([sql, args]) => args[0] === 'ai_base_url' && args[1] === 'http://192.168.1.20:8788'), true);
+});
 test('cache rejects corrupt body and restores loading as cancelled, read-only', async () => {
   const record = recordFor(request); record.body = JSON.stringify(artifact);
   assert.throws(() => decodeAIRecord(JSON.stringify({ ...record, body: '{}' })));
@@ -306,6 +324,22 @@ test('RDB AI results keep capability and test partitions independent', async () 
   assert.equal(records.filter(record => record.capability === 'review').length, 2);
   assert.equal(calls[0][1].at(-1), 1);
   assert.equal(resultSlot(normalReview), 'review:risk');
+});
+
+test('RDB AI result recovery keeps one completion and prefers normal data', async () => {
+  const normalCompletion = recordFor(request, 'completion'); normalCompletion.id = 'normal-completion';
+  normalCompletion.body = JSON.stringify(artifact);
+  const testCompletion = structuredClone(normalCompletion); testCompletion.id = 'test-completion'; testCompletion.isTestData = true;
+  const rows = [testCompletion, normalCompletion].map(record => ({ value: JSON.stringify(record) }));
+  const resultSet = {
+    index: -1,
+    goToFirstRow() { this.index = 0; return true; },
+    goToNextRow() { this.index++; return this.index < rows.length; },
+    getString() { return rows[this.index].value; }, close() {}
+  };
+  const repo = new RdbAIResultRepository({ async querySql() { return resultSet; } }, true);
+  const records = await repo.list(request.draft_id, 'faithful_transform');
+  assert.deepEqual(records.filter(record => record.capability === 'completion').map(record => record.isTestData), [false]);
 });
 test('AI result persistence only targets ai_results and deletion is isolated', async () => {
   const record = recordFor(request, 'completion'); record.body = JSON.stringify(artifact);
