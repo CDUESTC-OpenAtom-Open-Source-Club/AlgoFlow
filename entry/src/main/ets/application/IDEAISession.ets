@@ -14,6 +14,7 @@ export class IDEAISession {
   private generation: number = 0;
   private sequence: number = 0;
   private writes: Promise<void> = Promise.resolve();
+  private persistedIds: Set<string> = new Set<string>();
   private acceptedBefore: string = '';
   private acceptedAfter: string = '';
   private acceptedContext: string = '';
@@ -38,7 +39,10 @@ export class IDEAISession {
       try {
         await this.writes;
         const records = await this.repository.list(context.draftId, context.mode);
-        if (generation === this.generation) this.records = records;
+        if (generation === this.generation) {
+          this.records = records;
+          this.persistedIds = new Set<string>(records.map(record => record.id));
+        }
       } catch (error) { if (generation === this.generation) this.storageError = 'AI 本地结果读取失败，请重试；工作区未清空'; }
     }
     this.onChange();
@@ -48,7 +52,7 @@ export class IDEAISession {
     this.records.forEach(record => {
       record.stale = true;
       if (record.state === IDEState.LOADING) { record.state = IDEState.CANCELLED; record.message = '请求已取消'; }
-      this.persist(record, false);
+      if (this.persistedIds.has(record.id)) this.persist(record, false);
     }); this.onChange();
   }
   dispose(): void { this.cancel(); this.context = null; this.onChange = () => {}; }
@@ -60,13 +64,14 @@ export class IDEAISession {
     record.capability = capability; record.reviewKind = kind; record.cursor = cursor;
     record.generation = this.generation; record.updatedAt = new Date().toISOString();
     this.records = capability === IDECapability.REVIEW ? this.records.concat([record]) : this.records.filter(item => item.capability !== capability).concat([record]);
-    this.persist(record, true);
     this.onChange();
+    let responseReceived = false;
     try {
       if (record.context.mode !== AIMode.FAITHFUL_TRANSFORM) throw new Error('AI_MODE_NOT_AVAILABLE');
       if (record.context.segments.length === 0 || record.context.problemContext.trim().length === 0 ||
         (capability !== IDECapability.TRANSFORM && (record.context.file !== 'main.cpp' || record.context.code.trim().length === 0))) throw new Error('INVALID_REQUEST');
       const reply = await this.provider.request(buildIDERequest(record), capability);
+      responseReceived = true;
       if (record.generation !== this.generation || this.context === null) return;
       record.isTestData = reply.isTestData;
       if (reply.errorCode.length > 0) { record.errorCode = reply.errorCode; record.message = reply.message; record.state = IDEState.ERROR; }
@@ -84,7 +89,12 @@ export class IDEAISession {
       record.state = IDEState.ERROR;
     }
     if (record.generation === this.generation) {
-      record.updatedAt = new Date().toISOString(); this.persist(record, true); this.onChange();
+      record.updatedAt = new Date().toISOString();
+      if (responseReceived && !(record.errorCode === 'AI_NOT_ENABLED' && record.isTestData)) {
+        this.persistedIds.add(record.id);
+        this.persist(record, true);
+      }
+      this.onChange();
     }
   }
   result(record: IDERecord): IDEResult | null {
@@ -92,12 +102,12 @@ export class IDEAISession {
   }
   setHidden(id: string, hidden: boolean): void {
     const record = this.records.find(item => item.id === id); if (record === undefined) return;
-    record.hidden = hidden; this.persist(record, false); this.onChange();
+    record.hidden = hidden; if (this.persistedIds.has(record.id)) this.persist(record, false); this.onChange();
   }
   reject(id: string): void {
     const record = this.records.find(item => item.id === id);
     if (record === undefined || record.state !== IDEState.SUCCESS || record.capability !== IDECapability.COMPLETION) return;
-    record.state = IDEState.REJECTED; this.persist(record, false); this.onChange();
+    record.state = IDEState.REJECTED; if (this.persistedIds.has(record.id)) this.persist(record, false); this.onChange();
   }
   canAccept(record: IDERecord): boolean {
     return record.capability === IDECapability.COMPLETION && record.state === IDEState.SUCCESS && !record.stale && !record.hidden &&
@@ -115,7 +125,7 @@ export class IDEAISession {
     record.state = IDEState.ACCEPTED; record.stale = true;
     this.acceptedBefore = record.context.code; this.acceptedAfter = next;
     this.acceptedContext = JSON.stringify(this.context);
-    this.persist(record, false); this.onChange(); return true;
+    if (this.persistedIds.has(record.id)) this.persist(record, false); this.onChange(); return true;
   }
   canWithdraw(): boolean { return this.acceptedContext.length > 0 && this.acceptedContext === JSON.stringify(this.context) && this.context?.code === this.acceptedAfter; }
   withdraw(apply: (code: string) => void): boolean {
@@ -145,6 +155,7 @@ export class IDEAISession {
       if ([IDEState.LOADING, IDEState.CANCELLED].includes(record.state)) continue;
       if (this.records.slice(index + 1).some(item => item.capability === record.capability && item.reviewKind === record.reviewKind && item.isTestData === record.isTestData)) continue;
       this.persist(record, true);
+      this.persistedIds.add(record.id);
     }
     await this.writes; this.onChange();
   }

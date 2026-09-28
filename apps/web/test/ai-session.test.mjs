@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { AIClientError } from '../src/ai-client.mjs';
 import { AISession } from '../src/ai-session.mjs';
 import { completionResult, context, deferred, reviewResult, resultRecord } from './ai-fixtures.mjs';
 
@@ -33,6 +34,30 @@ test('new request cancels the previous generation and ignores a late success', a
   const pending = session.requestReview('risk'); await new Promise(resolve => setImmediate(resolve));
   const next = session.requestReview('risk'); await next; first.resolve({ result: reviewResult(), isTestData: false }); await pending;
   assert.equal(calls[0].aborted, true); assert.equal(session.getSnapshot().reviews.filter(r => r.state === 'success').length, 1);
+});
+
+test('provisional loading records never enter the normal cache partition', async () => {
+  const pending = deferred(); const repo = repository();
+  const session = new AISession({ requestReview: async () => pending.promise, requestCompletion: async () => { throw new Error('unused'); } }, repo);
+  session.setContext(context());
+  const work = session.requestReview('risk');
+  await new Promise(resolve => setImmediate(resolve));
+  session.cancel();
+  assert.equal(repo.records.length, 0);
+  pending.resolve({ result: reviewResult(), isTestData: false });
+  await work;
+  assert.equal(repo.records.length, 0);
+});
+
+test('release rejection of a marked test response leaves both cache partitions empty', async () => {
+  const repo = repository();
+  const session = new AISession({
+    requestReview: async () => { throw new AIClientError('AI_NOT_ENABLED', 'test response rejected', 503, true); },
+    requestCompletion: async () => { throw new Error('unused'); },
+  }, repo);
+  session.setContext(context());
+  await session.requestReview('risk');
+  assert.equal(repo.records.length, 0);
 });
 
 test('context changes stale completion and prevent acceptance after source edit', async () => {

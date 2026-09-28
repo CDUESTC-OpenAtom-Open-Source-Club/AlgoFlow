@@ -145,6 +145,28 @@ test('phone issues one request per operation and late success or failure never r
   assert.equal(session.records.some(record => session.canAccept(record)), false);
   assert.equal(session.records.every(record => record.stale || record.state !== 'success'), true);
 });
+
+test('phone provisional loading records never enter the normal cache partition', async () => {
+  const f = fixture(); const context = recordFor(request).context;
+  await f.session.setContext(context);
+  const work = f.session.request('completion', 'explanation', request.cursor);
+  await new Promise(resolve => setImmediate(resolve));
+  f.session.cancel();
+  assert.equal(f.slots.size, 0);
+  f.pending[0](reply());
+  await work;
+  assert.equal(f.slots.size, 0);
+});
+
+test('phone release rejection of marked test response leaves cache empty', async () => {
+  const f = fixture(); const context = recordFor(request).context;
+  f.session.setProvider({ cancel() {}, async request() {
+    return Object.assign(new M.IDEReply(), { errorCode: 'AI_NOT_ENABLED', message: 'test data rejected', isTestData: true });
+  } });
+  await f.session.setContext(context);
+  await f.session.request('completion', 'explanation', request.cursor);
+  assert.equal(f.slots.size, 0);
+});
 test('completion accepts once, preserves CRLF and withdraws only unchanged content', async () => {
   const f = fixture(), context = recordFor(request).context; context.code = context.code.replaceAll('\n', '\r\n');
   await f.session.setContext(context);
