@@ -42,7 +42,16 @@ export class BrowserAIResultRepository {
     const records = this.load().filter(item => item.draftId === draftId && item.mode === mode)
       // Keep the normal partition first so debug/test rows are visibly separate.
       .sort((left, right) => Number(left.isTestData) - Number(right.isTestData) || left.updatedAt.localeCompare(right.updatedAt));
-    return records.filter((record, index) => !records.slice(index + 1).some(item => sameSlot(item, record)));
+    const seenDisplaySlots = new Set();
+    return records.filter((record, index) => {
+      if (record.capability === 'completion') {
+        const slot = `${record.draftId}/${record.mode}/${record.capability}`;
+        if (seenDisplaySlots.has(slot)) return false;
+        seenDisplaySlots.add(slot);
+        return true;
+      }
+      return !records.slice(index + 1).some(item => sameDisplaySlot(item, record));
+    });
   }
 
   /** @param {string} draftId @param {string} idea @param {import('./types').IdeaSegment[]} [fallback] */
@@ -102,6 +111,12 @@ export class BrowserAIResultRepository {
 function sameSlot(left, right) {
   return left.draftId === right.draftId && left.mode === right.mode && left.capability === right.capability &&
     left.reviewKind === right.reviewKind && left.isTestData === right.isTestData;
+}
+
+/** @param {import('./types').AIResultRecord} left @param {import('./types').AIResultRecord} right */
+function sameDisplaySlot(left, right) {
+  if (left.capability !== 'completion' || right.capability !== 'completion') return sameSlot(left, right);
+  return left.draftId === right.draftId && left.mode === right.mode && left.capability === right.capability;
 }
 
 /** @param {unknown} value @param {boolean} [legacy] @returns {import('./types').AIResultRecord} */

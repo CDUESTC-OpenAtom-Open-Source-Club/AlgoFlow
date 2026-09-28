@@ -11,15 +11,18 @@ export class RdbAIResultRepository implements AIResultRepository {
     this.store = store; this.allowTestData = DEBUG && allowTestData;
   }
   async list(draftId: string, mode: AIMode): Promise<IDERecord[]> {
-    const rows = await this.store.querySql('SELECT record_json FROM ai_results WHERE draft_id = ? AND mode = ? AND (is_test = 0 OR ? = 1) ORDER BY updated_at', [draftId, mode, this.allowTestData ? 1 : 0]);
+    const rows = await this.store.querySql('SELECT record_json FROM ai_results WHERE draft_id = ? AND mode = ? AND (is_test = 0 OR ? = 1) ORDER BY is_test ASC, updated_at', [draftId, mode, this.allowTestData ? 1 : 0]);
     const records: IDERecord[] = [];
     try {
       if (rows.goToFirstRow()) do {
         const record = decodeAIRecord(rows.getString(0));
         if (record.isTestData && !this.allowTestData) continue;
         if (record.context.draftId !== draftId || record.context.mode !== mode) throw new Error('AI 缓存来源不匹配');
-        const index = records.findIndex(item => storageSlot(item) === storageSlot(record));
-        if (index >= 0) records.splice(index, 1);
+        const index = records.findIndex(item => displaySlot(item) === displaySlot(record));
+        if (index >= 0) {
+          if (records[index].isTestData && !record.isTestData) records[index] = record;
+          continue;
+        }
         record.stale = true;
         if (record.state === IDEState.LOADING) { record.state = IDEState.CANCELLED; record.message = '上次请求已结束，请重新发起'; }
         records.push(record);
@@ -48,6 +51,9 @@ export function resultSlot(record: IDERecord): string {
 }
 function storageSlot(record: IDERecord): string {
   return `${resultSlot(record)}:${record.isTestData ? 'test' : 'normal'}`;
+}
+function displaySlot(record: IDERecord): string {
+  return record.capability === IDECapability.COMPLETION ? resultSlot(record) : storageSlot(record);
 }
 export function decodeAIRecord(json: string): IDERecord {
   const record = JSON.parse(json) as IDERecord;

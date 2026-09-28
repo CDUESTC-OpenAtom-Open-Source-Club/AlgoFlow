@@ -62,6 +62,7 @@ export async function migrateWorkspaceStore(store: relationalStore.RdbStore): Pr
     }
   }
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8787';
+const DEFAULT_AI_BASE_URL = 'http://127.0.0.1:8788';
 const STORE_CONFIG: relationalStore.StoreConfig = {
   name: 'algoflow_workspace.db',
   securityLevel: relationalStore.SecurityLevel.S1
@@ -79,6 +80,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   private clientId: string = '';
   private cursor: string = '0';
   private baseUrl: string = DEFAULT_BASE_URL;
+  private aiBaseUrl: string = DEFAULT_AI_BASE_URL;
   private writeChain: Promise<void> = Promise.resolve();
 
   constructor(context: common.Context, existingStore?: relationalStore.RdbStore) {
@@ -145,6 +147,13 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   getCursor(): string { return this.cursor; }
   getBaseUrl(): string { return this.baseUrl; }
 
+  getAIBaseUrl(): string { return this.aiBaseUrl; }
+
+  setAIBaseUrl(baseUrl: string): void {
+    this.aiBaseUrl = normalizeAIBaseUrl(baseUrl);
+    this.enqueue(async () => this.persistState('ai_base_url', this.aiBaseUrl));
+  }
+
   setCursor(cursor: string): void {
     this.cursor = cursor;
     this.enqueue(async () => this.persistState('cursor', cursor));
@@ -200,6 +209,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
           if (key === 'client_id') this.clientId = value;
           if (key === 'cursor') this.cursor = value;
           if (key === 'base_url') this.baseUrl = value;
+          if (key === 'ai_base_url') this.aiBaseUrl = value;
         } while (resultSet.goToNextRow());
       }
     } finally {
@@ -211,8 +221,10 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     }
     if (this.cursor.length === 0) this.cursor = '0';
     if (this.baseUrl.length === 0) this.baseUrl = DEFAULT_BASE_URL;
+    if (this.aiBaseUrl.length === 0) this.aiBaseUrl = DEFAULT_AI_BASE_URL;
     await this.persistState('cursor', this.cursor);
     await this.persistState('base_url', this.baseUrl);
+    await this.persistState('ai_base_url', this.aiBaseUrl);
   }
 
   private async loadDrafts(store: relationalStore.RdbStore): Promise<void> {
@@ -422,6 +434,12 @@ function cloneOperation(source: SyncOperation): SyncOperation {
 function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim();
   if (trimmed.length === 0) return DEFAULT_BASE_URL;
+  return trimmed.endsWith('/') ? trimmed.substring(0, trimmed.length - 1) : trimmed;
+}
+
+function normalizeAIBaseUrl(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return DEFAULT_AI_BASE_URL;
   return trimmed.endsWith('/') ? trimmed.substring(0, trimmed.length - 1) : trimmed;
 }
 

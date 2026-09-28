@@ -19,6 +19,7 @@ export class DraftWorkspaceViewModel {
   private syncRepository?: SyncRepository;
   private aiProvider: AIProvider;
   private aiBaseUrl: string = 'http://127.0.0.1:8788';
+  private allowTestData: boolean = false;
   private aiRequestInFlight: boolean = false;
   private aiRequestGeneration: number = 0;
   private sequence: number = 1;
@@ -32,11 +33,16 @@ export class DraftWorkspaceViewModel {
 
   async initialize(): Promise<void> {
     await this.repository.initialize();
+    this.aiBaseUrl = this.repository.getAIBaseUrl();
+    this.aiProvider = new HttpAIProvider(this.aiBaseUrl, 0, 10000, this.allowTestData);
   }
 
   configureAI(repository: AIResultRepository, allowTestData: boolean): void {
+    this.allowTestData = allowTestData;
     this.aiSession?.dispose();
-    this.aiSession = new IDEAISession(new HttpAIProvider(this.aiBaseUrl, 0, 10000, allowTestData), repository);
+    const provider = new HttpAIProvider(this.aiBaseUrl, 0, 10000, allowTestData);
+    this.aiProvider = provider;
+    this.aiSession = new IDEAISession(provider, repository);
   }
 
   selectAIContext(id: string, file: string): void {
@@ -77,8 +83,11 @@ export class DraftWorkspaceViewModel {
     this.aiRequestInFlight = false;
     this.aiProvider.cancel();
     this.aiBaseUrl = baseUrl;
-    this.aiProvider = new HttpAIProvider(baseUrl);
-    this.aiSession?.setProvider(new HttpAIProvider(baseUrl, 0, 10000, allowTestData));
+    this.allowTestData = allowTestData;
+    const provider = new HttpAIProvider(baseUrl, 0, 10000, allowTestData);
+    this.aiProvider = provider;
+    this.repository.setAIBaseUrl(baseUrl);
+    this.aiSession?.setProvider(provider);
   }
 
   getAIBaseUrl(): string {

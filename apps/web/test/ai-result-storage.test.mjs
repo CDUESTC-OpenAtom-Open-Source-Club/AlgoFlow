@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BrowserAIResultRepository } from '../src/ai-result-storage.mjs';
-import { memoryStorage, resultRecord } from './ai-fixtures.mjs';
+import { completionResult, memoryStorage, resultRecord } from './ai-fixtures.mjs';
 
 test('stores only latest result per draft, mode and capability slot', () => {
   const repo = new BrowserAIResultRepository({ storage: memoryStorage() });
@@ -26,6 +26,17 @@ test('normal and test results occupy independent slots and list normal first', (
   const testResult = resultRecord({ isTestData: true, updatedAt: '2026-09-26T01:00:00.000Z' });
   repo.save(testResult); repo.save(normal);
   assert.deepEqual(repo.listForDraft('draft-test').map(item => item.isTestData), [false, true]);
+});
+
+test('completion display keeps one result and prefers the normal partition', () => {
+  const storage = memoryStorage();
+  const repo = new BrowserAIResultRepository({ storage, allowTestData: true });
+  const request = { mode: 'faithful_transform', draft_id: 'draft-test', draft_version: 3, rule_version: '1.0.0',
+    code: '// fixture\nint count = 0;\ncount += 1;\n// done', visibility: 'visible', cursor: { line: 3, char: 0 } };
+  const completion = completionResult(request);
+  repo.save(resultRecord({ capability: 'completion', reviewKind: undefined, result: completion, sourceCursor: request.cursor, isTestData: true, updatedAt: '2026-09-26T02:00:00.000Z' }));
+  repo.save(resultRecord({ capability: 'completion', reviewKind: undefined, result: completion, sourceCursor: request.cursor, isTestData: false, updatedAt: '2026-09-26T01:00:00.000Z' }));
+  assert.deepEqual(repo.listForDraft('draft-test').filter(item => item.capability === 'completion').map(item => item.isTestData), [false]);
 });
 
 test('normal repository refuses test writes and never reads the test partition', () => {

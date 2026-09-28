@@ -7,4 +7,6 @@ export interface DraftRepository {
   save(draft: Draft): void;
   delete(id: string): void;
   flush(): Promise<void>;
+  getAIBaseUrl(): string;
+  setAIBaseUrl(baseUrl: string): void;
 }
