@@ -1,5 +1,5 @@
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIErrorCode, AIMode, AIOutputKind, AIRequest, AIRequestSegment, AIResult,
+import { AIArtifact, AIErrorCode, AIMode, AIOutputKind, AIRequest, AIRequestSegment, AIResult,
   AIVisibility, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
 import { AIProvider } from '../domain/AIProvider';
 import { SyncRepository } from '../domain/SyncRepository';
