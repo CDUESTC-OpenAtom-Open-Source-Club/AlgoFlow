@@ -7,6 +7,8 @@ export class AISession {
   /** @type {import('./types').AIContext | null} */
   context = null;
   generation = 0;
+  /** @type {Set<string>} Records whose cache partition has been confirmed. */
+  confirmedRecords = new Set();
   /** @type {{controller: AbortController, generation: number} | null} */
   active = null;
   /** @type {Set<() => void>} */
@@ -41,6 +43,7 @@ export class AISession {
       // A recovered request belongs to an earlier session/generation. Keep its
       // result and hidden state, but never silently re-arm an old code edit.
       records = records.map(record => ({ ...record, stale: true }));
+      this.confirmedRecords = new Set(records.map(record => record.id));
       this.state = { ...this.state, reviews: records.filter(record => record.capability === 'review'),
         completion: records.find(record => record.capability === 'completion') ?? null, segments: [] };
     }
@@ -165,6 +168,7 @@ export class AISession {
     this.state = kind === 'completion' ? { ...this.state, completion: record } : { ...this.state, reviews: [...this.state.reviews, record] };
     this.#emit();
     let isTestData = false;
+    let responseReceived = false;
     try {
       if (context.mode !== 'faithful_transform') throw new AIClientError('AI_MODE_NOT_AVAILABLE', '当前模式尚未接入，请选择忠实转换', 409);
       if (!record.sourceSegments.length || !context.code.trim() || !context.problemContext.trim()) {
@@ -178,17 +182,20 @@ export class AISession {
         rangeToOffsets(base.code, { start_line: cursor.line, start_char: cursor.char, end_line: cursor.line, end_char: cursor.char });
         const request = { ...base, output_kind: /** @type {const} */ ('completion'), cursor };
         const response = await this.client.requestCompletion(request, { signal: active.controller.signal });
+        responseReceived = true;
         isTestData = response.isTestData;
         result = parseCompletionResult(response.result, request);
       } else {
         const request = { ...base, output_kind: /** @type {const} */ ('review'), review_kind: kind };
         const response = await this.client.requestReview(request, { signal: active.controller.signal });
+        responseReceived = true;
         isTestData = response.isTestData;
         result = parseReviewResult(response.result, request);
       }
       if (!this.#isCurrent(active)) return;
       const updated = { ...record, state: /** @type {const} */ ('success'), result, isTestData, updatedAt: new Date().toISOString() };
       this.#replace(updated);
+      this.confirmedRecords.add(record.id);
       this.#persist(updated, true);
     } catch (error) {
       if (!this.#isCurrent(active)) return;
@@ -199,7 +206,10 @@ export class AISession {
         isTestData: isTestData || (error instanceof AIClientError && error.isTestData), updatedAt: new Date().toISOString(),
       };
       this.#replace(updated);
-      this.#persist(updated, true);
+      if (responseReceived || (error instanceof AIClientError && error.isTestData && code !== 'AI_NOT_ENABLED')) {
+        this.confirmedRecords.add(record.id);
+        this.#persist(updated, true);
+      }
     } finally {
       if (this.active === active) {
         this.active = null;
@@ -224,7 +234,7 @@ export class AISession {
         ...(record.state === 'loading' ? { errorCode: 'CANCELLED', errorMessage: '请求已取消，可重新发起' } : {}),
       };
       this.#replace(updated);
-      this.#persist(updated);
+      if (this.confirmedRecords.has(record.id)) this.#persist(updated);
     }
   }
 
