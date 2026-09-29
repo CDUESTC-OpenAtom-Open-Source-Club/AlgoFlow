@@ -14,3 +14,7 @@ Issue #28 persists faithful AI transform results as independent `ai_artifact` en
 ## Compatibility
 
 OpenHarmony database version 3 creates `ai_artifacts` and migrates legacy `drafts.ai_artifacts_json` rows. Existing drafts and their versions remain unchanged. The sync-api remains an in-memory local development service; this change does not claim production cloud or distributed-device support.
+
+## Mobile generation entry
+
+The phone AI panel now sends an explicit `faithful_transform` request to the configured AI Gateway URL. A result is saved only after the response matches the requested mode, draft version, output kind, visibility, and artifact contract. With no configured provider, the gateway continues to return `AI_NOT_ENABLED`; the client does not create a mock result.

@@ -41,11 +41,14 @@ export function validateAIArtifactEntity(entity) {
   if (entity.code_snippet !== null && typeof entity.code_snippet !== 'string') errors.push('code_snippet is invalid');
   if (typeof entity.code_snippet === 'string' && entity.code_snippet.length > 4000) errors.push('code_snippet is too long');
   if (!Array.isArray(entity.code_mappings)) errors.push('code_mappings is invalid');
-  else entity.code_mappings.forEach((mapping, index) => {
+  else {
+    const stepIds = new Set(entity.pseudocode?.map((step) => step?.id) ?? []);
+    entity.code_mappings.forEach((mapping, index) => {
     if (!isObject(mapping) || typeof mapping.step_id !== 'string' || mapping.step_id.length === 0 ||
       !Number.isInteger(mapping.start_line) || mapping.start_line < 1 || !Number.isInteger(mapping.end_line) ||
-      mapping.end_line < mapping.start_line) errors.push(`code_mappings[${index}] is invalid`);
-  });
+      mapping.end_line < mapping.start_line || !stepIds.has(mapping.step_id)) errors.push(`code_mappings[${index}] is invalid`);
+    });
+  }
   for (const field of ['assumptions', 'missing_information', 'risk_flags', 'added_algorithm_steps']) {
     if (!Array.isArray(entity[field]) || entity[field].some((item) => typeof item !== 'string')) errors.push(`${field} is invalid`);
   }

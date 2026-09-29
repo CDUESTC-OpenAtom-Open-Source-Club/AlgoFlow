@@ -2,6 +2,9 @@ import { DraftRepository } from '../domain/DraftRepository';
 import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
 import { SyncRepository } from '../domain/SyncRepository';
 import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
+import { HttpAIClient, AIRequestInput, AIRequestIdeaSegment } from '../platform/HttpAIClient';
+import { gatewayPayloadToArtifact } from '../domain/AIArtifactCodec';
+import { util } from '@kit.ArkTS';
 
 export class DraftWorkspaceViewModel {
   private repository: DraftRepository;
@@ -53,6 +56,29 @@ export class DraftWorkspaceViewModel {
   getArtifact(id: string): AIArtifact | undefined { return this.syncRepository?.getArtifact(id); }
 
   saveArtifact(artifact: AIArtifact): void { this.syncRepository?.saveArtifact(artifact); }
+
+  async generateFaithfulArtifact(id: string, baseUrl: string): Promise<AIArtifact> {
+    if (this.syncRepository === undefined) throw new Error('AI_SYNC_REPOSITORY_REQUIRED');
+    const draft = this.repository.get(id);
+    if (draft === undefined) throw new Error('DRAFT_NOT_FOUND');
+    if (draft.ideaSegments.length === 0) throw new Error('AI_IDEA_REQUIRED');
+    const request = new AIRequestInput();
+    request.mode = AIMode.FAITHFUL_TRANSFORM;
+    request.draft_id = draft.id;
+    request.draft_version = draft.version;
+    request.problem_context = draft.idea.length > 0 ? draft.idea : draft.title;
+    request.idea_segments = draft.ideaSegments.map((segment: IdeaSegment) =>
+      new AIRequestIdeaSegment(segment.id, segment.content));
+    const response = await new HttpAIClient(baseUrl).generate(request);
+    if (response.mode !== request.mode || response.source_draft_version !== request.draft_version ||
+      response.rule_version !== request.rule_version || response.output_kind !== request.output_kind ||
+      response.visibility !== request.visibility) throw new Error('INVALID_AI_ARTIFACT');
+    const artifact = gatewayPayloadToArtifact(response, util.generateRandomUUID(), draft.id, draft.version,
+      this.syncRepository.getClientId());
+    if (artifact === undefined) throw new Error('INVALID_AI_ARTIFACT');
+    this.syncRepository.saveArtifact(artifact);
+    return artifact;
+  }
 
   update(id: string, title: string, idea: string, code: string, shortCode: string, rewrite: string): void {
     const draft = this.repository.get(id);

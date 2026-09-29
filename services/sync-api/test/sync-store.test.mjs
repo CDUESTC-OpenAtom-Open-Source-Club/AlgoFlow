@@ -294,6 +294,21 @@ test('rejects malformed independent AI artifacts before they enter the change st
   assert.equal(store.pull('0').changes.length, 0);
 });
 
+test('rejects an AI artifact mapping to an unknown pseudocode step', () => {
+  const store = new SyncStore();
+  const artifact = makeArtifact('artifact-ghost-step', 'draft-1', 'web-local');
+  artifact.output_kind = 'code_snippet';
+  artifact.code_snippet = 'return value;';
+  artifact.code_mappings = [{ step_id: 'ghost', start_line: 1, end_line: 1 }];
+  const result = store.apply({
+    operation_id: 'artifact-ghost-step-op', entity_type: 'ai_artifact', entity_id: artifact.id, operation_type: 'upsert',
+    base_version: 0, client_id: 'web-local', occurred_at: '2026-09-15T00:00:00.000Z', payload: artifact
+  });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.error_code, 'INVALID_AI_ARTIFACT');
+  assert.equal(store.pull('0').changes.length, 0);
+});
+
 test('rejects an unknown AI artifact delete instead of publishing an incomplete tombstone', () => {
   const store = new SyncStore();
   const result = store.apply({
@@ -328,6 +343,22 @@ test('does not advance the Web cursor when a pulled AI artifact is corrupt', asy
         next_cursor: '5'
       };
     }
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.state.cursor, '4');
+});
+
+test('does not advance the Web cursor when artifact scalar fields or arrays are corrupt', async () => {
+  const state = makeWorkspace('web-corrupt-fields', makeDraft('draft-corrupt-fields', '', 'web-corrupt-fields'));
+  state.cursor = '4';
+  const artifact = makeArtifact('broken-fields', 'draft-1', 'remote');
+  artifact.version = 'bad';
+  artifact.created_at = 'not-a-date';
+  artifact.deleted = 'no';
+  artifact.assumptions = [7];
+  const result = await synchronizeWorkspace(state, {
+    async push() { throw new Error('not expected'); },
+    async pull() { return { changes: [{ cursor: '5', entity_type: 'ai_artifact', entity: artifact }], next_cursor: '5' }; }
   });
   assert.equal(result.status, 'failed');
   assert.equal(result.state.cursor, '4');

@@ -163,6 +163,16 @@ function assertAIArtifact(value) {
   const artifact = /** @type {Record<string, unknown>} */ (value);
   const required = ['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', 'mode', 'pseudocode', 'code_snippet', 'code_mappings', 'assumptions', 'missing_information', 'risk_flags', 'added_algorithm_steps', 'source_draft_version', 'model_id', 'rule_version', 'output_kind', 'visibility', 'template_id'];
   if (required.some((field) => !(field in artifact))) throw new Error('INVALID_AI_ARTIFACT');
+  if (typeof artifact.id !== 'string' || artifact.id.length === 0 ||
+    typeof artifact.version !== 'number' || !Number.isInteger(artifact.version) || artifact.version < 0 ||
+    typeof artifact.server_sequence !== 'number' || !Number.isInteger(artifact.server_sequence) || artifact.server_sequence < 0 ||
+    typeof artifact.created_at !== 'string' || !artifact.created_at.endsWith('Z') || Number.isNaN(Date.parse(artifact.created_at)) ||
+    typeof artifact.updated_at !== 'string' || !artifact.updated_at.endsWith('Z') || Number.isNaN(Date.parse(artifact.updated_at)) ||
+    typeof artifact.deleted !== 'boolean' || typeof artifact.last_modified_client_id !== 'string' || artifact.last_modified_client_id.length === 0 ||
+    typeof artifact.draft_id !== 'string' || artifact.draft_id.length === 0 ||
+    typeof artifact.source_draft_version !== 'number' || !Number.isInteger(artifact.source_draft_version) || artifact.source_draft_version < 0 ||
+    typeof artifact.model_id !== 'string' || artifact.model_id.length === 0 || typeof artifact.rule_version !== 'string' || artifact.rule_version.length === 0 ||
+    (artifact.template_id !== null && (typeof artifact.template_id !== 'string' || artifact.template_id.length === 0))) throw new Error('INVALID_AI_ARTIFACT');
   const mode = typeof artifact.mode === 'string' ? artifact.mode : '';
   const outputKind = typeof artifact.output_kind === 'string' ? artifact.output_kind : '';
   const visibility = typeof artifact.visibility === 'string' ? artifact.visibility : '';
@@ -179,7 +189,7 @@ function assertAIArtifact(value) {
   })) throw new Error('INVALID_AI_ARTIFACT');
   const ids = new Set(pseudocode.map((step) => step.id));
   if (ids.size !== pseudocode.length) throw new Error('INVALID_AI_ARTIFACT');
-  if (!Array.isArray(mappings) || !Array.isArray(artifact.assumptions) || !Array.isArray(artifact.missing_information) || !Array.isArray(artifact.risk_flags) || !Array.isArray(addedSteps)) throw new Error('INVALID_AI_ARTIFACT');
+  if (!Array.isArray(mappings) || !Array.isArray(artifact.assumptions) || artifact.assumptions.some((item) => typeof item !== 'string') || !Array.isArray(artifact.missing_information) || artifact.missing_information.some((item) => typeof item !== 'string') || !Array.isArray(artifact.risk_flags) || artifact.risk_flags.some((item) => typeof item !== 'string') || !Array.isArray(addedSteps) || addedSteps.some((item) => typeof item !== 'string')) throw new Error('INVALID_AI_ARTIFACT');
   if (typeof artifact.code_snippet === 'string' && (artifact.code_snippet.length > 4000 || /\b(?:int|signed|auto|void)\s+main\s*\(/.test(artifact.code_snippet))) throw new Error('INVALID_AI_ARTIFACT');
   if (mappings.some((mapping) => !mapping || typeof mapping !== 'object' || typeof mapping.step_id !== 'string' || !ids.has(mapping.step_id) || !Number.isInteger(mapping.start_line) || mapping.start_line < 1 || !Number.isInteger(mapping.end_line) || mapping.end_line < mapping.start_line)) throw new Error('INVALID_AI_ARTIFACT');
   if (mode === 'faithful_transform' && addedSteps.length > 0) throw new Error('INVALID_AI_ARTIFACT');

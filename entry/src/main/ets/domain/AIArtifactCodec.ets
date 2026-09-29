@@ -37,6 +37,23 @@ export class AIArtifactPayload {
   template_id: string | null = null;
 }
 
+export class AIGatewayArtifactPayload {
+  mode: string = AIMode.FAITHFUL_TRANSFORM;
+  pseudocode: PseudocodeStepPayload[] = [];
+  code_snippet: string | null = null;
+  code_mappings: CodeMappingPayload[] = [];
+  assumptions: string[] = [];
+  missing_information: string[] = [];
+  risk_flags: string[] = [];
+  added_algorithm_steps: string[] = [];
+  source_draft_version: number = 0;
+  model_id: string = '';
+  rule_version: string = '';
+  output_kind: string = AIOutputKind.PSEUDOCODE;
+  visibility: string = AIVisibility.VISIBLE;
+  template_id: string | null = null;
+}
+
 export function artifactToPayload(artifact: AIArtifact): AIArtifactPayload {
   const payload = new AIArtifactPayload();
   payload.id = artifact.id;
@@ -77,12 +94,24 @@ export function artifactToPayload(artifact: AIArtifact): AIArtifactPayload {
 }
 
 export function payloadToArtifact(payload: AIArtifactPayload): AIArtifact | undefined {
-  if (payload.id.length === 0 || payload.draft_id.length === 0 || payload.created_at.length === 0 ||
-    payload.updated_at.length === 0 || payload.last_modified_client_id.length === 0 || payload.model_id.length === 0 ||
-    payload.rule_version.length === 0 || payload.source_draft_version < 0 || payload.version < 0 || payload.server_sequence < 0 ||
+  if (payload === undefined || payload === null || typeof payload.id !== 'string' || payload.id.length === 0 ||
+    typeof payload.draft_id !== 'string' || payload.draft_id.length === 0 || typeof payload.created_at !== 'string' ||
+    payload.created_at.length === 0 || !payload.created_at.endsWith('Z') || Number.isNaN(Date.parse(payload.created_at)) ||
+    typeof payload.updated_at !== 'string' || payload.updated_at.length === 0 || !payload.updated_at.endsWith('Z') ||
+    Number.isNaN(Date.parse(payload.updated_at)) || typeof payload.last_modified_client_id !== 'string' ||
+    payload.last_modified_client_id.length === 0 || typeof payload.model_id !== 'string' || payload.model_id.length === 0 ||
+    typeof payload.rule_version !== 'string' || payload.rule_version.length === 0 || typeof payload.version !== 'number' ||
+    !Number.isInteger(payload.version) || typeof payload.server_sequence !== 'number' || !Number.isInteger(payload.server_sequence) ||
+    typeof payload.source_draft_version !== 'number' || !Number.isInteger(payload.source_draft_version) ||
+    payload.source_draft_version < 0 || payload.version < 0 || payload.server_sequence < 0 || typeof payload.deleted !== 'boolean' ||
     !Array.isArray(payload.pseudocode) || !Array.isArray(payload.code_mappings) ||
-    !Array.isArray(payload.assumptions) || !Array.isArray(payload.missing_information) ||
-    !Array.isArray(payload.risk_flags) || !Array.isArray(payload.added_algorithm_steps)) return undefined;
+    !Array.isArray(payload.assumptions) || payload.assumptions.some((item: string) => typeof item !== 'string') ||
+    !Array.isArray(payload.missing_information) || payload.missing_information.some((item: string) => typeof item !== 'string') ||
+    !Array.isArray(payload.risk_flags) || payload.risk_flags.some((item: string) => typeof item !== 'string') ||
+    !Array.isArray(payload.added_algorithm_steps) || payload.added_algorithm_steps.some((item: string) => typeof item !== 'string') ||
+    (payload.code_snippet !== null && typeof payload.code_snippet !== 'string') ||
+    (typeof payload.code_snippet === 'string' && (payload.code_snippet.length > 4000 || /\b(?:int|signed|auto|void)\s+main\s*\(/.test(payload.code_snippet))) ||
+    (payload.template_id !== null && typeof payload.template_id !== 'string')) return undefined;
   const mode = parseMode(payload.mode);
   const outputKind = parseOutputKind(payload.output_kind);
   const visibility = parseVisibility(payload.visibility);
@@ -90,9 +119,17 @@ export function payloadToArtifact(payload: AIArtifactPayload): AIArtifact | unde
   if (mode === AIMode.FAITHFUL_TRANSFORM && payload.added_algorithm_steps.length > 0) return undefined;
   if (outputKind === AIOutputKind.PSEUDOCODE && (payload.code_snippet !== null || payload.code_mappings.length > 0)) return undefined;
   if (outputKind === AIOutputKind.CODE_SNIPPET && (payload.code_snippet === null || payload.code_snippet.length === 0 || payload.code_mappings.length === 0)) return undefined;
+  const stepIds = new Set<string>();
   for (const step of payload.pseudocode) {
-    if (step.id.length === 0 || step.step.length === 0 || step.source_refs.length === 0) return undefined;
-    for (const sourceRef of step.source_refs) if (sourceRef.length === 0) return undefined;
+    if (step === undefined || step === null || typeof step.id !== 'string' || step.id.length === 0 || stepIds.has(step.id) ||
+      typeof step.step !== 'string' || step.step.length === 0 || !Array.isArray(step.source_refs) || step.source_refs.length === 0) return undefined;
+    stepIds.add(step.id);
+    for (const sourceRef of step.source_refs) if (typeof sourceRef !== 'string' || sourceRef.length === 0) return undefined;
+  }
+  for (const mapping of payload.code_mappings) {
+    if (mapping === undefined || mapping === null || typeof mapping.step_id !== 'string' || !stepIds.has(mapping.step_id) ||
+      typeof mapping.start_line !== 'number' || !Number.isInteger(mapping.start_line) || mapping.start_line < 1 ||
+      typeof mapping.end_line !== 'number' || !Number.isInteger(mapping.end_line) || mapping.end_line < mapping.start_line) return undefined;
   }
   const artifact = new AIArtifact(payload.id, payload.draft_id, mode);
   artifact.version = payload.version;
@@ -117,6 +154,35 @@ export function payloadToArtifact(payload: AIArtifactPayload): AIArtifact | unde
   artifact.visibility = visibility;
   artifact.templateId = payload.template_id;
   return artifact;
+}
+
+export function gatewayPayloadToArtifact(payload: AIGatewayArtifactPayload, id: string, draftId: string,
+  draftVersion: number, clientId: string): AIArtifact | undefined {
+  if (payload === undefined || payload === null) return undefined;
+  const entity = new AIArtifactPayload();
+  entity.id = id;
+  entity.version = 0;
+  entity.server_sequence = 0;
+  entity.created_at = new Date().toISOString();
+  entity.updated_at = entity.created_at;
+  entity.deleted = false;
+  entity.last_modified_client_id = clientId;
+  entity.draft_id = draftId;
+  entity.mode = payload.mode;
+  entity.pseudocode = payload.pseudocode;
+  entity.code_snippet = payload.code_snippet;
+  entity.code_mappings = payload.code_mappings;
+  entity.assumptions = payload.assumptions;
+  entity.missing_information = payload.missing_information;
+  entity.risk_flags = payload.risk_flags;
+  entity.added_algorithm_steps = payload.added_algorithm_steps;
+  entity.source_draft_version = draftVersion;
+  entity.model_id = payload.model_id;
+  entity.rule_version = payload.rule_version;
+  entity.output_kind = payload.output_kind;
+  entity.visibility = payload.visibility;
+  entity.template_id = payload.template_id;
+  return payloadToArtifact(entity);
 }
 
 function parseMode(value: string): AIMode | undefined {

@@ -280,8 +280,11 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
         do {
           const payload = JSON.parse(readString(resultSet, 'payload_json')) as AIArtifactPayload;
           const artifact = payloadToArtifact(payload);
-          if (artifact === undefined) throw new Error('Stored AI artifact is invalid');
-          loaded.push(artifact);
+          if (artifact === undefined) {
+            hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped invalid stored AI artifact');
+          } else {
+            loaded.push(artifact);
+          }
         } while (resultSet.goToNextRow());
       }
     } finally {
@@ -481,7 +484,10 @@ async function migrateEmbeddedArtifacts(store: relationalStore.RdbStore): Promis
         hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped malformed legacy AI artifact JSON. draft_id=%{public}s', safeLogValue(draftId));
         continue;
       }
-      if (!Array.isArray(values)) continue;
+      if (!Array.isArray(values)) {
+        hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped legacy AI artifact object. draft_id=%{public}s', safeLogValue(draftId));
+        continue;
+      }
       for (let index = 0; index < values.length; index++) {
         const payload = values[index];
         if (payload === undefined || payload === null || typeof payload !== 'object') {

@@ -114,6 +114,9 @@ struct Index {
   @State searchCount: number = 0;
   @State syncBaseUrl: string = 'http://127.0.0.1:8787';
   @State syncMessage: string = '';
+  @State aiBaseUrl: string = 'http://127.0.0.1:8788';
+  @State aiMessage: string = '';
+  @State aiGenerating: boolean = false;
 
   aboutToAppear(): void {
     this.initializeWorkspace();
@@ -526,6 +529,23 @@ struct Index {
     this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === this.selectedId && artifact.mode === this.mode);
   }
 
+  private async generateArtifact(): Promise<void> {
+    if (this.mode !== AIMode.FAITHFUL_TRANSFORM || this.aiGenerating) return;
+    this.aiGenerating = true;
+    this.aiMessage = '正在请求 AI Gateway...';
+    try {
+      await this.viewModel.generateFaithfulArtifact(this.selectedId, this.aiBaseUrl);
+      this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) =>
+        artifact.draftId === this.selectedId && artifact.mode === this.mode);
+      this.artifactHidden = false;
+      this.aiMessage = '忠实转换结果已保存到本机，可通过同步发送到 Web。';
+    } catch (error) {
+      this.aiMessage = error instanceof Error ? error.message : 'AI 请求失败';
+    } finally {
+      this.aiGenerating = false;
+    }
+  }
+
   private lineNumbers(): string {
     const count = Math.max(1, this.currentValue().split('\n').length);
     const result: string[] = [];
@@ -891,12 +911,17 @@ struct Index {
       }.width('100%')
       Row() {
         Column() {
-          Text('AI 未启用').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#ECECED')
-          Text('未配置模型服务，不生成模拟结果。').fontSize(10).fontColor('#8E8E93').margin({ top: 2 })
+          Text(this.aiGenerating ? '正在生成忠实转换' : 'AI Gateway').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+          Text(this.aiMessage.length > 0 ? this.aiMessage : '只保存 Gateway 返回的真实结果，不生成模拟结果。')
+            .fontSize(10).fontColor('#8E8E93').margin({ top: 2 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button(this.aiGenerating ? '请求中' : '生成结果').height(32).fontSize(10).enabled(!this.aiGenerating && this.mode === AIMode.FAITHFUL_TRANSFORM)
+          .fontColor('#07110A').backgroundColor('#30D158').borderRadius(4).onClick(() => this.generateArtifact())
         Button(this.artifactHidden ? '显示结果区' : '隐藏结果区').height(32).fontSize(10)
           .fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).onClick(() => this.toggleArtifact())
       }.width('100%').margin({ top: 4 })
+      TextInput({ text: this.aiBaseUrl, placeholder: 'http://电脑局域网IP:8788' }).width('100%').height(32).fontSize(10)
+        .onChange((value: string) => { this.aiBaseUrl = value; })
       if (this.artifacts.length === 0) {
         Text('当前草稿暂无已保存的忠实转换结果。').fontSize(10).fontColor('#8E8E93')
       } else if (this.artifactHidden) {
