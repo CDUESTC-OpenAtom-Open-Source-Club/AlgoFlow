@@ -114,7 +114,7 @@ struct Index {
   @State searchCount: number = 0;
   @State syncBaseUrl: string = 'http://127.0.0.1:8787';
   @State syncMessage: string = '';
-  @State aiBaseUrl: string = 'http://127.0.0.1:8788';
+  @State aiBaseUrl: string = '';
   @State aiMessage: string = '';
   @State aiGenerating: boolean = false;
 
@@ -534,6 +534,8 @@ struct Index {
     this.aiGenerating = true;
     this.aiMessage = '正在请求 AI Gateway...';
     try {
+      this.saveDraft();
+      if (this.aiBaseUrl.trim().length === 0) throw new Error('请先填写 AI Gateway 局域网地址');
       await this.viewModel.generateFaithfulArtifact(this.selectedId, this.aiBaseUrl);
       this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) =>
         artifact.draftId === this.selectedId && artifact.mode === this.mode);

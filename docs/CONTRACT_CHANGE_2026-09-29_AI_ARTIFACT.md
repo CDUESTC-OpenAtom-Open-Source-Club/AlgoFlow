@@ -18,3 +18,5 @@ OpenHarmony database version 3 creates `ai_artifacts` and migrates legacy `draft
 ## Mobile generation entry
 
 The phone AI panel now sends an explicit `faithful_transform` request to the configured AI Gateway URL. A result is saved only after the response matches the requested mode, draft version, output kind, visibility, and artifact contract. With no configured provider, the gateway continues to return `AI_NOT_ENABLED`; the client does not create a mock result.
+
+The Web workspace has the same generation path through `VITE_AI_GATEWAY_BASE` (defaulting to the local development gateway). It sends the current editor content, persists the returned artifact locally, and queues it for sync so a phone client can pull it.

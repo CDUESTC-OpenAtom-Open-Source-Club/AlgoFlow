@@ -9,6 +9,7 @@ import { BrowserWorkspaceRepository, queueAIArtifact, queueUpsert } from './stor
 import { LocalSyncClient, synchronizeWorkspace } from './sync-client.mjs';
 import type { AIArtifact, ConflictRecord, Documents, Draft, FileId, Mode, Panel, SyncStatus, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
+import { LocalAIClient, artifactFromGateway, buildAIRequest } from './ai-client.mjs';
 
 interface ConflictChoice {
   copy: Draft;
@@ -16,6 +17,7 @@ interface ConflictChoice {
 }
 
 const syncClient = new LocalSyncClient();
+const aiClient = new LocalAIClient();
 
 export function App() {
   const [clientId] = useState(getClientId);
@@ -39,6 +41,8 @@ export function App() {
   const [conflict, setConflict] = useState<ConflictChoice | null>(() => unresolvedConflict(workspace));
   const [jumpToLine, setJumpToLine] = useState(0);
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
+  const [aiMessage, setAIMessage] = useState('');
+  const [aiGenerating, setAIGenerating] = useState(false);
   const currentArtifact = useMemo(() => currentDraft ? latestArtifact(workspace.ai_artifacts, currentDraft.id, mode) : undefined,
     [workspace.ai_artifacts, currentDraft, mode]);
   const handleCursorChange = useCallback((line: number, column: number) => {
@@ -126,6 +130,32 @@ export function App() {
     if (navigator.onLine) void flushQueue();
   }
 
+  async function generateArtifact() {
+    if (!currentDraft || mode !== 'faithful_transform' || aiGenerating) return;
+    if (!documents['idea.md'].trim()) {
+      setAIMessage('请先输入思路内容。');
+      return;
+    }
+    setAIGenerating(true);
+    setAIMessage('正在请求 AI Gateway...');
+    try {
+      if (!saved) saveWorkspace();
+      const state = repository.load();
+      const draft = state.drafts.find((item) => item.id === currentDraft.id) ?? currentDraft;
+      const response = await aiClient.generate(buildAIRequest(draft, documents, mode));
+      const artifact = artifactFromGateway(response, draft, clientId);
+      queueAIArtifact(state, artifact);
+      repository.save(state);
+      setWorkspace(state);
+      setAIMessage('忠实转换结果已保存，可同步到手机端。');
+      if (navigator.onLine) void flushQueue();
+    } catch (error) {
+      setAIMessage(error instanceof Error ? error.message : 'AI 请求失败');
+    } finally {
+      setAIGenerating(false);
+    }
+  }
+
   function selectDraft(draftId: string) {
     if (!saved) saveWorkspace();
     const state = repository.load();
@@ -206,6 +236,9 @@ export function App() {
           onFileChange={setActiveFile}
           onModeChange={setMode}
           onQueryChange={setQuery}
+          aiMessage={aiMessage}
+          aiGenerating={aiGenerating}
+          onGenerateArtifact={generateArtifact}
         />
         <EditorStage
           activeFile={activeFile}

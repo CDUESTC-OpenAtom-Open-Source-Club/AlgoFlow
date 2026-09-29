@@ -278,7 +278,13 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     try {
       if (resultSet.goToFirstRow()) {
         do {
-          const payload = JSON.parse(readString(resultSet, 'payload_json')) as AIArtifactPayload;
+          let payload: AIArtifactPayload;
+          try {
+            payload = JSON.parse(readString(resultSet, 'payload_json')) as AIArtifactPayload;
+          } catch (error) {
+            hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped malformed stored AI artifact JSON');
+            continue;
+          }
           const artifact = payloadToArtifact(payload);
           if (artifact === undefined) {
             hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped invalid stored AI artifact');
