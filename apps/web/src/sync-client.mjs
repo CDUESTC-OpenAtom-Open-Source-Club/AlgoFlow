@@ -158,11 +158,11 @@ function replaceAIArtifact(state, artifact) {
 }
 
 /** @param {unknown} value */
-function assertAIArtifact(value) {
+export function assertAIArtifact(value) {
   if (!value || typeof value !== 'object') throw new Error('INVALID_AI_ARTIFACT');
   const artifact = /** @type {Record<string, unknown>} */ (value);
   const required = ['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', 'mode', 'pseudocode', 'code_snippet', 'code_mappings', 'assumptions', 'missing_information', 'risk_flags', 'added_algorithm_steps', 'source_draft_version', 'model_id', 'rule_version', 'output_kind', 'visibility', 'template_id'];
-  if (required.some((field) => !(field in artifact))) throw new Error('INVALID_AI_ARTIFACT');
+  if (required.some((field) => !(field in artifact)) || Object.keys(artifact).some((field) => !required.includes(field))) throw new Error('INVALID_AI_ARTIFACT');
   if (typeof artifact.id !== 'string' || artifact.id.length === 0 ||
     typeof artifact.version !== 'number' || !Number.isInteger(artifact.version) || artifact.version < 0 ||
     typeof artifact.server_sequence !== 'number' || !Number.isInteger(artifact.server_sequence) || artifact.server_sequence < 0 ||
@@ -185,13 +185,13 @@ function assertAIArtifact(value) {
     if (!step || typeof step !== 'object') return true;
     const item = /** @type {Record<string, unknown>} */ (step);
     const refs = item.source_refs;
-    return typeof item.id !== 'string' || item.id.length === 0 || typeof item.step !== 'string' || item.step.length === 0 || !Array.isArray(refs) || refs.length === 0 || refs.some((ref) => typeof ref !== 'string' || ref.length === 0);
+    return Object.keys(item).some((field) => !['id', 'step', 'source_refs'].includes(field)) || typeof item.id !== 'string' || item.id.length === 0 || typeof item.step !== 'string' || item.step.length === 0 || !Array.isArray(refs) || refs.length === 0 || refs.some((ref) => typeof ref !== 'string' || ref.length === 0);
   })) throw new Error('INVALID_AI_ARTIFACT');
   const ids = new Set(pseudocode.map((step) => step.id));
   if (ids.size !== pseudocode.length) throw new Error('INVALID_AI_ARTIFACT');
   if (!Array.isArray(mappings) || !Array.isArray(artifact.assumptions) || artifact.assumptions.some((item) => typeof item !== 'string') || !Array.isArray(artifact.missing_information) || artifact.missing_information.some((item) => typeof item !== 'string') || !Array.isArray(artifact.risk_flags) || artifact.risk_flags.some((item) => typeof item !== 'string') || !Array.isArray(addedSteps) || addedSteps.some((item) => typeof item !== 'string')) throw new Error('INVALID_AI_ARTIFACT');
   if (typeof artifact.code_snippet === 'string' && (artifact.code_snippet.length > 4000 || /\b(?:int|signed|auto|void)\s+main\s*\(/.test(artifact.code_snippet))) throw new Error('INVALID_AI_ARTIFACT');
-  if (mappings.some((mapping) => !mapping || typeof mapping !== 'object' || typeof mapping.step_id !== 'string' || !ids.has(mapping.step_id) || !Number.isInteger(mapping.start_line) || mapping.start_line < 1 || !Number.isInteger(mapping.end_line) || mapping.end_line < mapping.start_line)) throw new Error('INVALID_AI_ARTIFACT');
+  if (mappings.some((mapping) => !mapping || typeof mapping !== 'object' || Object.keys(/** @type {Record<string, unknown>} */ (mapping)).some((field) => !['step_id', 'start_line', 'end_line'].includes(field)) || typeof mapping.step_id !== 'string' || !ids.has(mapping.step_id) || !Number.isInteger(mapping.start_line) || mapping.start_line < 1 || !Number.isInteger(mapping.end_line) || mapping.end_line < mapping.start_line)) throw new Error('INVALID_AI_ARTIFACT');
   if (mode === 'faithful_transform' && addedSteps.length > 0) throw new Error('INVALID_AI_ARTIFACT');
   if (outputKind === 'pseudocode' && (artifact.code_snippet !== null || mappings.length > 0)) throw new Error('INVALID_AI_ARTIFACT');
   if (outputKind === 'code_snippet' && (typeof artifact.code_snippet !== 'string' || artifact.code_snippet.length === 0 || mappings.length === 0)) throw new Error('INVALID_AI_ARTIFACT');

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityBar } from './components/ActivityBar';
 import { EditorStage } from './components/EditorStage';
 import { InspectorPanel } from './components/InspectorPanel';
@@ -9,7 +9,7 @@ import { BrowserWorkspaceRepository, queueAIArtifact, queueUpsert } from './stor
 import { LocalSyncClient, synchronizeWorkspace } from './sync-client.mjs';
 import type { AIArtifact, ConflictRecord, Documents, Draft, FileId, Mode, Panel, SyncStatus, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
-import { LocalAIClient, artifactFromGateway, buildAIRequest } from './ai-client.mjs';
+import { LocalAIClient, artifactFromGateway, buildAIRequest, reconcileIdeaSegments } from './ai-client.mjs';
 
 interface ConflictChoice {
   copy: Draft;
@@ -43,6 +43,7 @@ export function App() {
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
   const [aiMessage, setAIMessage] = useState('');
   const [aiGenerating, setAIGenerating] = useState(false);
+  const editorRevisionRef = useRef(0);
   const currentArtifact = useMemo(() => currentDraft ? latestArtifact(workspace.ai_artifacts, currentDraft.id, mode) : undefined,
     [workspace.ai_artifacts, currentDraft, mode]);
   const handleCursorChange = useCallback((line: number, column: number) => {
@@ -81,17 +82,19 @@ export function App() {
 
   function updateActiveDocument(value: string) {
     setDocuments((current) => ({ ...current, [activeFile]: value }));
+    editorRevisionRef.current += 1;
     setSaved(false);
   }
 
-  function saveWorkspace() {
+  function saveWorkspace(): Promise<void> {
     const base = repository.load();
     const draft = currentDraft;
-    if (!draft) return;
+    if (!draft) return Promise.resolve();
     const updated: Draft = {
       ...draft,
       code: documents['main.cpp'],
       idea: documents['idea.md'],
+      idea_segments: reconcileIdeaSegments(draft.idea_segments ?? [], documents['idea.md']),
       cases: documents['cases.txt'],
       ai_mode: mode,
       updated_at: new Date().toISOString(),
@@ -104,7 +107,7 @@ export function App() {
     setWorkspace(next);
     setSaved(true);
     setSyncState(navigator.onLine ? 'syncing' : 'local_only');
-    if (navigator.onLine) void flushQueue();
+    return navigator.onLine ? flushQueue() : Promise.resolve();
   }
 
   function syncNow() {
@@ -138,15 +141,22 @@ export function App() {
     }
     setAIGenerating(true);
     setAIMessage('正在请求 AI Gateway...');
+    const generationRevision = editorRevisionRef.current;
     try {
-      if (!saved) saveWorkspace();
+      if (!saved || (currentDraft.idea_segments ?? []).length === 0) await saveWorkspace();
       const state = repository.load();
       const draft = state.drafts.find((item) => item.id === currentDraft.id) ?? currentDraft;
-      const response = await aiClient.generate(buildAIRequest(draft, documents, mode));
-      const artifact = artifactFromGateway(response, draft, clientId);
-      queueAIArtifact(state, artifact);
-      repository.save(state);
-      setWorkspace(state);
+      const request = buildAIRequest(draft, documents, mode);
+      const response = await aiClient.generate(request);
+      const latestState = repository.load();
+      const latestDraft = latestState.drafts.find((item) => item.id === draft.id);
+      if (!latestDraft || latestDraft.version !== draft.version || latestState.selected_id !== draft.id || editorRevisionRef.current !== generationRevision) {
+        throw new Error('DRAFT_CHANGED_RETRY_AI');
+      }
+      const artifact = artifactFromGateway(response, draft, clientId, request.idea_segments.map((segment) => segment.id), request.rule_version);
+      queueAIArtifact(latestState, artifact);
+      repository.save(latestState);
+      setWorkspace(latestState);
       setAIMessage('忠实转换结果已保存，可同步到手机端。');
       if (navigator.onLine) void flushQueue();
     } catch (error) {

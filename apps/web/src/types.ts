@@ -12,6 +12,12 @@ export type Documents = Record<FileId, string>;
 
 export type SyncStatus = 'local_only' | 'syncing' | 'synced' | 'conflict' | 'failed';
 
+export interface IdeaSegment {
+  id: string;
+  content: string;
+  position: number;
+}
+
 export interface Draft {
   id: string;
   workspace_id: string;
@@ -23,6 +29,7 @@ export interface Draft {
   title: string;
   language: 'cpp';
   idea: string;
+  idea_segments: IdeaSegment[];
   code: string;
   cases?: string;
   rewrite: string;
