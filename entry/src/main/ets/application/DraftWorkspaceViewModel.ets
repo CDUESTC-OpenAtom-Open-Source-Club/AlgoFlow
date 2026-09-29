@@ -74,7 +74,7 @@ export class DraftWorkspaceViewModel {
       response.rule_version !== request.rule_version || response.output_kind !== request.output_kind ||
       response.visibility !== request.visibility) throw new Error('INVALID_AI_ARTIFACT');
     const artifact = gatewayPayloadToArtifact(response, util.generateRandomUUID(), draft.id, draft.version,
-      this.syncRepository.getClientId());
+      this.syncRepository.getClientId(), draft.ideaSegments.map((segment: IdeaSegment) => segment.id));
     if (artifact === undefined) throw new Error('INVALID_AI_ARTIFACT');
     this.syncRepository.saveArtifact(artifact);
     return artifact;

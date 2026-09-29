@@ -93,7 +93,7 @@ export function artifactToPayload(artifact: AIArtifact): AIArtifactPayload {
   return payload;
 }
 
-export function payloadToArtifact(payload: AIArtifactPayload): AIArtifact | undefined {
+export function payloadToArtifact(payload: AIArtifactPayload, sourceSegmentIds?: string[]): AIArtifact | undefined {
   if (payload === undefined || payload === null || typeof payload.id !== 'string' || payload.id.length === 0 ||
     typeof payload.draft_id !== 'string' || payload.draft_id.length === 0 || typeof payload.created_at !== 'string' ||
     payload.created_at.length === 0 || !payload.created_at.endsWith('Z') || Number.isNaN(Date.parse(payload.created_at)) ||
@@ -120,11 +120,13 @@ export function payloadToArtifact(payload: AIArtifactPayload): AIArtifact | unde
   if (outputKind === AIOutputKind.PSEUDOCODE && (payload.code_snippet !== null || payload.code_mappings.length > 0)) return undefined;
   if (outputKind === AIOutputKind.CODE_SNIPPET && (payload.code_snippet === null || payload.code_snippet.length === 0 || payload.code_mappings.length === 0)) return undefined;
   const stepIds = new Set<string>();
+  const sourceIds = sourceSegmentIds === undefined ? undefined : new Set<string>(sourceSegmentIds);
   for (const step of payload.pseudocode) {
     if (step === undefined || step === null || typeof step.id !== 'string' || step.id.length === 0 || stepIds.has(step.id) ||
       typeof step.step !== 'string' || step.step.length === 0 || !Array.isArray(step.source_refs) || step.source_refs.length === 0) return undefined;
     stepIds.add(step.id);
     for (const sourceRef of step.source_refs) if (typeof sourceRef !== 'string' || sourceRef.length === 0) return undefined;
+    if (sourceIds !== undefined) for (const sourceRef of step.source_refs) if (!sourceIds.has(sourceRef)) return undefined;
   }
   for (const mapping of payload.code_mappings) {
     if (mapping === undefined || mapping === null || typeof mapping.step_id !== 'string' || !stepIds.has(mapping.step_id) ||
@@ -157,7 +159,7 @@ export function payloadToArtifact(payload: AIArtifactPayload): AIArtifact | unde
 }
 
 export function gatewayPayloadToArtifact(payload: AIGatewayArtifactPayload, id: string, draftId: string,
-  draftVersion: number, clientId: string): AIArtifact | undefined {
+  draftVersion: number, clientId: string, sourceSegmentIds: string[]): AIArtifact | undefined {
   if (payload === undefined || payload === null) return undefined;
   const entity = new AIArtifactPayload();
   entity.id = id;
@@ -182,7 +184,7 @@ export function gatewayPayloadToArtifact(payload: AIGatewayArtifactPayload, id: 
   entity.output_kind = payload.output_kind;
   entity.visibility = payload.visibility;
   entity.template_id = payload.template_id;
-  return payloadToArtifact(entity);
+  return payloadToArtifact(entity, sourceSegmentIds);
 }
 
 function parseMode(value: string): AIMode | undefined {
