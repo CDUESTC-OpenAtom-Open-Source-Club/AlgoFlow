@@ -1,3 +1,5 @@
+import { validateAIArtifactEntity } from '../../../packages/contracts/validate.mjs';
+
 export class SyncStore {
   #entities = new Map();
   #operations = new Map();
@@ -6,11 +8,20 @@ export class SyncStore {
   apply(operation) {
     const validationError = validateOperation(operation);
     if (validationError) return { operation_id: operation?.operation_id ?? '', status: 'rejected', error_code: 'INVALID_REQUEST' };
+    if (operation.entity_type === 'ai_artifact' && operation.operation_type === 'upsert') {
+      const artifactErrors = validateAIArtifactEntity(operation.payload);
+      if (artifactErrors.length > 0) {
+        return { operation_id: operation.operation_id, status: 'rejected', error_code: 'INVALID_AI_ARTIFACT' };
+      }
+    }
     if (this.#operations.has(operation.operation_id)) {
       return { ...this.#operations.get(operation.operation_id), status: 'duplicate' };
     }
     const key = `${operation.entity_type}:${operation.entity_id}`;
     const current = this.#entities.get(key);
+    if (operation.entity_type === 'ai_artifact' && operation.operation_type === 'delete' && !current) {
+      return { operation_id: operation.operation_id, status: 'rejected', error_code: 'INVALID_REQUEST' };
+    }
     const currentVersion = current?.version ?? 0;
     if (operation.base_version !== currentVersion) {
       const result = { operation_id: operation.operation_id, status: 'conflict', error_code: 'VERSION_CONFLICT', server_entity: current ?? null };
@@ -27,6 +38,7 @@ export class SyncStore {
       updated_at: operation.occurred_at,
       last_modified_client_id: operation.client_id
     };
+    if (operation.entity_type === 'ai_artifact') entity.server_sequence = this.#changes.length + 1;
     this.#entities.set(key, entity);
     this.#changes.push({ cursor: String(this.#changes.length + 1), entity_type: operation.entity_type, entity });
     const result = { operation_id: operation.operation_id, status: 'applied', version, server_entity: entity };
@@ -48,6 +60,6 @@ export function validateOperation(operation) {
   if (!Number.isInteger(operation.base_version) || operation.base_version < 0) return 'base_version is invalid';
   if (!['draft', 'code_document', 'ai_artifact'].includes(operation.entity_type)) return 'entity_type is invalid';
   if (!['upsert', 'delete'].includes(operation.operation_type)) return 'operation_type is invalid';
-  if (!operation.payload || typeof operation.payload !== 'object') return 'payload is required';
+  if (!operation.payload || typeof operation.payload !== 'object' || Array.isArray(operation.payload)) return 'payload is required';
   return null;
 }

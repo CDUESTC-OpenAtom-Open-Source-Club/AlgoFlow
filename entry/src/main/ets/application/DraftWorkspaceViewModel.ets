@@ -1,5 +1,5 @@
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
 import { SyncRepository } from '../domain/SyncRepository';
 import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
 
@@ -48,6 +48,12 @@ export class DraftWorkspaceViewModel {
   listDrafts(): Draft[] { return this.repository.list(); }
   getDraft(id: string): Draft | undefined { return this.repository.get(id); }
 
+  listArtifacts(): AIArtifact[] { return this.syncRepository?.listArtifacts() ?? []; }
+
+  getArtifact(id: string): AIArtifact | undefined { return this.syncRepository?.getArtifact(id); }
+
+  saveArtifact(artifact: AIArtifact): void { this.syncRepository?.saveArtifact(artifact); }
+
   update(id: string, title: string, idea: string, code: string, shortCode: string, rewrite: string): void {
     const draft = this.repository.get(id);
     if (draft === undefined) return;
@@ -90,10 +96,11 @@ export class DraftWorkspaceViewModel {
   toggleArtifact(id: string): void {
     const draft = this.repository.get(id);
     if (draft === undefined) return;
-    draft.artifactHidden = !draft.artifactHidden;
-    draft.updatedAt = new Date().toISOString();
-    draft.syncStatus = SyncStatus.LOCAL_ONLY;
-    this.repository.save(draft);
+    const artifact = this.syncRepository?.listArtifacts().find((item: AIArtifact) =>
+      item.draftId === id && item.mode === draft.aiMode);
+    if (artifact === undefined) return;
+    artifact.visibility = artifact.visibility === AIVisibility.HIDDEN ? AIVisibility.VISIBLE : AIVisibility.HIDDEN;
+    this.syncRepository?.saveArtifact(artifact);
   }
 
   deleteDraft(id: string): string {

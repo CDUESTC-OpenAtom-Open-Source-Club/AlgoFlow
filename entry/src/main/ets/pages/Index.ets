@@ -1,5 +1,5 @@
 import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
-import { AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, PseudocodeStep, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
 import { saveCardSnapshot } from '../platform/CardSnapshot';
@@ -97,6 +97,7 @@ struct Index {
   @State artifactHidden: boolean = false;
   @State syncStatus: SyncStatus = SyncStatus.LOCAL_ONLY;
   @State segments: IdeaSegment[] = [];
+  @State artifacts: AIArtifact[] = [];
   @State activeFile: EditorFile = EditorFile.MAIN;
   @State activeTool: WorkspaceTool = WorkspaceTool.NONE;
   @State drawerOpen: boolean = false;
@@ -151,6 +152,8 @@ struct Index {
     this.artifactHidden = draft.artifactHidden;
     this.syncStatus = draft.syncStatus;
     this.segments = draft.ideaSegments;
+    this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === draft.id && artifact.mode === draft.aiMode);
+    this.artifactHidden = this.artifacts.length > 0 && this.artifacts[0].visibility === AIVisibility.HIDDEN;
     saveCardSnapshot(getContext(this), draft);
     this.saved = true;
     this.resetEditorPosition();
@@ -488,7 +491,8 @@ struct Index {
       this.code = draft.code;
       this.shortCode = draft.shortCode;
       this.rewrite = draft.rewrite;
-      this.segments = draft.ideaSegments;
+    this.segments = draft.ideaSegments;
+      this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === draft.id && artifact.mode === draft.aiMode);
       saveCardSnapshot(getContext(this), draft);
     }
   }
@@ -517,8 +521,9 @@ struct Index {
 
   private toggleArtifact(): void {
     this.viewModel.toggleArtifact(this.selectedId);
-    this.artifactHidden = !this.artifactHidden;
-    this.saved = false;
+    const current = this.viewModel.listArtifacts().find((artifact: AIArtifact) => artifact.draftId === this.selectedId && artifact.mode === this.mode);
+    this.artifactHidden = current !== undefined && current.visibility === AIVisibility.HIDDEN;
+    this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === this.selectedId && artifact.mode === this.mode);
   }
 
   private lineNumbers(): string {
@@ -892,6 +897,17 @@ struct Index {
         Button(this.artifactHidden ? '显示结果区' : '隐藏结果区').height(32).fontSize(10)
           .fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).onClick(() => this.toggleArtifact())
       }.width('100%').margin({ top: 4 })
+      if (this.artifacts.length === 0) {
+        Text('当前草稿暂无已保存的忠实转换结果。').fontSize(10).fontColor('#8E8E93')
+      } else if (this.artifactHidden) {
+        Text('结果已隐藏，记录仍保留并参与同步。').fontSize(10).fontColor('#8E8E93')
+      } else {
+        Column({ space: 4 }) {
+          ForEach(this.artifacts[0].pseudocode, (step: PseudocodeStep) => {
+            Text(`${step.step} · ${step.sourceRefs.join(', ')}`).width('100%').fontSize(10).lineHeight(16).fontColor('#B8DDBF')
+          }, (step: PseudocodeStep) => step.id)
+        }.width('100%').padding({ top: 4, bottom: 4 })
+      }
     }.width('100%')
   }
 

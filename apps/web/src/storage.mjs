@@ -20,6 +20,7 @@ export class BrowserWorkspaceRepository {
           cursor: localStorage.getItem(`${CURSOR_KEY_PREFIX}${clientId}`) ?? value.cursor ?? '0',
           operations: readOperations(clientId, value.operations),
           conflicts: Array.isArray(value.conflicts) ? value.conflicts : [],
+          ai_artifacts: Array.isArray(value.ai_artifacts) ? value.ai_artifacts : [],
         };
       }
       return initialState(this.clientId);
@@ -49,19 +50,51 @@ export function newDraft(clientId) {
   };
 }
 
+/** @param {import('./types').AIArtifact} artifact @returns {import('./types').AIArtifact} */
+export function cloneAIArtifact(artifact) {
+  return JSON.parse(JSON.stringify(artifact));
+}
+
+/** @param {import('./types').WorkspaceState} state @param {import('./types').AIArtifact} artifact */
+export function queueAIArtifact(state, artifact) {
+  const existing = state.operations.find((item) => item.entity_type === 'ai_artifact' && item.entity_id === artifact.id && item.operation_type === 'upsert');
+  /** @type {import('./types').SyncOperation} */
+  const operation = {
+    operation_id: existing?.operation_id ?? crypto.randomUUID(), entity_type: 'ai_artifact', entity_id: artifact.id,
+    operation_type: 'upsert', base_version: existing?.base_version ?? artifact.version, client_id: state.client_id,
+    occurred_at: new Date().toISOString(), payload: /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (cloneAIArtifact(artifact))),
+  };
+  state.operations = state.operations.filter((item) => !(item.entity_type === 'ai_artifact' && item.entity_id === artifact.id));
+  state.operations.push(operation);
+  state.ai_artifacts = (state.ai_artifacts ?? []).filter((item) => item.id !== artifact.id).concat(cloneAIArtifact(artifact));
+}
+
+/** @param {import('./types').AIArtifact} artifact @param {string} clientId @param {string} id */
+export function createAIArtifactConflictCopy(artifact, clientId, id) {
+  const copy = cloneAIArtifact(artifact);
+  copy.id = id;
+  copy.version = 0;
+  copy.server_sequence = 0;
+  copy.created_at = new Date().toISOString();
+  copy.updated_at = copy.created_at;
+  copy.last_modified_client_id = clientId;
+  copy.visibility = 'visible';
+  return copy;
+}
+
 /**
  * @param {import('./types').WorkspaceState} state
  * @param {import('./types').Draft} draft
  */
 export function queueUpsert(state, draft) {
-  const existing = state.operations.find((item) => item.entity_id === draft.id && item.operation_type === 'upsert');
+  const existing = state.operations.find((item) => item.entity_type === 'draft' && item.entity_id === draft.id && item.operation_type === 'upsert');
   /** @type {import('./types').SyncOperation} */
   const operation = {
     operation_id: existing?.operation_id ?? crypto.randomUUID(), entity_type: 'draft', entity_id: draft.id,
     operation_type: 'upsert', base_version: existing?.base_version ?? draft.version, client_id: state.client_id,
     occurred_at: new Date().toISOString(), payload: { ...draft, sync_status: 'synced' }
   };
-  state.operations = state.operations.filter((item) => item.entity_id !== draft.id);
+  state.operations = state.operations.filter((item) => !(item.entity_type === 'draft' && item.entity_id === draft.id));
   state.operations.push(operation);
 }
 
@@ -71,7 +104,7 @@ function initialState(clientId = null) {
   const draft = newDraft(resolvedClientId);
   // Keep the first local demo draft addressable from multiple browser tabs.
   draft.id = 'draft-local';
-  return { client_id: resolvedClientId, cursor: '0', online: true, selected_id: draft.id, drafts: [draft], operations: [], conflicts: [] };
+  return { client_id: resolvedClientId, cursor: '0', online: true, selected_id: draft.id, drafts: [draft], ai_artifacts: [], operations: [], conflicts: [] };
 }
 
 /**

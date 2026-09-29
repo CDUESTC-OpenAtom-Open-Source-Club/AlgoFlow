@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SyncStore } from '../src/sync-store.mjs';
 import { createSyncServer } from '../src/server.mjs';
-import { queueUpsert } from '../../../apps/web/src/storage.mjs';
+import { queueAIArtifact, queueUpsert } from '../../../apps/web/src/storage.mjs';
 import { LocalSyncClient, synchronizeWorkspace } from '../../../apps/web/src/sync-client.mjs';
 
 const operation = {
@@ -256,6 +256,83 @@ test('a Web edit updates the same starter draft for the phone pull path', async 
   assert.equal(phoneChanges.next_cursor, '2');
 });
 
+test('syncs an independent faithful artifact without changing the draft entity', async (context) => {
+  const server = createSyncServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+  const draft = makeDraft('draft-artifact-independent', 'main code', 'phone-local');
+  const artifact = makeArtifact('artifact-1', draft.id, 'phone-local');
+  const phone = makeWorkspace('phone-local', draft);
+  phone.ai_artifacts.push(artifact);
+  queueAIArtifact(phone, artifact);
+  const pushed = await synchronizeWorkspace(phone, client);
+  assert.equal(pushed.status, 'synced');
+  assert.equal(pushed.state.drafts[0].version, 0);
+  assert.equal(pushed.state.ai_artifacts[0].version, 1);
+  assert.equal(pushed.state.ai_artifacts[0].pseudocode[0].source_refs[0], 'idea_segment_1');
+
+  const web = makeWorkspace('web-local', makeDraft('draft-local', '', 'web-local'));
+  const pulled = await synchronizeWorkspace(web, client);
+  assert.equal(pulled.status, 'synced');
+  assert.equal(pulled.state.ai_artifacts.length, 1);
+  assert.equal(pulled.state.ai_artifacts[0].id, artifact.id);
+  assert.equal(pulled.state.drafts.find((item) => item.id === draft.id), undefined);
+});
+
+test('rejects malformed independent AI artifacts before they enter the change stream', () => {
+  const store = new SyncStore();
+  const malformed = store.apply({
+    operation_id: 'artifact-invalid', entity_type: 'ai_artifact', entity_id: 'artifact-invalid', operation_type: 'upsert',
+    base_version: 0, client_id: 'web-local', occurred_at: '2026-09-15T00:00:00.000Z',
+    payload: { id: 'artifact-invalid', draft_id: 'draft-1', mode: 'faithful_transform', pseudocode: [], added_algorithm_steps: ['invented'] }
+  });
+  assert.equal(malformed.status, 'rejected');
+  assert.equal(malformed.error_code, 'INVALID_AI_ARTIFACT');
+  assert.equal(store.pull('0').changes.length, 0);
+});
+
+test('rejects an unknown AI artifact delete instead of publishing an incomplete tombstone', () => {
+  const store = new SyncStore();
+  const result = store.apply({
+    operation_id: 'artifact-delete-unknown', entity_type: 'ai_artifact', entity_id: 'missing-artifact', operation_type: 'delete',
+    base_version: 0, client_id: 'web-local', occurred_at: '2026-09-15T00:00:00.000Z', payload: {}
+  });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.error_code, 'INVALID_REQUEST');
+  assert.equal(store.pull('0').changes.length, 0);
+});
+
+test('retries the same AI artifact operation idempotently', () => {
+  const store = new SyncStore();
+  const artifact = makeArtifact('artifact-duplicate', 'draft-1', 'web-local');
+  const operation = {
+    operation_id: 'artifact-duplicate-op', entity_type: 'ai_artifact', entity_id: artifact.id, operation_type: 'upsert',
+    base_version: 0, client_id: 'web-local', occurred_at: '2026-09-15T00:00:00.000Z', payload: artifact
+  };
+  assert.equal(store.apply(operation).status, 'applied');
+  assert.equal(store.apply(operation).status, 'duplicate');
+  assert.equal(store.pull('0').changes.length, 1);
+});
+
+test('does not advance the Web cursor when a pulled AI artifact is corrupt', async () => {
+  const state = makeWorkspace('web-corrupt', makeDraft('draft-corrupt', '', 'web-corrupt'));
+  state.cursor = '4';
+  const result = await synchronizeWorkspace(state, {
+    async push() { throw new Error('not expected'); },
+    async pull() {
+      return {
+        changes: [{ cursor: '5', entity_type: 'ai_artifact', entity: { id: 'broken', version: 1 } }],
+        next_cursor: '5'
+      };
+    }
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.state.cursor, '4');
+});
+
 function makeDraft(id, code, clientId) {
   return {
     id,
@@ -282,8 +359,20 @@ function makeWorkspace(clientId, draft) {
     cursor: '0',
     online: true,
     selected_id: draft.id,
-    drafts: [draft],
+    drafts: [draft], ai_artifacts: [],
     operations: [],
     conflicts: []
+  };
+}
+
+function makeArtifact(id, draftId, clientId) {
+  const now = '2026-09-15T00:00:00.000Z';
+  return {
+    id, version: 0, server_sequence: 0, created_at: now, updated_at: now, deleted: false, last_modified_client_id: clientId,
+    draft_id: draftId, mode: 'faithful_transform',
+    pseudocode: [{ id: 'step-1', step: 'Sort by right endpoint', source_refs: ['idea_segment_1'] }],
+    code_snippet: null, code_mappings: [], assumptions: [], missing_information: ['Equal endpoints are unspecified'],
+    risk_flags: [], added_algorithm_steps: [], source_draft_version: 0, model_id: 'provider-disabled',
+    rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null,
   };
 }

@@ -1,4 +1,5 @@
 import { AIMode, Draft, IdeaSegment, SyncStatus } from './Models';
+import { AIArtifactPayload } from './AIArtifactCodec';
 
 export enum SyncEntityType {
   DRAFT = 'draft',
@@ -20,6 +21,7 @@ export enum SyncResultStatus {
 
 export enum SyncErrorCode {
   INVALID_REQUEST = 'INVALID_REQUEST',
+  INVALID_AI_ARTIFACT = 'INVALID_AI_ARTIFACT',
   VERSION_CONFLICT = 'VERSION_CONFLICT',
   OUT_OF_ORDER = 'OUT_OF_ORDER'
 }
@@ -52,21 +54,21 @@ export class SyncOperation {
   base_version: number = 0;
   client_id: string = '';
   occurred_at: string = '';
-  payload: DraftPayload = new DraftPayload();
+  payload: DraftPayload | AIArtifactPayload = new DraftPayload();
 }
 
 export class PushResult {
   operation_id: string = '';
   status: string = SyncResultStatus.REJECTED;
   version?: number;
-  server_entity?: DraftPayload | null;
+  server_entity?: DraftPayload | AIArtifactPayload | null;
   error_code?: string;
 }
 
 export class PullChange {
   cursor: string = '0';
   entity_type: string = SyncEntityType.DRAFT;
-  entity: DraftPayload = new DraftPayload();
+  entity: DraftPayload | AIArtifactPayload = new DraftPayload();
 }
 
 export class PullResult {

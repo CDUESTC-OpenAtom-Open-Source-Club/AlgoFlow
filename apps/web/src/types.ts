@@ -31,6 +31,43 @@ export interface Draft {
   sync_status: SyncStatus;
 }
 
+export interface PseudocodeStep {
+  id: string;
+  step: string;
+  source_refs: string[];
+}
+
+export interface CodeMapping {
+  step_id: string;
+  start_line: number;
+  end_line: number;
+}
+
+export interface AIArtifact {
+  id: string;
+  version: number;
+  server_sequence: number;
+  created_at: string;
+  updated_at: string;
+  deleted: boolean;
+  last_modified_client_id: string;
+  draft_id: string;
+  mode: Mode;
+  pseudocode: PseudocodeStep[];
+  code_snippet: string | null;
+  code_mappings: CodeMapping[];
+  assumptions: string[];
+  missing_information: string[];
+  risk_flags: string[];
+  added_algorithm_steps: string[];
+  source_draft_version: number;
+  model_id: string;
+  rule_version: string;
+  output_kind: 'pseudocode' | 'code_snippet';
+  visibility: 'visible' | 'hidden';
+  template_id: string | null;
+}
+
 export interface SyncOperation {
   operation_id: string;
   entity_type: 'draft' | 'code_document' | 'ai_artifact';
@@ -48,6 +85,7 @@ export interface WorkspaceState {
   online: boolean;
   selected_id: string;
   drafts: Draft[];
+  ai_artifacts: AIArtifact[];
   operations: SyncOperation[];
   conflicts: ConflictRecord[];
 }
@@ -65,14 +103,14 @@ export interface PushResult {
   operation_id: string;
   status: 'applied' | 'duplicate' | 'conflict' | 'rejected';
   version?: number;
-  server_entity?: Draft | null;
+  server_entity?: Draft | AIArtifact | null;
   error_code?: string;
 }
 
 export interface PullChange {
   cursor: string;
   entity_type: 'draft' | 'code_document' | 'ai_artifact';
-  entity: Draft;
+  entity: Draft | AIArtifact;
 }
 
 export interface PullResult {

@@ -3,14 +3,15 @@ import { relationalStore } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
-import { ConflictRecord, DraftPayload, SyncOperation, SyncOperationType, draftToPayload,
+import { AIArtifact, AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIArtifactPayload, artifactToPayload, payloadToArtifact } from '../domain/AIArtifactCodec';
+import { ConflictRecord, DraftPayload, SyncEntityType, SyncOperation, SyncOperationType, draftToPayload,
   payloadToDraft } from '../domain/SyncModels';
 import { SyncRepository } from '../domain/SyncRepository';
 
 const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 3;
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8787';
 const STORE_CONFIG: relationalStore.StoreConfig = {
   name: 'algoflow_workspace.db',
@@ -21,6 +22,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   private context: common.Context;
   private store?: relationalStore.RdbStore;
   private drafts: Draft[] = [];
+  private artifacts: AIArtifact[] = [];
   private operations: SyncOperation[] = [];
   private clientId: string = '';
   private cursor: string = '0';
@@ -37,6 +39,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     await this.migrate(this.store);
     await this.loadState(this.store);
     await this.loadDrafts(this.store);
+    await this.loadArtifacts(this.store);
     await this.loadOperations(this.store);
   }
 
@@ -96,8 +99,8 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     return this.operations.map((operation: SyncOperation) => cloneOperation(operation));
   }
 
-  hasPendingOperation(entityId: string): boolean {
-    return this.operations.some((operation: SyncOperation) => operation.entity_id === entityId);
+  hasPendingOperation(entityType: string, entityId: string): boolean {
+    return this.operations.some((operation: SyncOperation) => operation.entity_type === entityType && operation.entity_id === entityId);
   }
 
   removeOperation(operationId: string): void {
@@ -121,6 +124,29 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     if (draft === undefined) return;
     draft.syncStatus = status;
     this.replaceDraft(draft);
+  }
+
+  listArtifacts(): AIArtifact[] {
+    return this.artifacts.filter((artifact: AIArtifact) => !artifact.deleted)
+      .sort((left: AIArtifact, right: AIArtifact) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  getArtifact(id: string): AIArtifact | undefined {
+    return this.artifacts.find((artifact: AIArtifact) => artifact.id === id && !artifact.deleted);
+  }
+
+  saveArtifact(artifact: AIArtifact): void {
+    artifact.deleted = false;
+    artifact.lastModifiedClientId = this.clientId;
+    artifact.updatedAt = new Date().toISOString();
+    this.replaceArtifact(artifact);
+    this.queueArtifactOperation(artifact, SyncOperationType.UPSERT);
+  }
+
+  applyServerArtifact(payload: AIArtifactPayload): void {
+    const artifact = payloadToArtifact(payload);
+    if (artifact === undefined) throw new Error('INVALID_AI_ARTIFACT');
+    this.replaceArtifact(artifact);
   }
 
   private async migrate(store: relationalStore.RdbStore): Promise<void> {
@@ -147,12 +173,47 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
         await store.executeSql('CREATE TABLE IF NOT EXISTS conflicts (' +
           'id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, local_copy_id TEXT NOT NULL, ' +
           'server_entity_json TEXT NOT NULL, created_at TEXT NOT NULL, resolved INTEGER NOT NULL)');
-        store.version = 1;
+        await store.executeSql('CREATE TABLE IF NOT EXISTS ai_artifacts (' +
+          'id TEXT PRIMARY KEY, version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
+          'deleted INTEGER NOT NULL, last_modified_client_id TEXT NOT NULL, draft_id TEXT NOT NULL, payload_json TEXT NOT NULL)');
+        store.version = DATABASE_VERSION;
         store.commit();
       } catch (error) {
         store.rollBack();
         throw new Error(error instanceof Error ? error.message : 'RDB migration failed');
       }
+    }
+    if (store.version === 1) {
+      store.beginTransaction();
+      try {
+        await store.executeSql('CREATE TABLE IF NOT EXISTS ai_artifacts (' +
+          'id TEXT PRIMARY KEY, version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
+          'deleted INTEGER NOT NULL, last_modified_client_id TEXT NOT NULL, draft_id TEXT NOT NULL, payload_json TEXT NOT NULL)');
+        store.version = 2;
+        store.commit();
+      } catch (error) {
+        store.rollBack();
+        throw new Error(error instanceof Error ? error.message : 'RDB migration failed');
+      }
+    }
+    if (store.version === 2) {
+      store.beginTransaction();
+      try {
+        await store.executeSql('CREATE TABLE IF NOT EXISTS ai_artifacts (' +
+          'id TEXT PRIMARY KEY, version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
+          'deleted INTEGER NOT NULL, last_modified_client_id TEXT NOT NULL, draft_id TEXT NOT NULL, payload_json TEXT NOT NULL)');
+        await migrateEmbeddedArtifacts(store);
+        store.version = DATABASE_VERSION;
+        store.commit();
+      } catch (error) {
+        store.rollBack();
+        throw new Error(error instanceof Error ? error.message : 'RDB migration failed');
+      }
+    }
+    if (store.version === DATABASE_VERSION) {
+      await store.executeSql('CREATE TABLE IF NOT EXISTS ai_artifacts (' +
+        'id TEXT PRIMARY KEY, version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
+        'deleted INTEGER NOT NULL, last_modified_client_id TEXT NOT NULL, draft_id TEXT NOT NULL, payload_json TEXT NOT NULL)');
     }
   }
 
@@ -211,6 +272,24 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     this.drafts = loaded;
   }
 
+  private async loadArtifacts(store: relationalStore.RdbStore): Promise<void> {
+    const resultSet = await store.querySql('SELECT payload_json FROM ai_artifacts');
+    const loaded: AIArtifact[] = [];
+    try {
+      if (resultSet.goToFirstRow()) {
+        do {
+          const payload = JSON.parse(readString(resultSet, 'payload_json')) as AIArtifactPayload;
+          const artifact = payloadToArtifact(payload);
+          if (artifact === undefined) throw new Error('Stored AI artifact is invalid');
+          loaded.push(artifact);
+        } while (resultSet.goToNextRow());
+      }
+    } finally {
+      resultSet.close();
+    }
+    this.artifacts = loaded;
+  }
+
   private async loadOperations(store: relationalStore.RdbStore): Promise<void> {
     const resultSet = await store.querySql('SELECT * FROM sync_operations ORDER BY occurred_at');
     const loaded: SyncOperation[] = [];
@@ -225,7 +304,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
           operation.base_version = readNumber(resultSet, 'base_version');
           operation.client_id = readString(resultSet, 'client_id');
           operation.occurred_at = readString(resultSet, 'occurred_at');
-          operation.payload = JSON.parse(readString(resultSet, 'payload_json')) as DraftPayload;
+          operation.payload = JSON.parse(readString(resultSet, 'payload_json')) as DraftPayload | AIArtifactPayload;
           if (operation.operation_id.trim().length === 0) {
             operation.operation_id = createOperationId();
             hilog.warn(DOMAIN, TAG,
@@ -233,7 +312,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
               safeLogValue(operation.entity_id));
             await this.persistOperation(operation);
           }
-          if (operation.operation_type === SyncOperationType.UPSERT && isBlankPayload(operation.payload) &&
+          if (operation.entity_type === SyncEntityType.DRAFT && operation.operation_type === SyncOperationType.UPSERT && isBlankPayload(operation.payload as DraftPayload) &&
             operation.base_version === 0) {
             hilog.info(DOMAIN, TAG,
               '[AlgoFlow] Dropped legacy empty placeholder operation. entity_id=%{public}s',
@@ -258,26 +337,51 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     this.enqueue(async () => this.persistDraft(snapshot));
   }
 
+  private replaceArtifact(artifact: AIArtifact): void {
+    const snapshot = cloneArtifact(artifact);
+    const index = this.artifacts.findIndex((item: AIArtifact) => item.id === snapshot.id);
+    if (index >= 0) this.artifacts[index] = snapshot;
+    else this.artifacts.push(snapshot);
+    this.enqueue(async () => this.persistArtifact(snapshot));
+  }
+
   private queueOperation(draft: Draft, operationType: SyncOperationType): void {
-    const existing = this.operations.find((operation: SyncOperation) => operation.entity_id === draft.id);
+    const existing = this.operations.find((operation: SyncOperation) => operation.entity_type === SyncEntityType.DRAFT && operation.entity_id === draft.id);
     const operation = new SyncOperation();
     operation.operation_id = existing !== undefined && existing.operation_id.trim().length > 0
       ? existing.operation_id : createOperationId();
     operation.entity_id = draft.id;
+    operation.entity_type = SyncEntityType.DRAFT;
     operation.operation_type = operationType;
     operation.base_version = existing?.base_version ?? draft.version;
     operation.client_id = this.clientId;
     operation.occurred_at = new Date().toISOString();
     operation.payload = draftToPayload(draft);
-    this.operations = this.operations.filter((item: SyncOperation) => item.entity_id !== draft.id);
+    this.operations = this.operations.filter((item: SyncOperation) => !(item.entity_type === SyncEntityType.DRAFT && item.entity_id === draft.id));
+    this.operations.push(operation);
+    this.enqueue(async () => this.persistOperation(operation));
+  }
+
+  private queueArtifactOperation(artifact: AIArtifact, operationType: SyncOperationType): void {
+    const existing = this.operations.find((operation: SyncOperation) => operation.entity_type === SyncEntityType.AI_ARTIFACT && operation.entity_id === artifact.id);
+    const operation = new SyncOperation();
+    operation.operation_id = existing !== undefined && existing.operation_id.trim().length > 0 ? existing.operation_id : createOperationId();
+    operation.entity_type = SyncEntityType.AI_ARTIFACT;
+    operation.entity_id = artifact.id;
+    operation.operation_type = operationType;
+    operation.base_version = existing?.base_version ?? artifact.version;
+    operation.client_id = this.clientId;
+    operation.occurred_at = new Date().toISOString();
+    operation.payload = artifactToPayload(artifact);
+    this.operations = this.operations.filter((item: SyncOperation) => !(item.entity_type === SyncEntityType.AI_ARTIFACT && item.entity_id === artifact.id));
     this.operations.push(operation);
     this.enqueue(async () => this.persistOperation(operation));
   }
 
   private removePendingOperationForEntity(entityId: string): void {
-    const pending = this.operations.filter((item: SyncOperation) => item.entity_id === entityId);
+    const pending = this.operations.filter((item: SyncOperation) => item.entity_type === SyncEntityType.DRAFT && item.entity_id === entityId);
     if (pending.length === 0) return;
-    this.operations = this.operations.filter((item: SyncOperation) => item.entity_id !== entityId);
+    this.operations = this.operations.filter((item: SyncOperation) => !(item.entity_type === SyncEntityType.DRAFT && item.entity_id === entityId));
     for (const operation of pending) {
       this.enqueue(async () => this.deleteOperation(operation.operation_id));
     }
@@ -300,6 +404,14 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
         draft.version, draft.createdAt, draft.updatedAt, draft.deleted ? 1 : 0, draft.lastModifiedClientId,
         draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0, JSON.stringify(draft.ideaSegments)
       ]);
+  }
+
+  private async persistArtifact(artifact: AIArtifact): Promise<void> {
+    const payload = artifactToPayload(artifact);
+    await this.requireStore().executeSql('INSERT OR REPLACE INTO ai_artifacts (' +
+      'id, version, created_at, updated_at, deleted, last_modified_client_id, draft_id, payload_json) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [artifact.id, artifact.version, artifact.createdAt, artifact.updatedAt,
+      artifact.deleted ? 1 : 0, artifact.lastModifiedClientId, artifact.draftId, JSON.stringify(payload)]);
   }
 
   private async persistOperation(operation: SyncOperation): Promise<void> {
@@ -340,6 +452,68 @@ function readNumber(resultSet: relationalStore.ResultSet, column: string): numbe
   return resultSet.getLong(resultSet.getColumnIndex(column));
 }
 
+async function migrateEmbeddedArtifacts(store: relationalStore.RdbStore): Promise<void> {
+  const columns = await store.querySql('PRAGMA table_info(drafts)');
+  let hasEmbeddedColumn = false;
+  try {
+    if (columns.goToFirstRow()) {
+      do {
+        if (readString(columns, 'name') === 'ai_artifacts_json') hasEmbeddedColumn = true;
+      } while (columns.goToNextRow());
+    }
+  } finally {
+    columns.close();
+  }
+  if (!hasEmbeddedColumn) return;
+  const resultSet = await store.querySql('SELECT id, updated_at, last_modified_client_id, ai_artifacts_json FROM drafts');
+  try {
+    if (!resultSet.goToFirstRow()) return;
+    do {
+      const draftId = readString(resultSet, 'id');
+      const updatedAt = readString(resultSet, 'updated_at');
+      const clientId = readString(resultSet, 'last_modified_client_id');
+      const encoded = readString(resultSet, 'ai_artifacts_json');
+      if (encoded.length === 0) continue;
+      let values: AIArtifactPayload[] = [];
+      try {
+        values = JSON.parse(encoded) as AIArtifactPayload[];
+      } catch (error) {
+        hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped malformed legacy AI artifact JSON. draft_id=%{public}s', safeLogValue(draftId));
+        continue;
+      }
+      if (!Array.isArray(values)) continue;
+      for (let index = 0; index < values.length; index++) {
+        const payload = values[index];
+        if (payload === undefined || payload === null || typeof payload !== 'object') {
+          hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped malformed legacy AI artifact. draft_id=%{public}s index=%{public}s',
+            safeLogValue(draftId), index.toString());
+          continue;
+        }
+        payload.id = typeof payload.id === 'string' && payload.id.length > 0 ? payload.id : `${draftId}:artifact:${index}`;
+        payload.version = 0;
+        payload.server_sequence = 0;
+        payload.created_at = typeof payload.created_at === 'string' && payload.created_at.length > 0 ? payload.created_at : updatedAt;
+        payload.updated_at = typeof payload.updated_at === 'string' && payload.updated_at.length > 0 ? payload.updated_at : updatedAt;
+        payload.deleted = false;
+        payload.last_modified_client_id = typeof payload.last_modified_client_id === 'string' && payload.last_modified_client_id.length > 0 ? payload.last_modified_client_id : clientId;
+        payload.draft_id = draftId;
+        const artifact = payloadToArtifact(payload);
+        if (artifact === undefined) {
+          hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped invalid legacy AI artifact. draft_id=%{public}s index=%{public}s',
+            safeLogValue(draftId), index.toString());
+          continue;
+        }
+        await store.executeSql('INSERT OR IGNORE INTO ai_artifacts (' +
+          'id, version, created_at, updated_at, deleted, last_modified_client_id, draft_id, payload_json) ' +
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [artifact.id, artifact.version, artifact.createdAt, artifact.updatedAt,
+          0, artifact.lastModifiedClientId, artifact.draftId, JSON.stringify(artifactToPayload(artifact))]);
+      }
+    } while (resultSet.goToNextRow());
+  } finally {
+    resultSet.close();
+  }
+}
+
 function parseIdeaSegments(value: string): IdeaSegment[] {
   if (value.length === 0) return [];
   return JSON.parse(value) as IdeaSegment[];
@@ -375,8 +549,15 @@ function cloneOperation(source: SyncOperation): SyncOperation {
   operation.base_version = source.base_version;
   operation.client_id = source.client_id;
   operation.occurred_at = source.occurred_at;
-  operation.payload = JSON.parse(JSON.stringify(source.payload)) as DraftPayload;
+  operation.payload = JSON.parse(JSON.stringify(source.payload)) as DraftPayload | AIArtifactPayload;
   return operation;
+}
+
+function cloneArtifact(artifact: AIArtifact): AIArtifact {
+  const payload = artifactToPayload(artifact);
+  const snapshot = payloadToArtifact(payload);
+  if (snapshot === undefined) throw new Error('INVALID_AI_ARTIFACT');
+  return snapshot;
 }
 
 function normalizeBaseUrl(value: string): string {

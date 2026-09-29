@@ -5,9 +5,9 @@ import { InspectorPanel } from './components/InspectorPanel';
 import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { initialDocuments } from './data';
-import { BrowserWorkspaceRepository, queueUpsert } from './storage.mjs';
+import { BrowserWorkspaceRepository, queueAIArtifact, queueUpsert } from './storage.mjs';
 import { LocalSyncClient, synchronizeWorkspace } from './sync-client.mjs';
-import type { ConflictRecord, Documents, Draft, FileId, Mode, Panel, SyncStatus, WorkspaceState } from './types';
+import type { AIArtifact, ConflictRecord, Documents, Draft, FileId, Mode, Panel, SyncStatus, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
 
 interface ConflictChoice {
@@ -39,6 +39,8 @@ export function App() {
   const [conflict, setConflict] = useState<ConflictChoice | null>(() => unresolvedConflict(workspace));
   const [jumpToLine, setJumpToLine] = useState(0);
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
+  const currentArtifact = useMemo(() => currentDraft ? latestArtifact(workspace.ai_artifacts, currentDraft.id, mode) : undefined,
+    [workspace.ai_artifacts, currentDraft, mode]);
   const handleCursorChange = useCallback((line: number, column: number) => {
     setCursorPosition({ line, column });
   }, []);
@@ -107,6 +109,21 @@ export function App() {
       return;
     }
     void flushQueue();
+  }
+
+  function toggleArtifactVisibility() {
+    if (!currentArtifact) return;
+    const state = repository.load();
+    const updated: AIArtifact = {
+      ...currentArtifact,
+      visibility: currentArtifact.visibility === 'hidden' ? 'visible' : 'hidden',
+      updated_at: new Date().toISOString(),
+      last_modified_client_id: clientId,
+    };
+    queueAIArtifact(state, updated);
+    repository.save(state);
+    setWorkspace(state);
+    if (navigator.onLine) void flushQueue();
   }
 
   function selectDraft(draftId: string) {
@@ -210,6 +227,8 @@ export function App() {
           onJumpToLine={setJumpToLine}
           onHide={() => setInspectorHidden(true)}
           onShow={() => setInspectorHidden(false)}
+          artifact={currentArtifact}
+          onToggleArtifact={toggleArtifactVisibility}
         />
       </main>
     </div>
@@ -240,4 +259,9 @@ function unresolvedConflict(state: WorkspaceState): ConflictChoice | null {
   if (!record) return null;
   const copy = state.drafts.find((draft) => draft.id === record.local_copy_id);
   return copy ? { copy, server: record.server_entity } : null;
+}
+
+function latestArtifact(artifacts: AIArtifact[], draftId: string, mode: Mode): AIArtifact | undefined {
+  return artifacts.filter((artifact) => artifact.draft_id === draftId && artifact.mode === mode && !artifact.deleted)
+    .sort((left, right) => right.server_sequence - left.server_sequence || right.version - left.version || right.updated_at.localeCompare(left.updated_at))[0];
 }

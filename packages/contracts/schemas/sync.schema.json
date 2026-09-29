@@ -3,6 +3,9 @@
   "$id": "https://algoflow.local/contracts/sync.schema.json",
   "title": "AlgoFlow sync contracts",
   "$defs": {
+    "aiArtifactEntity": {
+      "$ref": "domain.schema.json#/$defs/aiArtifact"
+    },
     "operation": {
       "type": "object",
       "required": ["operation_id", "entity_type", "entity_id", "operation_type", "base_version", "client_id", "occurred_at", "payload"],
@@ -26,7 +29,7 @@
         "status": { "type": "string", "enum": ["applied", "duplicate", "conflict", "rejected"] },
         "version": { "type": "integer", "minimum": 1 },
         "server_entity": { "type": ["object", "null"] },
-        "error_code": { "type": "string", "enum": ["INVALID_REQUEST", "VERSION_CONFLICT", "OUT_OF_ORDER"] }
+        "error_code": { "type": "string", "enum": ["INVALID_REQUEST", "INVALID_AI_ARTIFACT", "VERSION_CONFLICT", "OUT_OF_ORDER"] }
       }
     }
   }

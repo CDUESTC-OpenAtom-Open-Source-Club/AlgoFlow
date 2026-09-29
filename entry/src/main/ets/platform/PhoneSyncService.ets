@@ -1,6 +1,7 @@
 import { SyncRepository } from '../domain/SyncRepository';
 import { Draft, SyncStatus } from '../domain/Models';
-import { ConflictRecord, DraftPayload, PullChange, SyncResultStatus, payloadToDraft } from '../domain/SyncModels';
+import { ConflictRecord, DraftPayload, PullChange, SyncEntityType, SyncResultStatus, payloadToDraft } from '../domain/SyncModels';
+import { AIArtifactPayload, payloadToArtifact } from '../domain/AIArtifactCodec';
 import { HttpSyncClient } from './HttpSyncClient';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -36,7 +37,9 @@ export class PhoneSyncService {
     const pending = this.repository.listPendingOperations();
     hilog.info(DOMAIN, TAG, '[AlgoFlow] Sync run started. pending=%{public}s cursor=%{public}s',
       pending.length.toString(), safeLogValue(this.repository.getCursor()));
-    for (const operation of pending) this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.SYNCING);
+    for (const operation of pending) {
+      if (operation.entity_type === SyncEntityType.DRAFT) this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.SYNCING);
+    }
     const client = new HttpSyncClient(this.repository.getBaseUrl());
     let hadConflict = false;
     for (const operation of pending) {
@@ -46,11 +49,20 @@ export class PhoneSyncService {
           '[AlgoFlow] Sync operation result. entity_id=%{public}s server_version=%{public}s status=%{public}s',
           safeLogValue(operation.entity_id), result.version?.toString() ?? 'none', result.status);
         if (result.status === SyncResultStatus.CONFLICT) {
+          if (operation.entity_type === SyncEntityType.AI_ARTIFACT) {
+            if (result.server_entity === undefined || result.server_entity === null) {
+              return new SyncRunResult(SyncRunStatus.FAILED, '服务器未返回 AI 结果冲突版本');
+            }
+            this.recordArtifactConflict(operation.payload as AIArtifactPayload, result.server_entity as AIArtifactPayload);
+            this.repository.removeOperation(operation.operation_id);
+            hadConflict = true;
+            continue;
+          }
           if (result.server_entity === undefined || result.server_entity === null) {
             this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.FAILED);
             return new SyncRunResult(SyncRunStatus.FAILED, '服务器未返回冲突版本');
           }
-          this.recordConflict(operation.entity_id, operation.payload, result.server_entity);
+          this.recordConflict(operation.entity_id, asDraftPayload(operation.payload), asDraftPayload(result.server_entity));
           this.repository.removeOperation(operation.operation_id);
           hadConflict = true;
           continue;
@@ -60,7 +72,11 @@ export class PhoneSyncService {
           return new SyncRunResult(SyncRunStatus.FAILED, result.error_code ?? '同步操作被拒绝');
         }
         const serverPayload = result.server_entity ?? operation.payload;
-        this.repository.applyServerDraft(payloadToDraft(serverPayload));
+        if (operation.entity_type === SyncEntityType.AI_ARTIFACT) {
+          this.repository.applyServerArtifact(serverPayload as AIArtifactPayload);
+        } else {
+          this.repository.applyServerDraft(payloadToDraft(serverPayload as DraftPayload));
+        }
         this.repository.removeOperation(operation.operation_id);
       } catch (error) {
         this.markPendingFailed();
@@ -96,7 +112,25 @@ export class PhoneSyncService {
     let applied = 0;
     let skipped = 0;
     for (const change of changes) {
-      if (change.entity_type !== 'draft') {
+      if (change.entity_type === SyncEntityType.AI_ARTIFACT) {
+        if (change.entity.last_modified_client_id === this.repository.getClientId()) {
+          skipped += 1;
+          continue;
+        }
+        if (this.repository.hasPendingOperation(SyncEntityType.AI_ARTIFACT, change.entity.id)) {
+          skipped += 1;
+          continue;
+        }
+        const localArtifact = this.repository.getArtifact(change.entity.id);
+        if (localArtifact !== undefined && change.entity.version < localArtifact.version) {
+          skipped += 1;
+          continue;
+        }
+        this.repository.applyServerArtifact(change.entity as AIArtifactPayload);
+        applied += 1;
+        continue;
+      }
+      if (change.entity_type !== SyncEntityType.DRAFT) {
         skipped += 1;
         continue;
       }
@@ -104,11 +138,11 @@ export class PhoneSyncService {
         skipped += 1;
         continue;
       }
-      if (this.repository.hasPendingOperation(change.entity.id)) {
+      if (this.repository.hasPendingOperation(SyncEntityType.DRAFT, change.entity.id)) {
         skipped += 1;
         continue;
       }
-      this.repository.applyServerDraft(payloadToDraft(change.entity));
+      this.repository.applyServerDraft(payloadToDraft(asDraftPayload(change.entity)));
       applied += 1;
       hilog.info(DOMAIN, TAG,
         '[AlgoFlow] Sync pull applied. entity_id=%{public}s server_version=%{public}s',
@@ -140,11 +174,34 @@ export class PhoneSyncService {
 
   private markPendingFailed(): void {
     for (const operation of this.repository.listPendingOperations()) {
-      this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.FAILED);
+      if (operation.entity_type === SyncEntityType.DRAFT) this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.FAILED);
     }
+  }
+
+  private recordArtifactConflict(localPayload: AIArtifactPayload, serverPayload: AIArtifactPayload): void {
+    const local = payloadToArtifactOrThrow(localPayload);
+    const copy = payloadToArtifactOrThrow(localPayload);
+    copy.id = `${local.id}-conflict-${util.generateRandomUUID()}`;
+    copy.version = 0;
+    copy.serverSequence = 0;
+    copy.createdAt = new Date().toISOString();
+    copy.updatedAt = copy.createdAt;
+    copy.lastModifiedClientId = this.repository.getClientId();
+    this.repository.applyServerArtifact(serverPayload);
+    this.repository.saveArtifact(copy);
   }
 }
 
 function safeLogValue(value: string): string {
   return value.replace(/[^a-zA-Z0-9._:-]/g, '_').substring(0, 96);
+}
+
+function asDraftPayload(value: DraftPayload | AIArtifactPayload): DraftPayload {
+  return JSON.parse(JSON.stringify(value)) as DraftPayload;
+}
+
+function payloadToArtifactOrThrow(payload: AIArtifactPayload) {
+  const artifact = payloadToArtifact(payload);
+  if (artifact === undefined) throw new Error('INVALID_AI_ARTIFACT');
+  return artifact;
 }
