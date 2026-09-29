@@ -364,6 +364,30 @@ test('does not advance the Web cursor when artifact scalar fields or arrays are 
   assert.equal(result.state.cursor, '4');
 });
 
+test('validates self-authored pulled AI artifacts before skipping them', async () => {
+  const state = makeWorkspace('same-client', makeDraft('draft-self-corrupt', '', 'same-client'));
+  state.cursor = '4';
+  const artifact = makeArtifact('self-corrupt', 'draft-1', 'same-client');
+  artifact.assumptions = [7];
+  const result = await synchronizeWorkspace(state, {
+    async push() { throw new Error('not expected'); },
+    async pull() { return { changes: [{ cursor: '5', entity_type: 'ai_artifact', entity: artifact }], next_cursor: '5' }; }
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.state.cursor, '4');
+});
+
+test('does not advance the Web cursor for an unsupported pulled entity', async () => {
+  const state = makeWorkspace('web-unknown', makeDraft('draft-unknown', '', 'web-unknown'));
+  state.cursor = '4';
+  const result = await synchronizeWorkspace(state, {
+    async push() { throw new Error('not expected'); },
+    async pull() { return { changes: [{ cursor: '5', entity_type: 'code_document', entity: {} }], next_cursor: '5' }; }
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.state.cursor, '4');
+});
+
 function makeDraft(id, code, clientId) {
   return {
     id,

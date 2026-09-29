@@ -144,9 +144,9 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   }
 
   applyServerArtifact(payload: AIArtifactPayload): void {
-    const draft = this.drafts.find((item: Draft) => item.id === payload.draft_id);
-    const sourceSegmentIds = draft?.ideaSegments.map((segment: IdeaSegment) => segment.id);
-    const artifact = payloadToArtifact(payload, sourceSegmentIds);
+    // Artifacts retain provenance from the source draft version that created them.
+    // A later draft edit must not invalidate an otherwise valid historical result.
+    const artifact = payloadToArtifact(payload);
     if (artifact === undefined) throw new Error('INVALID_AI_ARTIFACT');
     this.replaceArtifact(artifact);
   }
@@ -287,9 +287,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
             hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped malformed stored AI artifact JSON');
             continue;
           }
-          const draft = this.drafts.find((item: Draft) => item.id === payload.draft_id);
-          const sourceSegmentIds = draft?.ideaSegments.map((segment: IdeaSegment) => segment.id);
-          const artifact = payloadToArtifact(payload, sourceSegmentIds);
+          const artifact = payloadToArtifact(payload);
           if (artifact === undefined) {
             hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped invalid stored AI artifact');
           } else {

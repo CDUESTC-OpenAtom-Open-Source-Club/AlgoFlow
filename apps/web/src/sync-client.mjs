@@ -134,14 +134,15 @@ function applyPulledChanges(state, changes, clientId) {
   let next = state;
   for (const change of changes) {
     if (change.entity_type === 'ai_artifact') {
-      if (change.entity.last_modified_client_id === clientId) continue;
       assertAIArtifact(change.entity);
+      if (change.entity.last_modified_client_id === clientId) continue;
       const local = next.ai_artifacts.find((artifact) => artifact.id === change.entity.id);
       const hasPendingOperation = next.operations.some((operation) => operation.entity_type === 'ai_artifact' && operation.entity_id === change.entity.id);
       if (!hasPendingOperation && (!local || change.entity.version >= local.version)) next = replaceAIArtifact(next, /** @type {import('./types').AIArtifact} */ (change.entity));
       continue;
     }
-    if (change.entity_type !== 'draft' || change.entity.last_modified_client_id === clientId) continue;
+    if (change.entity_type !== 'draft') throw new Error('UNSUPPORTED_SYNC_ENTITY');
+    if (change.entity.last_modified_client_id === clientId) continue;
     const hasPendingOperation = next.operations.some((operation) => operation.entity_type === 'draft' && operation.entity_id === change.entity.id);
     const local = next.drafts.find((draft) => draft.id === change.entity.id);
     if (!hasPendingOperation && (!local || change.entity.version >= local.version)) {

@@ -113,6 +113,11 @@ export class PhoneSyncService {
     let skipped = 0;
     for (const change of changes) {
       if (change.entity_type === SyncEntityType.AI_ARTIFACT) {
+        // Validate before self/pending/version filters so malformed changes
+        // cannot be silently discarded while the cursor advances.
+        if (payloadToArtifact(change.entity as AIArtifactPayload) === undefined) {
+          throw new Error('INVALID_AI_ARTIFACT');
+        }
         if (change.entity.last_modified_client_id === this.repository.getClientId()) {
           skipped += 1;
           continue;
@@ -131,8 +136,7 @@ export class PhoneSyncService {
         continue;
       }
       if (change.entity_type !== SyncEntityType.DRAFT) {
-        skipped += 1;
-        continue;
+        throw new Error('UNSUPPORTED_SYNC_ENTITY');
       }
       if (change.entity.last_modified_client_id === this.repository.getClientId()) {
         skipped += 1;
