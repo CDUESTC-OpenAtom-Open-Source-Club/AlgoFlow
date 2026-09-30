@@ -12,8 +12,9 @@ import { reviewCpp } from './code-review';
 import { LocalAIClient, artifactFromGateway, buildAIRequest, reconcileIdeaSegments } from './ai-client.mjs';
 
 interface ConflictChoice {
-  copy: Draft;
-  server: Draft;
+  entity_type: 'draft' | 'ai_artifact';
+  copy: Draft | AIArtifact;
+  server: Draft | AIArtifact;
 }
 
 const syncClient = new LocalSyncClient();
@@ -183,8 +184,19 @@ export function App() {
   function keepConflictCopy() {
     if (!conflict) return;
     const state = repository.load();
+    if (conflict.entity_type === 'ai_artifact') {
+      const copy: AIArtifact = { ...(conflict.copy as AIArtifact), last_modified_client_id: clientId, visibility: 'visible' };
+      const next = { ...state, ai_artifacts: state.ai_artifacts.map((item) => item.id === copy.id ? copy : item), conflicts: state.conflicts.map((record) => record.local_copy_id === copy.id ? { ...record, resolved: true } : record) };
+      queueAIArtifact(next, copy);
+      repository.save(next);
+      setWorkspace(next);
+      setConflict(null);
+      setSyncState(navigator.onLine ? 'syncing' : 'local_only');
+      if (navigator.onLine) void flushQueue();
+      return;
+    }
     const copy: Draft = {
-      ...conflict.copy,
+      ...(conflict.copy as Draft),
       sync_status: navigator.onLine ? 'syncing' : 'local_only',
     };
     const next = replaceDraft({ ...state, selected_id: copy.id }, copy);
@@ -201,14 +213,23 @@ export function App() {
   function useServerVersion() {
     if (!conflict) return;
     const state = repository.load();
+    if (conflict.entity_type === 'ai_artifact') {
+      const server = conflict.server as AIArtifact;
+      const next = { ...state, ai_artifacts: state.ai_artifacts.filter((artifact) => artifact.id !== conflict.copy.id).map((artifact) => artifact.id === server.id ? server : artifact), conflicts: state.conflicts.map((record) => record.local_copy_id === conflict.copy.id ? { ...record, resolved: true } : record) };
+      repository.save(next);
+      setWorkspace(next);
+      setConflict(null);
+      setSyncState('synced');
+      return;
+    }
     let next = replaceDraft(
       { ...state, selected_id: conflict.server.id, drafts: state.drafts.filter((draft) => draft.id !== conflict.copy.id) },
-      { ...conflict.server, sync_status: 'synced' },
+      { ...(conflict.server as Draft), sync_status: 'synced' },
     );
     next.conflicts = state.conflicts.map((record) => record.local_copy_id === conflict.copy.id ? { ...record, resolved: true } : record);
     repository.save(next);
     setWorkspace(next);
-    setDocuments(draftToDocuments(conflict.server));
+    setDocuments(draftToDocuments(conflict.server as Draft));
     setConflict(null);
     setSaved(true);
     setSyncState('synced');
@@ -224,7 +245,7 @@ export function App() {
         <div className="sync-conflict-banner" role="alert">
           <div>
             <strong>检测到并发修改</strong>
-            <span>服务器版本和本地编辑都已保留，请选择继续方式。</span>
+            <span>{conflict.entity_type === 'ai_artifact' ? '服务器 AI 结果和本地副本都已保留，请选择继续方式。' : '服务器版本和本地编辑都已保留，请选择继续方式。'}</span>
           </div>
           <div className="conflict-actions">
             <button type="button" onClick={keepConflictCopy}>保留本地冲突副本</button>
@@ -300,8 +321,12 @@ function replaceDraft(state: WorkspaceState, draft: Draft): WorkspaceState {
 function unresolvedConflict(state: WorkspaceState): ConflictChoice | null {
   const record: ConflictRecord | undefined = state.conflicts.find((item) => !item.resolved);
   if (!record) return null;
+  if (record.entity_type === 'ai_artifact') {
+    const copy = state.ai_artifacts.find((artifact) => artifact.id === record.local_copy_id);
+    return copy ? { entity_type: 'ai_artifact', copy, server: record.server_entity as AIArtifact } : null;
+  }
   const copy = state.drafts.find((draft) => draft.id === record.local_copy_id);
-  return copy ? { copy, server: record.server_entity } : null;
+  return copy ? { entity_type: 'draft', copy, server: record.server_entity as Draft } : null;
 }
 
 function latestArtifact(artifacts: AIArtifact[], draftId: string, mode: Mode): AIArtifact | undefined {

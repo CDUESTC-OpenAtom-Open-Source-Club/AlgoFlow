@@ -119,6 +119,12 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     this.enqueue(async () => this.persistConflict(record));
   }
 
+  saveConflictArtifact(artifact: AIArtifact, record: ConflictRecord): void {
+    artifact.deleted = false;
+    this.replaceArtifact(artifact);
+    this.enqueue(async () => this.persistConflict(record));
+  }
+
   setDraftSyncStatus(id: string, status: SyncStatus): void {
     const draft = this.drafts.find((item: Draft) => item.id === id);
     if (draft === undefined) return;

@@ -13,6 +13,7 @@ export interface SyncRepository {
   removeOperation(operationId: string): void;
   applyServerDraft(draft: Draft): void;
   saveConflictDraft(draft: Draft, record: ConflictRecord): void;
+  saveConflictArtifact(artifact: AIArtifact, record: ConflictRecord): void;
   setDraftSyncStatus(id: string, status: SyncStatus): void;
   listArtifacts(): AIArtifact[];
   getArtifact(id: string): AIArtifact | undefined;

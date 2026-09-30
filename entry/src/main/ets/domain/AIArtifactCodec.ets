@@ -111,7 +111,7 @@ export function payloadToArtifact(payload: AIArtifactPayload, sourceSegmentIds?:
     !Array.isArray(payload.added_algorithm_steps) || payload.added_algorithm_steps.some((item: string) => typeof item !== 'string') ||
     (payload.code_snippet !== null && typeof payload.code_snippet !== 'string') ||
     (typeof payload.code_snippet === 'string' && (payload.code_snippet.length > 4000 || /\b(?:int|signed|auto|void)\s+main\s*\(/.test(payload.code_snippet))) ||
-    (payload.template_id !== null && typeof payload.template_id !== 'string')) return undefined;
+    (payload.template_id !== null && (typeof payload.template_id !== 'string' || payload.template_id.length === 0))) return undefined;
   const mode = parseMode(payload.mode);
   const outputKind = parseOutputKind(payload.output_kind);
   const visibility = parseVisibility(payload.visibility);

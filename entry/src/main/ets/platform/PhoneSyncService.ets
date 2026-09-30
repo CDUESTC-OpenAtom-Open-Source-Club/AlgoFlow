@@ -191,8 +191,15 @@ export class PhoneSyncService {
     copy.createdAt = new Date().toISOString();
     copy.updatedAt = copy.createdAt;
     copy.lastModifiedClientId = this.repository.getClientId();
+    const record = new ConflictRecord();
+    record.id = util.generateRandomUUID();
+    record.entity_type = SyncEntityType.AI_ARTIFACT;
+    record.entity_id = local.id;
+    record.local_copy_id = copy.id;
+    record.server_entity = serverPayload;
+    record.created_at = new Date().toISOString();
     this.repository.applyServerArtifact(serverPayload);
-    this.repository.saveArtifact(copy);
+    this.repository.saveConflictArtifact(copy, record);
   }
 }
 

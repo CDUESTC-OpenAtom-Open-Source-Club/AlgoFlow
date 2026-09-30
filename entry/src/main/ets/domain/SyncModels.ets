@@ -3,7 +3,6 @@ import { AIArtifactPayload } from './AIArtifactCodec';
 
 export enum SyncEntityType {
   DRAFT = 'draft',
-  CODE_DOCUMENT = 'code_document',
   AI_ARTIFACT = 'ai_artifact'
 }
 
@@ -78,9 +77,10 @@ export class PullResult {
 
 export class ConflictRecord {
   id: string = '';
+  entity_type: string = SyncEntityType.DRAFT;
   entity_id: string = '';
   local_copy_id: string = '';
-  server_entity: DraftPayload = new DraftPayload();
+  server_entity: DraftPayload | AIArtifactPayload = new DraftPayload();
   created_at: string = '';
   resolved: boolean = false;
 }

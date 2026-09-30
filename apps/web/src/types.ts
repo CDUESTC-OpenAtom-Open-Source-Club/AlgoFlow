@@ -77,7 +77,7 @@ export interface AIArtifact {
 
 export interface SyncOperation {
   operation_id: string;
-  entity_type: 'draft' | 'code_document' | 'ai_artifact';
+  entity_type: 'draft' | 'ai_artifact';
   entity_id: string;
   operation_type: 'upsert' | 'delete';
   base_version: number;
@@ -99,9 +99,10 @@ export interface WorkspaceState {
 
 export interface ConflictRecord {
   id: string;
+  entity_type: 'draft' | 'ai_artifact';
   entity_id: string;
   local_copy_id: string;
-  server_entity: Draft;
+  server_entity: Draft | AIArtifact;
   created_at: string;
   resolved: boolean;
 }
@@ -116,7 +117,7 @@ export interface PushResult {
 
 export interface PullChange {
   cursor: string;
-  entity_type: 'draft' | 'code_document' | 'ai_artifact';
+  entity_type: 'draft' | 'ai_artifact';
   entity: Draft | AIArtifact;
 }
 

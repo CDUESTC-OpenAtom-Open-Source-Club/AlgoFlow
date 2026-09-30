@@ -42,18 +42,22 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
 
   for (const operation of [...next.operations]) {
     try {
+      if (operation.entity_type === 'ai_artifact') {
+        assertAIArtifact(operation.payload, sourceIdsForArtifact(next, /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (operation.payload))));
+      }
       const result = await client.push(operation);
       if (result.status === 'conflict') {
         if (operation.entity_type === 'ai_artifact') {
           if (!result.server_entity) { hadFailure = true; continue; }
           const local = /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (operation.payload));
           const server = /** @type {import('./types').AIArtifact} */ (result.server_entity);
-          assertAIArtifact(server);
+          assertAIArtifact(server, sourceIdsForArtifact(next, server));
           const copy = createAIArtifactConflictCopy(local, next.client_id, createId());
           next = replaceAIArtifact(next, server);
           next = replaceAIArtifact(next, copy);
           next.operations = next.operations.filter((item) => item.operation_id !== operation.operation_id);
-          queueAIArtifact(next, copy);
+          next.conflicts.push({ id: createId(), entity_type: 'ai_artifact', entity_id: operation.entity_id,
+            local_copy_id: copy.id, server_entity: server, created_at: new Date().toISOString(), resolved: false });
           hadConflict = true;
           continue;
         }
@@ -68,6 +72,7 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
         next.operations = next.operations.filter((item) => item.operation_id !== operation.operation_id);
         next.conflicts.push({
           id: createId(),
+          entity_type: 'draft',
           entity_id: operation.entity_id,
           local_copy_id: copy.id,
           server_entity: /** @type {import('./types').Draft} */ (result.server_entity),
@@ -81,7 +86,7 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
       if (result.status === 'applied' || result.status === 'duplicate') {
         const entity = result.server_entity ?? { ...operation.payload, version: result.version ?? operation.base_version };
         if (operation.entity_type === 'ai_artifact') {
-          assertAIArtifact(entity);
+          assertAIArtifact(entity, sourceIdsForArtifact(next, /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (entity))));
           next = replaceAIArtifact(next, /** @type {import('./types').AIArtifact} */ (entity));
         } else {
           next = replaceDraft(next, { .../** @type {import('./types').Draft} */ (entity), sync_status: 'synced' });
@@ -134,7 +139,7 @@ function applyPulledChanges(state, changes, clientId) {
   let next = state;
   for (const change of changes) {
     if (change.entity_type === 'ai_artifact') {
-      assertAIArtifact(change.entity);
+      assertAIArtifact(change.entity, sourceIdsForArtifact(next, /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (change.entity))));
       if (change.entity.last_modified_client_id === clientId) continue;
       const local = next.ai_artifacts.find((artifact) => artifact.id === change.entity.id);
       const hasPendingOperation = next.operations.some((operation) => operation.entity_type === 'ai_artifact' && operation.entity_id === change.entity.id);
@@ -158,8 +163,15 @@ function replaceAIArtifact(state, artifact) {
   return { ...state, ai_artifacts: found ? state.ai_artifacts.map((item) => item.id === artifact.id ? artifact : item) : [...state.ai_artifacts, artifact] };
 }
 
-/** @param {unknown} value */
-export function assertAIArtifact(value) {
+/** @param {import('./types').WorkspaceState} state @param {import('./types').AIArtifact} artifact */
+function sourceIdsForArtifact(state, artifact) {
+  const draft = state.drafts.find((item) => item.id === artifact.draft_id);
+  if (!draft || draft.version !== artifact.source_draft_version) return undefined;
+  return new Set((draft.idea_segments ?? []).map((segment) => segment.id));
+}
+
+/** @param {unknown} value @param {Set<string>} [sourceSegmentIds] */
+export function assertAIArtifact(value, sourceSegmentIds = undefined) {
   if (!value || typeof value !== 'object') throw new Error('INVALID_AI_ARTIFACT');
   const artifact = /** @type {Record<string, unknown>} */ (value);
   const required = ['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', 'mode', 'pseudocode', 'code_snippet', 'code_mappings', 'assumptions', 'missing_information', 'risk_flags', 'added_algorithm_steps', 'source_draft_version', 'model_id', 'rule_version', 'output_kind', 'visibility', 'template_id'];
@@ -186,7 +198,7 @@ export function assertAIArtifact(value) {
     if (!step || typeof step !== 'object') return true;
     const item = /** @type {Record<string, unknown>} */ (step);
     const refs = item.source_refs;
-    return Object.keys(item).some((field) => !['id', 'step', 'source_refs'].includes(field)) || typeof item.id !== 'string' || item.id.length === 0 || typeof item.step !== 'string' || item.step.length === 0 || !Array.isArray(refs) || refs.length === 0 || refs.some((ref) => typeof ref !== 'string' || ref.length === 0);
+    return Object.keys(item).some((field) => !['id', 'step', 'source_refs'].includes(field)) || typeof item.id !== 'string' || item.id.length === 0 || typeof item.step !== 'string' || item.step.length === 0 || !Array.isArray(refs) || refs.length === 0 || refs.some((ref) => typeof ref !== 'string' || ref.length === 0) || (sourceSegmentIds !== undefined && refs.some((ref) => !sourceSegmentIds.has(ref)));
   })) throw new Error('INVALID_AI_ARTIFACT');
   const ids = new Set(pseudocode.map((step) => step.id));
   if (ids.size !== pseudocode.length) throw new Error('INVALID_AI_ARTIFACT');

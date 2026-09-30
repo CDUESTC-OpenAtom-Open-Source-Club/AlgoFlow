@@ -9,6 +9,9 @@ Issue #28 persists faithful AI transform results as independent `ai_artifact` en
 - `entity_type` now accepts `ai_artifact` for `upsert` and `delete` operations.
 - Artifact payloads use the fields defined by `domain.schema.json` and are carried unchanged through Web, OpenHarmony, and sync-api.
 - Artifact operations use the same idempotent `operation_id`, `base_version`, conflict, tombstone, and pull cursor rules as drafts.
+- Artifact source references are checked against the stored source Draft version on sync-api; clients perform the same check when that source version is locally available. Historical artifacts remain valid after later Draft edits.
+- `code_document` is not part of the active sync entity contract until a client and server implementation exists.
+- Artifact conflicts are stored as `entity_type=ai_artifact` conflict records. Web exposes the same keep-local/use-server choice as Draft conflicts; OpenHarmony persists the record in the local conflict table.
 - `server_sequence` is assigned by sync-api for artifact changes and is preserved by clients.
 
 ## Compatibility

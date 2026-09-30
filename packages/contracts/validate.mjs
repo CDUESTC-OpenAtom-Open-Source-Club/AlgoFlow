@@ -8,7 +8,7 @@ const visibilities = new Set(domain.$defs.aiVisibility.enum);
 const artifactFields = ['mode', 'pseudocode', 'code_snippet', 'code_mappings', 'assumptions', 'missing_information', 'risk_flags', 'added_algorithm_steps', 'source_draft_version', 'model_id', 'rule_version', 'output_kind', 'visibility', 'template_id'];
 const entityFields = new Set(['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', ...artifactFields]);
 
-export function validateAIArtifactEntity(entity) {
+export function validateAIArtifactEntity(entity, sourceSegmentIds = undefined) {
   const errors = [];
   if (!isObject(entity)) return ['ai_artifact payload must be an object'];
   for (const key of Object.keys(entity)) if (!entityFields.has(key)) errors.push(`${key} is not allowed`);
@@ -33,6 +33,9 @@ export function validateAIArtifactEntity(entity) {
         typeof step.step !== 'string' || step.step.length === 0 || !Array.isArray(step.source_refs) ||
         step.source_refs.length === 0 || step.source_refs.some((ref) => typeof ref !== 'string' || ref.length === 0)) {
         errors.push(`pseudocode[${index}] is invalid`);
+      }
+      if (sourceSegmentIds instanceof Set && Array.isArray(step?.source_refs)) {
+        for (const ref of step.source_refs) if (!sourceSegmentIds.has(ref)) errors.push(`pseudocode[${index}] references unknown source_ref`);
       }
       if (ids.has(step?.id)) errors.push(`pseudocode[${index}].id must be unique`);
       ids.add(step?.id);

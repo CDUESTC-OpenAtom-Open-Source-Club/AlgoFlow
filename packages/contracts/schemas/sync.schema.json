@@ -11,7 +11,7 @@
       "required": ["operation_id", "entity_type", "entity_id", "operation_type", "base_version", "client_id", "occurred_at", "payload"],
       "properties": {
         "operation_id": { "type": "string", "minLength": 1 },
-        "entity_type": { "type": "string", "enum": ["draft", "code_document", "ai_artifact"] },
+        "entity_type": { "type": "string", "enum": ["draft", "ai_artifact"] },
         "entity_id": { "type": "string", "minLength": 1 },
         "operation_type": { "type": "string", "enum": ["upsert", "delete"] },
         "base_version": { "type": "integer", "minimum": 0 },

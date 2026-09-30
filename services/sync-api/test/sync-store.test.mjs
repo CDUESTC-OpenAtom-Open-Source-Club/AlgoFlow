@@ -256,6 +256,13 @@ test('a Web edit updates the same starter draft for the phone pull path', async 
   assert.equal(phoneChanges.next_cursor, '2');
 });
 
+test('rejects code_document until the entity has an implemented sync contract', () => {
+  const store = new SyncStore();
+  const result = store.apply({ ...operation, operation_id: 'code-document-op', entity_type: 'code_document', entity_id: 'code-1' });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.error_code, 'INVALID_REQUEST');
+});
+
 test('syncs an independent faithful artifact without changing the draft entity', async (context) => {
   const server = createSyncServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -267,10 +274,11 @@ test('syncs an independent faithful artifact without changing the draft entity',
   const artifact = makeArtifact('artifact-1', draft.id, 'phone-local');
   const phone = makeWorkspace('phone-local', draft);
   phone.ai_artifacts.push(artifact);
+  queueUpsert(phone, draft);
   queueAIArtifact(phone, artifact);
   const pushed = await synchronizeWorkspace(phone, client);
   assert.equal(pushed.status, 'synced');
-  assert.equal(pushed.state.drafts[0].version, 0);
+  assert.equal(pushed.state.drafts[0].version, 1);
   assert.equal(pushed.state.ai_artifacts[0].version, 1);
   assert.equal(pushed.state.ai_artifacts[0].pseudocode[0].source_refs[0], 'idea_segment_1');
 
@@ -279,7 +287,7 @@ test('syncs an independent faithful artifact without changing the draft entity',
   assert.equal(pulled.status, 'synced');
   assert.equal(pulled.state.ai_artifacts.length, 1);
   assert.equal(pulled.state.ai_artifacts[0].id, artifact.id);
-  assert.equal(pulled.state.drafts.find((item) => item.id === draft.id), undefined);
+  assert.equal(pulled.state.drafts.find((item) => item.id === draft.id)?.id, draft.id);
 });
 
 test('rejects malformed independent AI artifacts before they enter the change stream', () => {
@@ -296,6 +304,7 @@ test('rejects malformed independent AI artifacts before they enter the change st
 
 test('rejects an AI artifact mapping to an unknown pseudocode step', () => {
   const store = new SyncStore();
+  seedDraft(store, makeDraft('draft-1', '', 'draft-owner'));
   const artifact = makeArtifact('artifact-ghost-step', 'draft-1', 'web-local');
   artifact.output_kind = 'code_snippet';
   artifact.code_snippet = 'return value;';
@@ -306,7 +315,19 @@ test('rejects an AI artifact mapping to an unknown pseudocode step', () => {
   });
   assert.equal(result.status, 'rejected');
   assert.equal(result.error_code, 'INVALID_AI_ARTIFACT');
-  assert.equal(store.pull('0').changes.length, 0);
+  assert.equal(store.pull('0').changes.length, 1);
+});
+
+test('rejects an AI artifact referencing a source segment absent from the source draft version', () => {
+  const store = new SyncStore();
+  seedDraft(store, makeDraft('draft-source-check', '', 'draft-owner'));
+  const artifact = makeArtifact('artifact-ghost-source', 'draft-source-check', 'web-local');
+  artifact.pseudocode[0].source_refs = ['ghost'];
+  const result = store.apply({ operation_id: 'artifact-ghost-source-op', entity_type: 'ai_artifact', entity_id: artifact.id,
+    operation_type: 'upsert', base_version: 0, client_id: 'web-local', occurred_at: artifact.updated_at, payload: artifact });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.error_code, 'INVALID_AI_ARTIFACT');
+  assert.equal(store.pull('0').changes.length, 1);
 });
 
 test('rejects an unknown AI artifact delete instead of publishing an incomplete tombstone', () => {
@@ -322,6 +343,7 @@ test('rejects an unknown AI artifact delete instead of publishing an incomplete 
 
 test('retries the same AI artifact operation idempotently', () => {
   const store = new SyncStore();
+  seedDraft(store, makeDraft('draft-1', '', 'draft-owner'));
   const artifact = makeArtifact('artifact-duplicate', 'draft-1', 'web-local');
   const operation = {
     operation_id: 'artifact-duplicate-op', entity_type: 'ai_artifact', entity_id: artifact.id, operation_type: 'upsert',
@@ -329,7 +351,7 @@ test('retries the same AI artifact operation idempotently', () => {
   };
   assert.equal(store.apply(operation).status, 'applied');
   assert.equal(store.apply(operation).status, 'duplicate');
-  assert.equal(store.pull('0').changes.length, 1);
+  assert.equal(store.pull('0').changes.length, 2);
 });
 
 test('does not advance the Web cursor when a pulled AI artifact is corrupt', async () => {
@@ -388,6 +410,20 @@ test('does not advance the Web cursor for an unsupported pulled entity', async (
   assert.equal(result.state.cursor, '4');
 });
 
+test('does not apply a pulled artifact with a source reference absent from the local source version', async () => {
+  const draft = makeDraft('draft-source-web', '', 'web-source-web');
+  const state = makeWorkspace('web-source-web', draft);
+  state.cursor = '4';
+  const artifact = makeArtifact('web-ghost-source', draft.id, 'remote');
+  artifact.pseudocode[0].source_refs = ['ghost'];
+  const result = await synchronizeWorkspace(state, {
+    async push() { throw new Error('not expected'); },
+    async pull() { return { changes: [{ cursor: '5', entity_type: 'ai_artifact', entity: artifact }], next_cursor: '5' }; }
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.state.cursor, '4');
+});
+
 function makeDraft(id, code, clientId) {
   return {
     id,
@@ -404,8 +440,15 @@ function makeDraft(id, code, clientId) {
     rewrite: '',
     ai_mode: 'faithful_transform',
     artifact_hidden: false,
+    idea_segments: [{ id: 'idea_segment_1', content: 'Sort by right endpoint', position: 0 }],
     sync_status: 'local_only'
   };
+}
+
+function seedDraft(store, draft) {
+  return store.apply({ operation_id: `seed-${draft.id}`, entity_type: 'draft', entity_id: draft.id,
+    operation_type: 'upsert', base_version: 0, client_id: draft.last_modified_client_id,
+    occurred_at: draft.updated_at, payload: draft });
 }
 
 function makeWorkspace(clientId, draft) {
