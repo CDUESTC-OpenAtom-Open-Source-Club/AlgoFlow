@@ -11,7 +11,7 @@ import { SyncRepository } from '../domain/SyncRepository';
 
 const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
-const DATABASE_VERSION = 3;
+const DATABASE_VERSION = 4;
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8787';
 const STORE_CONFIG: relationalStore.StoreConfig = {
   name: 'algoflow_workspace.db',
@@ -23,6 +23,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   private store?: relationalStore.RdbStore;
   private drafts: Draft[] = [];
   private artifacts: AIArtifact[] = [];
+  private conflicts: ConflictRecord[] = [];
   private operations: SyncOperation[] = [];
   private clientId: string = '';
   private cursor: string = '0';
@@ -40,6 +41,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     await this.loadState(this.store);
     await this.loadDrafts(this.store);
     await this.loadArtifacts(this.store);
+    await this.loadConflicts(this.store);
     await this.loadOperations(this.store);
   }
 
@@ -116,13 +118,21 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   saveConflictDraft(draft: Draft, record: ConflictRecord): void {
     draft.syncStatus = SyncStatus.CONFLICT;
     this.replaceDraft(draft);
+    this.upsertConflict(record);
     this.enqueue(async () => this.persistConflict(record));
   }
 
   saveConflictArtifact(artifact: AIArtifact, record: ConflictRecord): void {
     artifact.deleted = false;
     this.replaceArtifact(artifact);
+    this.upsertConflict(record);
     this.enqueue(async () => this.persistConflict(record));
+  }
+
+  private upsertConflict(record: ConflictRecord): void {
+    const index = this.conflicts.findIndex((item: ConflictRecord) => item.id === record.id);
+    if (index >= 0) this.conflicts[index] = record;
+    else this.conflicts.push(record);
   }
 
   setDraftSyncStatus(id: string, status: SyncStatus): void {
@@ -135,6 +145,10 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   listArtifacts(): AIArtifact[] {
     return this.artifacts.filter((artifact: AIArtifact) => !artifact.deleted)
       .sort((left: AIArtifact, right: AIArtifact) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  listConflicts(): ConflictRecord[] {
+    return this.conflicts.filter((record: ConflictRecord) => !record.resolved);
   }
 
   getArtifact(id: string): AIArtifact | undefined {
@@ -179,7 +193,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
         await store.executeSql('CREATE TABLE IF NOT EXISTS sync_state (' +
           'state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL)');
         await store.executeSql('CREATE TABLE IF NOT EXISTS conflicts (' +
-          'id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, local_copy_id TEXT NOT NULL, ' +
+          'id TEXT PRIMARY KEY, entity_type TEXT NOT NULL DEFAULT \'draft\', entity_id TEXT NOT NULL, local_copy_id TEXT NOT NULL, ' +
           'server_entity_json TEXT NOT NULL, created_at TEXT NOT NULL, resolved INTEGER NOT NULL)');
         await store.executeSql('CREATE TABLE IF NOT EXISTS ai_artifacts (' +
           'id TEXT PRIMARY KEY, version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
@@ -211,6 +225,28 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
           'id TEXT PRIMARY KEY, version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
           'deleted INTEGER NOT NULL, last_modified_client_id TEXT NOT NULL, draft_id TEXT NOT NULL, payload_json TEXT NOT NULL)');
         await migrateEmbeddedArtifacts(store);
+        store.version = 3;
+        store.commit();
+      } catch (error) {
+        store.rollBack();
+        throw new Error(error instanceof Error ? error.message : 'RDB migration failed');
+      }
+    }
+    if (store.version === 3) {
+      store.beginTransaction();
+      try {
+        const columns = await store.querySql('PRAGMA table_info(conflicts)');
+        let hasEntityType = false;
+        try {
+          if (columns.goToFirstRow()) {
+            do {
+              if (readString(columns, 'name') === 'entity_type') hasEntityType = true;
+            } while (columns.goToNextRow());
+          }
+        } finally {
+          columns.close();
+        }
+        if (!hasEntityType) await store.executeSql('ALTER TABLE conflicts ADD COLUMN entity_type TEXT NOT NULL DEFAULT \'draft\'');
         store.version = DATABASE_VERSION;
         store.commit();
       } catch (error) {
@@ -305,6 +341,38 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
       resultSet.close();
     }
     this.artifacts = loaded;
+  }
+
+  private async loadConflicts(store: relationalStore.RdbStore): Promise<void> {
+    const resultSet = await store.querySql('SELECT id, entity_type, entity_id, local_copy_id, server_entity_json, created_at, resolved FROM conflicts');
+    const loaded: ConflictRecord[] = [];
+    try {
+      if (resultSet.goToFirstRow()) {
+        do {
+          const record = new ConflictRecord();
+          record.id = readString(resultSet, 'id');
+          record.entity_type = readString(resultSet, 'entity_type') || SyncEntityType.DRAFT;
+          record.entity_id = readString(resultSet, 'entity_id');
+          record.local_copy_id = readString(resultSet, 'local_copy_id');
+          record.created_at = readString(resultSet, 'created_at');
+          record.resolved = readNumber(resultSet, 'resolved') === 1;
+          try {
+            record.server_entity = JSON.parse(readString(resultSet, 'server_entity_json')) as DraftPayload | AIArtifactPayload;
+          } catch (error) {
+            hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped malformed conflict record. entity_id=%{public}s', safeLogValue(record.entity_id));
+            continue;
+          }
+          if (!isPersistedConflictPayloadValid(record)) {
+            hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped invalid conflict record. entity_id=%{public}s', safeLogValue(record.entity_id));
+            continue;
+          }
+          loaded.push(record);
+        } while (resultSet.goToNextRow());
+      }
+    } finally {
+      resultSet.close();
+    }
+    this.conflicts = loaded;
   }
 
   private async loadOperations(store: relationalStore.RdbStore): Promise<void> {
@@ -450,8 +518,8 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
 
   private async persistConflict(record: ConflictRecord): Promise<void> {
     await this.requireStore().executeSql('INSERT OR REPLACE INTO conflicts (' +
-      'id, entity_id, local_copy_id, server_entity_json, created_at, resolved) VALUES (?, ?, ?, ?, ?, ?)',
-      [record.id, record.entity_id, record.local_copy_id, JSON.stringify(record.server_entity), record.created_at,
+      'id, entity_type, entity_id, local_copy_id, server_entity_json, created_at, resolved) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [record.id, record.entity_type, record.entity_id, record.local_copy_id, JSON.stringify(record.server_entity), record.created_at,
         record.resolved ? 1 : 0]);
   }
 
@@ -467,6 +535,17 @@ function readString(resultSet: relationalStore.ResultSet, column: string): strin
 
 function readNumber(resultSet: relationalStore.ResultSet, column: string): number {
   return resultSet.getLong(resultSet.getColumnIndex(column));
+}
+
+function isPersistedConflictPayloadValid(record: ConflictRecord): boolean {
+  if (record.server_entity === null || Array.isArray(record.server_entity as Object)) return false;
+  if (record.entity_type === SyncEntityType.AI_ARTIFACT) {
+    return payloadToArtifact(record.server_entity as AIArtifactPayload) !== undefined;
+  }
+  if (record.entity_type !== SyncEntityType.DRAFT) return false;
+  const draft = record.server_entity as DraftPayload;
+  return typeof draft.id === 'string' && draft.id.length > 0 &&
+    Number.isInteger(draft.version) && draft.version >= 0;
 }
 
 async function migrateEmbeddedArtifacts(store: relationalStore.RdbStore): Promise<void> {

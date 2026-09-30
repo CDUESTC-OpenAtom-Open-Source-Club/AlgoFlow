@@ -354,6 +354,41 @@ test('retries the same AI artifact operation idempotently', () => {
   assert.equal(store.pull('0').changes.length, 2);
 });
 
+test('keeps source snapshots immutable across Draft edits and artifact updates', () => {
+  const store = new SyncStore();
+  const draft = makeDraft('draft-history', '', 'draft-owner');
+  draft.idea_segments = [{ id: 'segment-old', content: 'Old thought', position: 0 }];
+  assert.equal(seedDraft(store, draft).status, 'applied');
+  const artifact = makeArtifact('artifact-history', draft.id, 'web-local');
+  artifact.pseudocode[0].source_refs = ['segment-old'];
+  const original = {
+    operation_id: 'artifact-history-original', entity_type: 'ai_artifact', entity_id: artifact.id,
+    operation_type: 'upsert', base_version: 0, client_id: 'web-local', occurred_at: artifact.updated_at, payload: artifact
+  };
+  assert.equal(store.apply(original).status, 'applied');
+
+  const edited = { ...draft, version: 1, idea_segments: [{ id: 'segment-new', content: 'New thought', position: 0 }], updated_at: '2026-09-16T00:00:00.000Z' };
+  assert.equal(store.apply({ operation_id: 'draft-history-edit', entity_type: 'draft', entity_id: draft.id,
+    operation_type: 'upsert', base_version: 1, client_id: 'web-local', occurred_at: edited.updated_at, payload: edited }).status, 'applied');
+
+  assert.equal(store.apply(original).status, 'duplicate');
+  const visibilityUpdate = { ...artifact, visibility: 'hidden', version: 1, updated_at: '2026-09-17T00:00:00.000Z' };
+  assert.equal(store.apply({ operation_id: 'artifact-history-visibility', entity_type: 'ai_artifact', entity_id: artifact.id,
+    operation_type: 'upsert', base_version: 1, client_id: 'web-local', occurred_at: visibilityUpdate.updated_at, payload: visibilityUpdate }).status, 'applied');
+});
+
+test('does not let caller mutations change historical Draft source refs', () => {
+  const store = new SyncStore();
+  const draft = makeDraft('draft-isolated-history', '', 'draft-owner');
+  draft.idea_segments = [{ id: 'segment-original', content: 'Thought', position: 0 }];
+  assert.equal(seedDraft(store, draft).status, 'applied');
+  draft.idea_segments[0].id = 'segment-mutated';
+  const artifact = makeArtifact('artifact-isolated-history', draft.id, 'web-local');
+  artifact.pseudocode[0].source_refs = ['segment-original'];
+  assert.equal(store.apply({ operation_id: 'artifact-isolated-history', entity_type: 'ai_artifact', entity_id: artifact.id,
+    operation_type: 'upsert', base_version: 0, client_id: 'web-local', occurred_at: artifact.updated_at, payload: artifact }).status, 'applied');
+});
+
 test('does not advance the Web cursor when a pulled AI artifact is corrupt', async () => {
   const state = makeWorkspace('web-corrupt', makeDraft('draft-corrupt', '', 'web-corrupt'));
   state.cursor = '4';

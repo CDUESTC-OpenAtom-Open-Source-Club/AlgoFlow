@@ -2,6 +2,7 @@ import { DraftRepository } from '../domain/DraftRepository';
 import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
 import { SyncRepository } from '../domain/SyncRepository';
 import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
+import { ConflictRecord } from '../domain/SyncModels';
 import { HttpAIClient, AIRequestInput, AIRequestIdeaSegment } from '../platform/HttpAIClient';
 import { gatewayPayloadToArtifact } from '../domain/AIArtifactCodec';
 import { util } from '@kit.ArkTS';
@@ -52,6 +53,8 @@ export class DraftWorkspaceViewModel {
   getDraft(id: string): Draft | undefined { return this.repository.get(id); }
 
   listArtifacts(): AIArtifact[] { return this.syncRepository?.listArtifacts() ?? []; }
+
+  listConflicts(): ConflictRecord[] { return this.syncRepository?.listConflicts() ?? []; }
 
   getArtifact(id: string): AIArtifact | undefined { return this.syncRepository?.getArtifact(id); }
 

@@ -1014,6 +1014,7 @@ struct Index {
         Blank()
         Text(`v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`).fontSize(10).fontColor('#8E8E93')
       }.width('100%')
+      Text(`待处理冲突：${this.viewModel.listConflicts().length}`).fontSize(10).fontColor('#FFB340').margin({ top: 6 })
       Button() {
         Row({ space: 5 }) {
           this.Icon(WorkspaceIcon.DOCUMENT, 14)

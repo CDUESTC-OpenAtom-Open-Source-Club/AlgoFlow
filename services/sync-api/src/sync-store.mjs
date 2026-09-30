@@ -9,6 +9,9 @@ export class SyncStore {
   apply(operation) {
     const validationError = validateOperation(operation);
     if (validationError) return { operation_id: operation?.operation_id ?? '', status: 'rejected', error_code: 'INVALID_REQUEST' };
+    if (this.#operations.has(operation.operation_id)) {
+      return { ...this.#operations.get(operation.operation_id), status: 'duplicate' };
+    }
     if (operation.entity_type === 'ai_artifact' && operation.operation_type === 'upsert') {
       const sourceDraft = this.#draftHistory.get(operation.payload.draft_id)?.get(operation.payload.source_draft_version);
       const sourceIds = sourceDraft?.idea_segments instanceof Array
@@ -18,9 +21,6 @@ export class SyncStore {
       if (artifactErrors.length > 0) {
         return { operation_id: operation.operation_id, status: 'rejected', error_code: 'INVALID_AI_ARTIFACT' };
       }
-    }
-    if (this.#operations.has(operation.operation_id)) {
-      return { ...this.#operations.get(operation.operation_id), status: 'duplicate' };
     }
     const key = `${operation.entity_type}:${operation.entity_id}`;
     const current = this.#entities.get(key);
@@ -54,8 +54,10 @@ export class SyncStore {
       const snapshot = operation.payload && typeof operation.payload === 'object'
         ? { ...(current ?? {}), ...operation.payload, id: entity.id, version: operation.base_version }
         : { ...entity, version: operation.base_version };
-      history.set(operation.base_version, snapshot);
-      history.set(entity.version, entity);
+      // A source version is immutable. Later Draft writes must never replace
+      // the snapshot used to validate historical AI artifacts.
+      if (!history.has(operation.base_version)) history.set(operation.base_version, structuredClone(snapshot));
+      if (!history.has(entity.version)) history.set(entity.version, structuredClone(entity));
       this.#draftHistory.set(entity.id, history);
     }
     this.#changes.push({ cursor: String(this.#changes.length + 1), entity_type: operation.entity_type, entity });
