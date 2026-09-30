@@ -1,5 +1,6 @@
 import { Icon } from './Icon';
 import type { ReviewIssue } from '../code-review';
+import type { AIArtifact } from '../types';
 
 interface InspectorPanelProps {
   hidden: boolean;
@@ -7,9 +8,11 @@ interface InspectorPanelProps {
   onShow: () => void;
   issues: ReviewIssue[];
   onJumpToLine: (line: number) => void;
+  artifact?: AIArtifact;
+  onToggleArtifact: () => void;
 }
 
-export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine }: InspectorPanelProps) {
+export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine, artifact, onToggleArtifact }: InspectorPanelProps) {
   const errors = issues.filter((issue) => issue.severity === 'error').length;
   return (
     <>
@@ -31,6 +34,15 @@ export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine }:
           </div>
         </div>
         <SourceTrack />
+        <section className="inspect-section ai-artifact-result">
+          <div className="inspect-title"><span>忠实转换结果</span><span>{artifact ? `v${artifact.version}` : '暂无'}</span></div>
+          {artifact ? (
+            artifact.visibility === 'hidden' ? <p>结果已隐藏，记录仍已保存并同步。<button type="button" className="quiet-button" onClick={onToggleArtifact}>显示</button></p> : (
+              <ol>{artifact.pseudocode.map((step) => <li key={step.id}>{step.step}<small>{step.source_refs.join(', ')}</small></li>)}</ol>
+            )
+          ) : <p>当前草稿暂无已保存的忠实转换结果。</p>}
+          {artifact && artifact.visibility === 'visible' && <button type="button" className="quiet-button" onClick={onToggleArtifact}>隐藏结果</button>}
+        </section>
         <section className="inspect-section">
           <div className="inspect-title">
             <span>待补信息</span>

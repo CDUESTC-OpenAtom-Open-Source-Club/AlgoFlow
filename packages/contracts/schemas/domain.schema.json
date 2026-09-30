@@ -58,11 +58,39 @@
             "language": { "type": "string", "enum": ["cpp"] },
             "idea_segments": { "type": "array", "items": { "$ref": "#/$defs/ideaSegment" } },
             "sync_status": { "$ref": "#/$defs/syncStatus" },
-            "code": { "type": "string", "maxLength": 20000 },
-            "ai_artifacts": { "type": "array", "items": { "$ref": "ai.schema.json#/$defs/artifact" } }
+            "code": { "type": "string", "maxLength": 20000 }
           }
         }
       ]
+    },
+    "aiArtifact": {
+      "type": "object",
+      "required": ["id", "version", "server_sequence", "created_at", "updated_at", "deleted", "last_modified_client_id", "draft_id", "mode", "pseudocode", "code_snippet", "code_mappings", "assumptions", "missing_information", "risk_flags", "added_algorithm_steps", "source_draft_version", "model_id", "rule_version", "output_kind", "visibility", "template_id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "integer", "minimum": 0 },
+        "server_sequence": { "type": "integer", "minimum": 0 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "deleted": { "type": "boolean" },
+        "last_modified_client_id": { "type": "string", "minLength": 1 },
+        "draft_id": { "type": "string", "minLength": 1 },
+        "mode": { "$ref": "#/$defs/aiMode" },
+        "pseudocode": { "$ref": "ai.schema.json#/$defs/artifact/properties/pseudocode" },
+        "code_snippet": { "type": ["string", "null"], "maxLength": 4000 },
+        "code_mappings": { "$ref": "ai.schema.json#/$defs/artifact/properties/code_mappings" },
+        "assumptions": { "type": "array", "items": { "type": "string" } },
+        "missing_information": { "type": "array", "items": { "type": "string" } },
+        "risk_flags": { "type": "array", "items": { "type": "string" } },
+        "added_algorithm_steps": { "type": "array", "items": { "type": "string" } },
+        "source_draft_version": { "type": "integer", "minimum": 0 },
+        "model_id": { "type": "string", "minLength": 1 },
+        "rule_version": { "type": "string", "minLength": 1 },
+        "output_kind": { "$ref": "#/$defs/aiOutputKind" },
+        "visibility": { "$ref": "#/$defs/aiVisibility" },
+        "template_id": { "type": ["string", "null"], "minLength": 1 }
+      },
+      "additionalProperties": false
     }
   }
 }

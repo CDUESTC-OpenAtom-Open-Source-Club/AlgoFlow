@@ -1,5 +1,5 @@
 import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
-import { AIArtifact, AIMode, AIResultStatus, Draft, IdeaSegment, PseudocodeStep, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, PseudocodeStep, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
 import { saveCardSnapshot } from '../platform/CardSnapshot';
@@ -97,6 +97,7 @@ struct Index {
   @State artifactHidden: boolean = false;
   @State syncStatus: SyncStatus = SyncStatus.LOCAL_ONLY;
   @State segments: IdeaSegment[] = [];
+  @State artifacts: AIArtifact[] = [];
   @State activeFile: EditorFile = EditorFile.MAIN;
   @State activeTool: WorkspaceTool = WorkspaceTool.NONE;
   @State drawerOpen: boolean = false;
@@ -113,11 +114,9 @@ struct Index {
   @State searchCount: number = 0;
   @State syncBaseUrl: string = 'http://127.0.0.1:8787';
   @State syncMessage: string = '';
-  @State aiBaseUrl: string = 'http://127.0.0.1:8788';
-  @State aiLoading: boolean = false;
+  @State aiBaseUrl: string = '';
   @State aiMessage: string = '';
-  @State aiError: boolean = false;
-  @State aiResult: AIArtifact | null = null;
+  @State aiGenerating: boolean = false;
 
   aboutToAppear(): void {
     this.initializeWorkspace();
@@ -156,9 +155,8 @@ struct Index {
     this.artifactHidden = draft.artifactHidden;
     this.syncStatus = draft.syncStatus;
     this.segments = draft.ideaSegments;
-    this.aiResult = this.viewModel.getArtifact(this.selectedId, draft.aiMode) ?? null;
-    this.aiError = false;
-    this.aiMessage = '';
+    this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === draft.id && artifact.mode === draft.aiMode);
+    this.artifactHidden = this.artifacts.length > 0 && this.artifacts[0].visibility === AIVisibility.HIDDEN;
     saveCardSnapshot(getContext(this), draft);
     this.saved = true;
     this.resetEditorPosition();
@@ -496,7 +494,8 @@ struct Index {
       this.code = draft.code;
       this.shortCode = draft.shortCode;
       this.rewrite = draft.rewrite;
-      this.segments = draft.ideaSegments;
+    this.segments = draft.ideaSegments;
+      this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === draft.id && artifact.mode === draft.aiMode);
       saveCardSnapshot(getContext(this), draft);
     }
   }
@@ -521,34 +520,32 @@ struct Index {
     this.mode = nextMode;
     this.saved = false;
     this.syncStatus = SyncStatus.LOCAL_ONLY;
-    this.aiResult = this.viewModel.getArtifact(this.selectedId, nextMode) ?? null;
-    this.aiError = false;
-    this.aiMessage = '';
-  }
-
-  private async runAI(): Promise<void> {
-    this.aiLoading = true;
-    this.aiError = false;
-    this.aiMessage = '正在连接 AI Gateway...';
-    this.aiResult = null;
-    this.viewModel.setAIBaseUrl(this.aiBaseUrl);
-    const result = await this.viewModel.requestAI(this.selectedId, this.mode);
-    this.aiLoading = false;
-    if (result.status === AIResultStatus.SUCCESS && result.artifact !== null) {
-      this.aiResult = result.artifact;
-      this.aiMessage = '转换完成，结果已按模式隔离保存';
-      this.saved = false;
-      this.syncStatus = SyncStatus.LOCAL_ONLY;
-    } else {
-      this.aiError = true;
-      this.aiMessage = result.message;
-    }
   }
 
   private toggleArtifact(): void {
     this.viewModel.toggleArtifact(this.selectedId);
-    this.artifactHidden = !this.artifactHidden;
-    this.saved = false;
+    const current = this.viewModel.listArtifacts().find((artifact: AIArtifact) => artifact.draftId === this.selectedId && artifact.mode === this.mode);
+    this.artifactHidden = current !== undefined && current.visibility === AIVisibility.HIDDEN;
+    this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === this.selectedId && artifact.mode === this.mode);
+  }
+
+  private async generateArtifact(): Promise<void> {
+    if (this.mode !== AIMode.FAITHFUL_TRANSFORM || this.aiGenerating) return;
+    this.aiGenerating = true;
+    this.aiMessage = '正在请求 AI Gateway...';
+    try {
+      this.saveDraft();
+      if (this.aiBaseUrl.trim().length === 0) throw new Error('请先填写 AI Gateway 局域网地址');
+      await this.viewModel.generateFaithfulArtifact(this.selectedId, this.aiBaseUrl);
+      this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) =>
+        artifact.draftId === this.selectedId && artifact.mode === this.mode);
+      this.artifactHidden = false;
+      this.aiMessage = '忠实转换结果已保存到本机，可通过同步发送到 Web。';
+    } catch (error) {
+      this.aiMessage = error instanceof Error ? error.message : 'AI 请求失败';
+    } finally {
+      this.aiGenerating = false;
+    }
   }
 
   private lineNumbers(): string {
@@ -914,63 +911,31 @@ struct Index {
         this.ModeButton('渐进提示', AIMode.PROGRESSIVE_HINT)
         this.ModeButton('完整解题', AIMode.FULL_SOLUTION)
       }.width('100%')
-      if (this.mode !== AIMode.FAITHFUL_TRANSFORM) {
-        Text('该模式尚未接入，保持显式不可用，不会自动降级为忠实转换。').fontSize(10).fontColor('#FF9F0A').margin({ top: 2 })
-      }
-      if (this.aiLoading) {
-        Row({ space: 8 }) {
-          Text('正在请求 AI Gateway...').fontSize(10).fontColor('#79C0FF').layoutWeight(1)
-          Button('取消').height(30).fontSize(10).fontColor('#FF9A94').backgroundColor('#2A1B1C').borderRadius(4)
-            .onClick(() => { this.viewModel.cancelAI(); })
-        }.width('100%').margin({ top: 4 })
-      } else {
-        Button() {
-          Row({ space: 5 }) {
-            this.Icon(WorkspaceIcon.AI, 13, '#07110A')
-            Text('发起忠实转换').fontSize(11).fontColor('#07110A')
-          }
-        }.width('100%').height(36).backgroundColor('#30D158').borderRadius(4).margin({ top: 4 })
-          .onClick(() => this.runAI())
-      }
-      if (this.aiError) {
-        Text(this.aiMessage).fontSize(10).lineHeight(16).fontColor('#FF9A94').margin({ top: 4 })
-      } else if (this.aiResult !== null) {
-        this.AIResultList()
-      } else if (!this.aiLoading) {
-        Text(this.aiMessage.length === 0 ? '未发起转换。忠实转换严格映射思路来源，越界新增步骤将被拒绝。' : this.aiMessage)
-          .fontSize(10).fontColor('#8E8E93').margin({ top: 4 })
-      }
       Row() {
         Column() {
-          Text('AI Gateway').fontSize(11).fontWeight(FontWeight.Bold).fontColor('#ECECED')
-          Text('未配置模型时返回 AI_NOT_ENABLED，不生成模拟结果。').fontSize(10).fontColor('#8E8E93').margin({ top: 2 })
+          Text(this.aiGenerating ? '正在生成忠实转换' : 'AI Gateway').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+          Text(this.aiMessage.length > 0 ? this.aiMessage : '只保存 Gateway 返回的真实结果，不生成模拟结果。')
+            .fontSize(10).fontColor('#8E8E93').margin({ top: 2 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button(this.aiGenerating ? '请求中' : '生成结果').height(32).fontSize(10).enabled(!this.aiGenerating && this.mode === AIMode.FAITHFUL_TRANSFORM)
+          .fontColor('#07110A').backgroundColor('#30D158').borderRadius(4).onClick(() => this.generateArtifact())
         Button(this.artifactHidden ? '显示结果区' : '隐藏结果区').height(32).fontSize(10)
           .fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).onClick(() => this.toggleArtifact())
       }.width('100%').margin({ top: 4 })
-      TextInput({ text: this.aiBaseUrl, placeholder: 'http://电脑局域网IP:8788' }).width('100%').height(30).fontSize(9)
-        .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
-        .border({ width: 1, color: '#3A3A3D' }).borderRadius(4)
-        .onChange((value: string) => { this.aiBaseUrl = value; this.viewModel.setAIBaseUrl(value); })
-    }.width('100%')
-  }
-
-  @Builder
-  AIResultList() {
-    Column({ space: 5 }) {
-      Text('转换结果').fontSize(11).fontWeight(FontWeight.Bold).fontColor('#9BE7A9')
-      if (this.aiResult !== null && this.aiResult.pseudocode.length > 0) {
-        ForEach(this.aiResult.pseudocode, (step: PseudocodeStep) => {
-          Column() {
-            Text(step.step).fontSize(10).fontColor('#ECECED')
-            Text(`来源: ${step.sourceRefs.join(', ')}`).fontSize(9).fontColor('#8E8E93').margin({ top: 2 })
-          }.alignItems(HorizontalAlign.Start).width('100%').padding(6)
-            .backgroundColor('#1C1C1E').borderRadius(4)
-        }, (step: PseudocodeStep) => step.id)
+      TextInput({ text: this.aiBaseUrl, placeholder: 'http://电脑局域网IP:8788' }).width('100%').height(32).fontSize(10)
+        .onChange((value: string) => { this.aiBaseUrl = value; })
+      if (this.artifacts.length === 0) {
+        Text('当前草稿暂无已保存的忠实转换结果。').fontSize(10).fontColor('#8E8E93')
+      } else if (this.artifactHidden) {
+        Text('结果已隐藏，记录仍保留并参与同步。').fontSize(10).fontColor('#8E8E93')
       } else {
-        Text('（无伪代码步骤）').fontSize(10).fontColor('#8E8E93')
+        Column({ space: 4 }) {
+          ForEach(this.artifacts[0].pseudocode, (step: PseudocodeStep) => {
+            Text(`${step.step} · ${step.sourceRefs.join(', ')}`).width('100%').fontSize(10).lineHeight(16).fontColor('#B8DDBF')
+          }, (step: PseudocodeStep) => step.id)
+        }.width('100%').padding({ top: 4, bottom: 4 })
       }
-    }.width('100%').margin({ top: 4 })
+    }.width('100%')
   }
 
   @Builder
@@ -1049,6 +1014,7 @@ struct Index {
         Blank()
         Text(`v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`).fontSize(10).fontColor('#8E8E93')
       }.width('100%')
+      Text(`待处理冲突：${this.viewModel.listConflicts().length}`).fontSize(10).fontColor('#FFB340').margin({ top: 6 })
       Button() {
         Row({ space: 5 }) {
           this.Icon(WorkspaceIcon.DOCUMENT, 14)

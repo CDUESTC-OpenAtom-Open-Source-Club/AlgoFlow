@@ -23,24 +23,6 @@ export enum AIVisibility {
   HIDDEN = 'hidden'
 }
 
-export enum AIErrorCode {
-  NONE = 'NONE',
-  AI_NOT_ENABLED = 'AI_NOT_ENABLED',
-  AI_PROVIDER_ERROR = 'AI_PROVIDER_ERROR',
-  AI_PROVIDER_TIMEOUT = 'AI_PROVIDER_TIMEOUT',
-  INVALID_AI_ARTIFACT = 'INVALID_AI_ARTIFACT',
-  AI_MODE_NOT_AVAILABLE = 'AI_MODE_NOT_AVAILABLE',
-  INVALID_REQUEST = 'INVALID_REQUEST',
-  NETWORK_ERROR = 'NETWORK_ERROR',
-  CANCELLED = 'CANCELLED',
-  CONTRACT_VIOLATION = 'CONTRACT_VIOLATION'
-}
-
-export enum AIResultStatus {
-  SUCCESS = 'success',
-  FAILURE = 'failure'
-}
-
 export class IdeaSegment {
   id: string;
   content: string;
@@ -63,10 +45,6 @@ export class PseudocodeStep {
     this.step = step;
     this.sourceRefs = sourceRefs;
   }
-
-  clone(): PseudocodeStep {
-    return new PseudocodeStep(this.id, this.step, this.sourceRefs.slice());
-  }
 }
 
 export class CodeMapping {
@@ -82,6 +60,14 @@ export class CodeMapping {
 }
 
 export class AIArtifact {
+  id: string;
+  version: number;
+  serverSequence: number;
+  createdAt: string;
+  updatedAt: string;
+  deleted: boolean;
+  lastModifiedClientId: string;
+  draftId: string;
   mode: AIMode;
   pseudocode: PseudocodeStep[];
   codeSnippet: string | null;
@@ -97,14 +83,16 @@ export class AIArtifact {
   visibility: AIVisibility;
   templateId: string | null;
 
-  constructor(mode: AIMode, outputKind: AIOutputKind, sourceDraftVersion: number, modelId: string,
-    ruleVersion: string, visibility: AIVisibility) {
+  constructor(id: string, draftId: string, mode: AIMode = AIMode.FAITHFUL_TRANSFORM) {
+    this.id = id;
+    this.version = 0;
+    this.serverSequence = 0;
+    this.createdAt = new Date().toISOString();
+    this.updatedAt = this.createdAt;
+    this.deleted = false;
+    this.lastModifiedClientId = '';
+    this.draftId = draftId;
     this.mode = mode;
-    this.outputKind = outputKind;
-    this.sourceDraftVersion = sourceDraftVersion;
-    this.modelId = modelId;
-    this.ruleVersion = ruleVersion;
-    this.visibility = visibility;
     this.pseudocode = [];
     this.codeSnippet = null;
     this.codeMappings = [];
@@ -112,81 +100,12 @@ export class AIArtifact {
     this.missingInformation = [];
     this.riskFlags = [];
     this.addedAlgorithmSteps = [];
+    this.sourceDraftVersion = 0;
+    this.modelId = '';
+    this.ruleVersion = '';
+    this.outputKind = AIOutputKind.PSEUDOCODE;
+    this.visibility = AIVisibility.VISIBLE;
     this.templateId = null;
-  }
-
-  clone(): AIArtifact {
-    const copy = new AIArtifact(this.mode, this.outputKind, this.sourceDraftVersion, this.modelId,
-      this.ruleVersion, this.visibility);
-    copy.pseudocode = this.pseudocode.map((step: PseudocodeStep) => step.clone());
-    copy.codeSnippet = this.codeSnippet;
-    copy.codeMappings = this.codeMappings.map((mapping: CodeMapping) =>
-      new CodeMapping(mapping.stepId, mapping.startLine, mapping.endLine));
-    copy.assumptions = this.assumptions.slice();
-    copy.missingInformation = this.missingInformation.slice();
-    copy.riskFlags = this.riskFlags.slice();
-    copy.addedAlgorithmSteps = this.addedAlgorithmSteps.slice();
-    copy.templateId = this.templateId;
-    return copy;
-  }
-}
-
-export class AIRequestSegment {
-  id: string;
-  content: string;
-
-  constructor(id: string, content: string) {
-    this.id = id;
-    this.content = content;
-  }
-}
-
-export class AIRequest {
-  mode: AIMode;
-  draftId: string;
-  draftVersion: number;
-  language: string;
-  ruleVersion: string;
-  problemContext: string;
-  ideaSegments: AIRequestSegment[];
-  outputKind: AIOutputKind;
-  visibility: AIVisibility;
-
-  constructor(mode: AIMode, draftId: string, draftVersion: number, language: string,
-    ruleVersion: string, problemContext: string, ideaSegments: AIRequestSegment[],
-    outputKind: AIOutputKind, visibility: AIVisibility) {
-    this.mode = mode;
-    this.draftId = draftId;
-    this.draftVersion = draftVersion;
-    this.language = language;
-    this.ruleVersion = ruleVersion;
-    this.problemContext = problemContext;
-    this.ideaSegments = ideaSegments;
-    this.outputKind = outputKind;
-    this.visibility = visibility;
-  }
-}
-
-export class AIResult {
-  status: AIResultStatus;
-  artifact: AIArtifact | null;
-  errorCode: AIErrorCode;
-  message: string;
-
-  constructor(status: AIResultStatus, artifact: AIArtifact | null, errorCode: AIErrorCode,
-    message: string) {
-    this.status = status;
-    this.artifact = artifact;
-    this.errorCode = errorCode;
-    this.message = message;
-  }
-
-  static success(artifact: AIArtifact): AIResult {
-    return new AIResult(AIResultStatus.SUCCESS, artifact, AIErrorCode.NONE, '');
-  }
-
-  static failure(errorCode: AIErrorCode, message: string): AIResult {
-    return new AIResult(AIResultStatus.FAILURE, null, errorCode, message);
   }
 }
 
@@ -207,7 +126,6 @@ export class Draft {
   aiMode: AIMode;
   artifactHidden: boolean;
   ideaSegments: IdeaSegment[];
-  aiArtifacts: AIArtifact[];
 
   constructor(id: string, title: string) {
     this.id = id;
@@ -226,10 +144,5 @@ export class Draft {
     this.aiMode = AIMode.FAITHFUL_TRANSFORM;
     this.artifactHidden = false;
     this.ideaSegments = [];
-    this.aiArtifacts = [];
-  }
-
-  artifactForMode(mode: AIMode): AIArtifact | undefined {
-    return this.aiArtifacts.find((artifact: AIArtifact) => artifact.mode === mode);
   }
 }

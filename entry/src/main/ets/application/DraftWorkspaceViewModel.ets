@@ -1,27 +1,21 @@
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIArtifact, AIErrorCode, AIMode, AIOutputKind, AIRequest, AIRequestSegment, AIResult,
-  AIResultStatus, AIVisibility, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
-import { AIProvider } from '../domain/AIProvider';
+import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
 import { SyncRepository } from '../domain/SyncRepository';
 import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
-import { HttpAIProvider } from '../platform/HttpAIProvider';
-
-const RULE_VERSION = '1.0.0';
+import { ConflictRecord } from '../domain/SyncModels';
+import { HttpAIClient, AIRequestInput, AIRequestIdeaSegment } from '../platform/HttpAIClient';
+import { gatewayPayloadToArtifact } from '../domain/AIArtifactCodec';
+import { util } from '@kit.ArkTS';
 
 export class DraftWorkspaceViewModel {
   private repository: DraftRepository;
   private syncRepository?: SyncRepository;
-  private aiProvider: AIProvider;
-  private aiBaseUrl: string = 'http://127.0.0.1:8788';
-  private aiRequestInFlight: boolean = false;
-  private aiRequestGeneration: number = 0;
   private sequence: number = 1;
   private segmentSequence: number = 1;
 
-  constructor(repository: DraftRepository, syncRepository?: SyncRepository, aiProvider?: AIProvider) {
+  constructor(repository: DraftRepository, syncRepository?: SyncRepository) {
     this.repository = repository;
     this.syncRepository = syncRepository;
-    this.aiProvider = aiProvider ?? new HttpAIProvider(this.aiBaseUrl);
   }
 
   async initialize(): Promise<void> {
@@ -42,79 +36,6 @@ export class DraftWorkspaceViewModel {
     this.syncRepository?.setBaseUrl(baseUrl);
   }
 
-  setAIBaseUrl(baseUrl: string): void {
-    this.aiRequestGeneration += 1;
-    if (this.aiProvider instanceof HttpAIProvider) {
-      (this.aiProvider as HttpAIProvider).cancel();
-    }
-    this.aiBaseUrl = baseUrl;
-    this.aiProvider = new HttpAIProvider(baseUrl);
-  }
-
-  getAIBaseUrl(): string {
-    return this.aiBaseUrl;
-  }
-
-  isAIRequestInFlight(): boolean {
-    return this.aiRequestInFlight;
-  }
-
-  cancelAI(): void {
-    this.aiRequestGeneration += 1;
-    if (this.aiProvider instanceof HttpAIProvider) {
-      (this.aiProvider as HttpAIProvider).cancel();
-    }
-  }
-
-  async requestAI(id: string, mode: AIMode): Promise<AIResult> {
-    const draft = this.repository.get(id);
-    if (draft === undefined) {
-      return AIResult.failure(AIErrorCode.INVALID_REQUEST, '草稿不存在');
-    }
-    if (draft.ideaSegments.length === 0) {
-      return AIResult.failure(AIErrorCode.INVALID_REQUEST, '请先在 idea.md 中填写思路片段');
-    }
-    const problemContext = buildProblemContext(draft);
-    if (problemContext.length === 0) {
-      return AIResult.failure(AIErrorCode.INVALID_REQUEST, '请先填写草稿标题或思路内容');
-    }
-    const segments = draft.ideaSegments.map((segment: IdeaSegment) =>
-      new AIRequestSegment(segment.id, segment.content));
-    const request = new AIRequest(mode, draft.id, draft.version, 'cpp', RULE_VERSION,
-      problemContext, segments, AIOutputKind.PSEUDOCODE,
-      draft.artifactHidden ? AIVisibility.HIDDEN : AIVisibility.VISIBLE);
-    const requestGeneration = ++this.aiRequestGeneration;
-    this.aiRequestInFlight = true;
-    try {
-      const result = await this.aiProvider.generate(request);
-      if (requestGeneration !== this.aiRequestGeneration) {
-        return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
-      }
-      if (result.status === AIResultStatus.SUCCESS && result.artifact !== null) {
-        this.saveArtifact(id, result.artifact);
-      }
-      return result;
-    } finally {
-      this.aiRequestInFlight = false;
-    }
-  }
-
-  getArtifact(id: string, mode: AIMode): AIArtifact | undefined {
-    const draft = this.repository.get(id);
-    if (draft === undefined) return undefined;
-    return draft.artifactForMode(mode);
-  }
-
-  private saveArtifact(id: string, artifact: AIArtifact): void {
-    const draft = this.repository.get(id);
-    if (draft === undefined) return;
-    const others = draft.aiArtifacts.filter((item: AIArtifact) => item.mode !== artifact.mode);
-    draft.aiArtifacts = others.concat([artifact.clone()]);
-    draft.updatedAt = new Date().toISOString();
-    draft.syncStatus = SyncStatus.LOCAL_ONLY;
-    this.repository.save(draft);
-  }
-
   ensureStarterDraft(): string {
     const existing = this.repository.list();
     if (existing.length > 0) return existing[0].id;
@@ -130,6 +51,37 @@ export class DraftWorkspaceViewModel {
 
   listDrafts(): Draft[] { return this.repository.list(); }
   getDraft(id: string): Draft | undefined { return this.repository.get(id); }
+
+  listArtifacts(): AIArtifact[] { return this.syncRepository?.listArtifacts() ?? []; }
+
+  listConflicts(): ConflictRecord[] { return this.syncRepository?.listConflicts() ?? []; }
+
+  getArtifact(id: string): AIArtifact | undefined { return this.syncRepository?.getArtifact(id); }
+
+  saveArtifact(artifact: AIArtifact): void { this.syncRepository?.saveArtifact(artifact); }
+
+  async generateFaithfulArtifact(id: string, baseUrl: string): Promise<AIArtifact> {
+    if (this.syncRepository === undefined) throw new Error('AI_SYNC_REPOSITORY_REQUIRED');
+    const draft = this.repository.get(id);
+    if (draft === undefined) throw new Error('DRAFT_NOT_FOUND');
+    if (draft.ideaSegments.length === 0) throw new Error('AI_IDEA_REQUIRED');
+    const request = new AIRequestInput();
+    request.mode = AIMode.FAITHFUL_TRANSFORM;
+    request.draft_id = draft.id;
+    request.draft_version = draft.version;
+    request.problem_context = draft.idea.length > 0 ? draft.idea : draft.title;
+    request.idea_segments = draft.ideaSegments.map((segment: IdeaSegment) =>
+      new AIRequestIdeaSegment(segment.id, segment.content));
+    const response = await new HttpAIClient(baseUrl).generate(request);
+    if (response.mode !== request.mode || response.source_draft_version !== request.draft_version ||
+      response.rule_version !== request.rule_version || response.output_kind !== request.output_kind ||
+      response.visibility !== request.visibility) throw new Error('INVALID_AI_ARTIFACT');
+    const artifact = gatewayPayloadToArtifact(response, util.generateRandomUUID(), draft.id, draft.version,
+      this.syncRepository.getClientId(), draft.ideaSegments.map((segment: IdeaSegment) => segment.id));
+    if (artifact === undefined) throw new Error('INVALID_AI_ARTIFACT');
+    this.syncRepository.saveArtifact(artifact);
+    return artifact;
+  }
 
   update(id: string, title: string, idea: string, code: string, shortCode: string, rewrite: string): void {
     const draft = this.repository.get(id);
@@ -173,10 +125,11 @@ export class DraftWorkspaceViewModel {
   toggleArtifact(id: string): void {
     const draft = this.repository.get(id);
     if (draft === undefined) return;
-    draft.artifactHidden = !draft.artifactHidden;
-    draft.updatedAt = new Date().toISOString();
-    draft.syncStatus = SyncStatus.LOCAL_ONLY;
-    this.repository.save(draft);
+    const artifact = this.syncRepository?.listArtifacts().find((item: AIArtifact) =>
+      item.draftId === id && item.mode === draft.aiMode);
+    if (artifact === undefined) return;
+    artifact.visibility = artifact.visibility === AIVisibility.HIDDEN ? AIVisibility.VISIBLE : AIVisibility.HIDDEN;
+    this.syncRepository?.saveArtifact(artifact);
   }
 
   deleteDraft(id: string): string {
@@ -184,9 +137,4 @@ export class DraftWorkspaceViewModel {
     const remaining = this.repository.list();
     return remaining.length > 0 ? remaining[0].id : this.createDraft();
   }
-}
-
-function buildProblemContext(draft: Draft): string {
-  if (draft.title.length > 0 && draft.title !== '未命名思路') return draft.title;
-  return draft.idea.trim();
 }

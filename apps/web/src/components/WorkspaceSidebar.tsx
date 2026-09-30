@@ -14,6 +14,9 @@ interface WorkspaceSidebarProps {
   onFileChange: (file: FileId) => void;
   onModeChange: (mode: Mode) => void;
   onQueryChange: (query: string) => void;
+  aiMessage: string;
+  aiGenerating: boolean;
+  onGenerateArtifact: () => void;
 }
 
 export function WorkspaceSidebar({
@@ -28,6 +31,9 @@ export function WorkspaceSidebar({
   onFileChange,
   onModeChange,
   onQueryChange,
+  aiMessage,
+  aiGenerating,
+  onGenerateArtifact,
 }: WorkspaceSidebarProps) {
   return (
     <aside className="side-panel">
@@ -48,7 +54,7 @@ export function WorkspaceSidebar({
         <SearchPanel query={query} onQueryChange={onQueryChange} />
       )}
       {activePanel === 'source' && <SourcePanel />}
-      {activePanel === 'ai' && <AiPanel mode={mode} onModeChange={onModeChange} />}
+      {activePanel === 'ai' && <AiPanel mode={mode} onModeChange={onModeChange} aiMessage={aiMessage} aiGenerating={aiGenerating} onGenerateArtifact={onGenerateArtifact} />}
       {activePanel === 'versions' && <VersionsPanel />}
     </aside>
   );
@@ -164,9 +170,12 @@ function SourceCard({ index, title, segment }: SourceCardProps) {
 interface AiPanelProps {
   mode: Mode;
   onModeChange: (mode: Mode) => void;
+  aiMessage: string;
+  aiGenerating: boolean;
+  onGenerateArtifact: () => void;
 }
 
-function AiPanel({ mode, onModeChange }: AiPanelProps) {
+function AiPanel({ mode, onModeChange, aiMessage, aiGenerating, onGenerateArtifact }: AiPanelProps) {
   return (
     <div className="panel-content">
       <span className="eyebrow">AI MODE</span>
@@ -184,8 +193,11 @@ function AiPanel({ mode, onModeChange }: AiPanelProps) {
         ))}
       </div>
       <div className="ai-disabled">
-        <strong>AI 未启用</strong>
-        <p>未配置模型服务。你的代码、复写和同步仍可继续。</p>
+        <strong>{aiGenerating ? '正在生成忠实转换' : 'AI Gateway'}</strong>
+        <p>{aiMessage || '只保存 Gateway 返回的真实结果，不生成模拟结果。'}</p>
+        <button type="button" className="outline-button" disabled={aiGenerating || mode !== 'faithful_transform'} onClick={onGenerateArtifact}>
+          {aiGenerating ? '请求中' : '生成忠实转换'}
+        </button>
       </div>
     </div>
   );

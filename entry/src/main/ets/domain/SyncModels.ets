@@ -1,9 +1,8 @@
 import { AIMode, Draft, IdeaSegment, SyncStatus } from './Models';
-import { AIArtifactPayload, artifactsToPayloads, payloadsToArtifacts } from './AIArtifactCodec';
+import { AIArtifactPayload } from './AIArtifactCodec';
 
 export enum SyncEntityType {
   DRAFT = 'draft',
-  CODE_DOCUMENT = 'code_document',
   AI_ARTIFACT = 'ai_artifact'
 }
 
@@ -21,6 +20,7 @@ export enum SyncResultStatus {
 
 export enum SyncErrorCode {
   INVALID_REQUEST = 'INVALID_REQUEST',
+  INVALID_AI_ARTIFACT = 'INVALID_AI_ARTIFACT',
   VERSION_CONFLICT = 'VERSION_CONFLICT',
   OUT_OF_ORDER = 'OUT_OF_ORDER'
 }
@@ -43,7 +43,6 @@ export class DraftPayload {
   artifact_hidden: boolean = false;
   sync_status: string = SyncStatus.SYNCED;
   idea_segments: IdeaSegment[] = [];
-  ai_artifacts: AIArtifactPayload[] = [];
 }
 
 export class SyncOperation {
@@ -54,21 +53,21 @@ export class SyncOperation {
   base_version: number = 0;
   client_id: string = '';
   occurred_at: string = '';
-  payload: DraftPayload = new DraftPayload();
+  payload: DraftPayload | AIArtifactPayload = new DraftPayload();
 }
 
 export class PushResult {
   operation_id: string = '';
   status: string = SyncResultStatus.REJECTED;
   version?: number;
-  server_entity?: DraftPayload | null;
+  server_entity?: DraftPayload | AIArtifactPayload | null;
   error_code?: string;
 }
 
 export class PullChange {
   cursor: string = '0';
   entity_type: string = SyncEntityType.DRAFT;
-  entity: DraftPayload = new DraftPayload();
+  entity: DraftPayload | AIArtifactPayload = new DraftPayload();
 }
 
 export class PullResult {
@@ -78,9 +77,10 @@ export class PullResult {
 
 export class ConflictRecord {
   id: string = '';
+  entity_type: string = SyncEntityType.DRAFT;
   entity_id: string = '';
   local_copy_id: string = '';
-  server_entity: DraftPayload = new DraftPayload();
+  server_entity: DraftPayload | AIArtifactPayload = new DraftPayload();
   created_at: string = '';
   resolved: boolean = false;
 }
@@ -103,7 +103,6 @@ export function draftToPayload(draft: Draft): DraftPayload {
   payload.artifact_hidden = draft.artifactHidden;
   payload.sync_status = SyncStatus.SYNCED;
   payload.idea_segments = draft.ideaSegments;
-  payload.ai_artifacts = artifactsToPayloads(draft.aiArtifacts);
   return payload;
 }
 
@@ -123,7 +122,6 @@ export function payloadToDraft(payload: DraftPayload): Draft {
   draft.artifactHidden = payload.artifact_hidden === true;
   draft.syncStatus = SyncStatus.SYNCED;
   draft.ideaSegments = payload.idea_segments ?? [];
-  draft.aiArtifacts = payloadsToArtifacts(payload.ai_artifacts ?? []);
   return draft;
 }
 

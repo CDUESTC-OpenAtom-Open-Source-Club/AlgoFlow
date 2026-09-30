@@ -12,6 +12,12 @@ export type Documents = Record<FileId, string>;
 
 export type SyncStatus = 'local_only' | 'syncing' | 'synced' | 'conflict' | 'failed';
 
+export interface IdeaSegment {
+  id: string;
+  content: string;
+  position: number;
+}
+
 export interface Draft {
   id: string;
   workspace_id: string;
@@ -23,13 +29,13 @@ export interface Draft {
   title: string;
   language: 'cpp';
   idea: string;
+  idea_segments: IdeaSegment[];
   code: string;
   cases?: string;
   rewrite: string;
   ai_mode: Mode;
   artifact_hidden: boolean;
   sync_status: SyncStatus;
-  ai_artifacts?: AIArtifactPayload[];
 }
 
 export interface AIArtifactPayload {
@@ -49,9 +55,46 @@ export interface AIArtifactPayload {
   template_id: string | null;
 }
 
+export interface PseudocodeStep {
+  id: string;
+  step: string;
+  source_refs: string[];
+}
+
+export interface CodeMapping {
+  step_id: string;
+  start_line: number;
+  end_line: number;
+}
+
+export interface AIArtifact {
+  id: string;
+  version: number;
+  server_sequence: number;
+  created_at: string;
+  updated_at: string;
+  deleted: boolean;
+  last_modified_client_id: string;
+  draft_id: string;
+  mode: Mode;
+  pseudocode: PseudocodeStep[];
+  code_snippet: string | null;
+  code_mappings: CodeMapping[];
+  assumptions: string[];
+  missing_information: string[];
+  risk_flags: string[];
+  added_algorithm_steps: string[];
+  source_draft_version: number;
+  model_id: string;
+  rule_version: string;
+  output_kind: 'pseudocode' | 'code_snippet';
+  visibility: 'visible' | 'hidden';
+  template_id: string | null;
+}
+
 export interface SyncOperation {
   operation_id: string;
-  entity_type: 'draft' | 'code_document' | 'ai_artifact';
+  entity_type: 'draft' | 'ai_artifact';
   entity_id: string;
   operation_type: 'upsert' | 'delete';
   base_version: number;
@@ -66,15 +109,17 @@ export interface WorkspaceState {
   online: boolean;
   selected_id: string;
   drafts: Draft[];
+  ai_artifacts: AIArtifact[];
   operations: SyncOperation[];
   conflicts: ConflictRecord[];
 }
 
 export interface ConflictRecord {
   id: string;
+  entity_type: 'draft' | 'ai_artifact';
   entity_id: string;
   local_copy_id: string;
-  server_entity: Draft;
+  server_entity: Draft | AIArtifact;
   created_at: string;
   resolved: boolean;
 }
@@ -83,14 +128,14 @@ export interface PushResult {
   operation_id: string;
   status: 'applied' | 'duplicate' | 'conflict' | 'rejected';
   version?: number;
-  server_entity?: Draft | null;
+  server_entity?: Draft | AIArtifact | null;
   error_code?: string;
 }
 
 export interface PullChange {
   cursor: string;
-  entity_type: 'draft' | 'code_document' | 'ai_artifact';
-  entity: Draft;
+  entity_type: 'draft' | 'ai_artifact';
+  entity: Draft | AIArtifact;
 }
 
 export interface PullResult {

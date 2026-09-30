@@ -1,4 +1,5 @@
-import { Draft, SyncStatus } from './Models';
+import { AIArtifact, Draft, SyncStatus } from './Models';
+import { AIArtifactPayload } from './AIArtifactCodec';
 import { ConflictRecord, SyncOperation } from './SyncModels';
 
 export interface SyncRepository {
@@ -8,9 +9,15 @@ export interface SyncRepository {
   getBaseUrl(): string;
   setBaseUrl(baseUrl: string): void;
   listPendingOperations(): SyncOperation[];
-  hasPendingOperation(entityId: string): boolean;
+  hasPendingOperation(entityType: string, entityId: string): boolean;
   removeOperation(operationId: string): void;
   applyServerDraft(draft: Draft): void;
   saveConflictDraft(draft: Draft, record: ConflictRecord): void;
+  saveConflictArtifact(artifact: AIArtifact, record: ConflictRecord): void;
+  listConflicts(): ConflictRecord[];
   setDraftSyncStatus(id: string, status: SyncStatus): void;
+  listArtifacts(): AIArtifact[];
+  getArtifact(id: string): AIArtifact | undefined;
+  saveArtifact(artifact: AIArtifact): void;
+  applyServerArtifact(payload: AIArtifactPayload): void;
 }
