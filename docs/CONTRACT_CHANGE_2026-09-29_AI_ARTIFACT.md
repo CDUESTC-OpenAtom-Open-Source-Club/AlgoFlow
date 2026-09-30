@@ -16,7 +16,7 @@ Issue #28 persists faithful AI transform results as independent `ai_artifact` en
 
 ## Compatibility
 
-OpenHarmony database version 3 creates `ai_artifacts` and migrates legacy `drafts.ai_artifacts_json` rows. Existing drafts and their versions remain unchanged. The sync-api remains an in-memory local development service; this change does not claim production cloud or distributed-device support.
+OpenHarmony database version 4 creates `ai_artifacts`, migrates legacy `drafts.ai_artifacts_json` rows, and adds the `entity_type` column to legacy `conflicts` tables when needed. Existing drafts and their versions remain unchanged. Each migration runs in a transaction; a failure rolls back the current schema step and initialization fails rather than deleting or recreating user data. Recovery is to restore the database from the platform backup and rerun the migration; there is no destructive downgrade path. The sync-api remains an in-memory local development service; this change does not claim production cloud or distributed-device support.
 
 ## Mobile generation entry
 
