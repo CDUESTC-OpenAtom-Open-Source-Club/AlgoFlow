@@ -21,6 +21,7 @@ export class BrowserWorkspaceRepository {
           operations: readOperations(clientId, value.operations),
           conflicts: Array.isArray(value.conflicts) ? value.conflicts : [],
           ai_artifacts: Array.isArray(value.ai_artifacts) ? value.ai_artifacts : [],
+          review_results: Array.isArray(value.review_results) ? value.review_results : [],
         };
       }
       return initialState(this.clientId);
@@ -53,6 +54,36 @@ export function newDraft(clientId) {
 /** @param {import('./types').AIArtifact} artifact @returns {import('./types').AIArtifact} */
 export function cloneAIArtifact(artifact) {
   return JSON.parse(JSON.stringify(artifact));
+}
+
+/** @param {import('./types').ReviewResult} result */
+export function cloneReviewResult(result) { return JSON.parse(JSON.stringify(result)); }
+
+/** @param {import('./types').WorkspaceState} state @param {import('./types').ReviewResult} result */
+export function queueReviewResult(state, result) {
+  const existing = state.operations.find((item) => item.entity_type === 'review_result' && item.entity_id === result.id && item.operation_type === 'upsert');
+  /** @type {import('./types').SyncOperation} */
+  const operation = {
+    operation_id: existing?.operation_id ?? crypto.randomUUID(), entity_type: 'review_result', entity_id: result.id,
+    operation_type: 'upsert', base_version: existing?.base_version ?? result.version, client_id: state.client_id,
+    occurred_at: new Date().toISOString(), payload: cloneReviewResult(result),
+  };
+  state.operations = state.operations.filter((item) => !(item.entity_type === 'review_result' && item.entity_id === result.id));
+  state.operations.push(operation);
+  state.review_results = (state.review_results ?? []).filter((item) => item.id !== result.id).concat(cloneReviewResult(result));
+}
+
+/** @param {import('./types').ReviewResult} result @param {string} clientId @param {string} id */
+export function createReviewResultConflictCopy(result, clientId, id) {
+  const copy = cloneReviewResult(result);
+  copy.id = id;
+  copy.version = 0;
+  copy.server_sequence = 0;
+  copy.created_at = new Date().toISOString();
+  copy.updated_at = copy.created_at;
+  copy.last_modified_client_id = clientId;
+  copy.visibility = 'visible';
+  return copy;
 }
 
 /** @param {import('./types').WorkspaceState} state @param {import('./types').AIArtifact} artifact */
@@ -104,7 +135,7 @@ function initialState(clientId = null) {
   const draft = newDraft(resolvedClientId);
   // Keep the first local demo draft addressable from multiple browser tabs.
   draft.id = 'draft-local';
-  return { client_id: resolvedClientId, cursor: '0', online: true, selected_id: draft.id, drafts: [draft], ai_artifacts: [], operations: [], conflicts: [] };
+  return { client_id: resolvedClientId, cursor: '0', online: true, selected_id: draft.id, drafts: [draft], ai_artifacts: [], review_results: [], operations: [], conflicts: [] };
 }
 
 /**

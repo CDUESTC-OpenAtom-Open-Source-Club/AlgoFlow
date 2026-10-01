@@ -1,6 +1,6 @@
 import { SyncRepository } from '../domain/SyncRepository';
 import { Draft, SyncStatus } from '../domain/Models';
-import { ConflictRecord, DraftPayload, PullChange, SyncEntityType, SyncResultStatus, payloadToDraft } from '../domain/SyncModels';
+import { ConflictRecord, DraftPayload, PullChange, ReviewResultPayload, SyncEntityType, SyncResultStatus, payloadToDraft, payloadToReview } from '../domain/SyncModels';
 import { AIArtifactPayload, payloadToArtifact } from '../domain/AIArtifactCodec';
 import { HttpSyncClient } from './HttpSyncClient';
 import { util } from '@kit.ArkTS';
@@ -49,6 +49,11 @@ export class PhoneSyncService {
           '[AlgoFlow] Sync operation result. entity_id=%{public}s server_version=%{public}s status=%{public}s',
           safeLogValue(operation.entity_id), result.version?.toString() ?? 'none', result.status);
         if (result.status === SyncResultStatus.CONFLICT) {
+          if (operation.entity_type === SyncEntityType.REVIEW_RESULT) {
+            if (result.server_entity === undefined || result.server_entity === null) return new SyncRunResult(SyncRunStatus.FAILED, '服务器未返回审查结果冲突版本');
+            this.recordReviewConflict(operation.payload as ReviewResultPayload, result.server_entity as ReviewResultPayload);
+            this.repository.removeOperation(operation.operation_id); hadConflict = true; continue;
+          }
           if (operation.entity_type === SyncEntityType.AI_ARTIFACT) {
             if (result.server_entity === undefined || result.server_entity === null) {
               return new SyncRunResult(SyncRunStatus.FAILED, '服务器未返回 AI 结果冲突版本');
@@ -74,6 +79,8 @@ export class PhoneSyncService {
         const serverPayload = result.server_entity ?? operation.payload;
         if (operation.entity_type === SyncEntityType.AI_ARTIFACT) {
           this.repository.applyServerArtifact(serverPayload as AIArtifactPayload);
+        } else if (operation.entity_type === SyncEntityType.REVIEW_RESULT) {
+          this.repository.applyServerReview(serverPayload as ReviewResultPayload);
         } else {
           this.repository.applyServerDraft(payloadToDraft(serverPayload as DraftPayload));
         }
@@ -134,6 +141,13 @@ export class PhoneSyncService {
         this.repository.applyServerArtifact(change.entity as AIArtifactPayload);
         applied += 1;
         continue;
+      }
+      if (change.entity_type === SyncEntityType.REVIEW_RESULT) {
+        if (payloadToReview(change.entity as ReviewResultPayload) === undefined) throw new Error('INVALID_REVIEW_RESULT');
+        if (change.entity.last_modified_client_id === this.repository.getClientId() || this.repository.hasPendingOperation(SyncEntityType.REVIEW_RESULT, change.entity.id)) { skipped += 1; continue; }
+        const local = this.repository.getReview(change.entity.id);
+        if (local !== undefined && change.entity.version < local.version) { skipped += 1; continue; }
+        this.repository.applyServerReview(change.entity as ReviewResultPayload); applied += 1; continue;
       }
       if (change.entity_type !== SyncEntityType.DRAFT) {
         throw new Error('UNSUPPORTED_SYNC_ENTITY');
@@ -200,6 +214,17 @@ export class PhoneSyncService {
     record.created_at = new Date().toISOString();
     this.repository.applyServerArtifact(serverPayload);
     this.repository.saveConflictArtifact(copy, record);
+  }
+
+  private recordReviewConflict(localPayload: ReviewResultPayload, serverPayload: ReviewResultPayload): void {
+    const local = payloadToReview(localPayload); const server = payloadToReview(serverPayload);
+    if (local === undefined || server === undefined) throw new Error('INVALID_REVIEW_RESULT');
+    const copy = payloadToReview(localPayload); if (copy === undefined) throw new Error('INVALID_REVIEW_RESULT');
+    copy.id = `${local.id}-conflict-${util.generateRandomUUID()}`; copy.version = 0; copy.serverSequence = 0;
+    copy.createdAt = new Date().toISOString(); copy.updatedAt = copy.createdAt; copy.lastModifiedClientId = this.repository.getClientId();
+    const record = new ConflictRecord(); record.id = util.generateRandomUUID(); record.entity_type = SyncEntityType.REVIEW_RESULT;
+    record.entity_id = local.id; record.local_copy_id = copy.id; record.server_entity = serverPayload; record.created_at = new Date().toISOString();
+    this.repository.applyServerReview(serverPayload); this.repository.saveConflictReview(copy, record);
   }
 }
 

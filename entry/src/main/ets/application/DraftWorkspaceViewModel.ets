@@ -1,5 +1,5 @@
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, ReviewResult, SyncStatus } from '../domain/Models';
 import { SyncRepository } from '../domain/SyncRepository';
 import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
 import { ConflictRecord } from '../domain/SyncModels';
@@ -53,6 +53,7 @@ export class DraftWorkspaceViewModel {
   getDraft(id: string): Draft | undefined { return this.repository.get(id); }
 
   listArtifacts(): AIArtifact[] { return this.syncRepository?.listArtifacts() ?? []; }
+  listReviews(): ReviewResult[] { return this.syncRepository?.listReviews() ?? []; }
 
   listConflicts(): ConflictRecord[] { return this.syncRepository?.listConflicts() ?? []; }
 

@@ -5,16 +5,16 @@ import { InspectorPanel } from './components/InspectorPanel';
 import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { initialDocuments } from './data';
-import { BrowserWorkspaceRepository, queueAIArtifact, queueUpsert } from './storage.mjs';
+import { BrowserWorkspaceRepository, queueAIArtifact, queueReviewResult, queueUpsert } from './storage.mjs';
 import { LocalSyncClient, synchronizeWorkspace } from './sync-client.mjs';
-import type { AIArtifact, ConflictRecord, Documents, Draft, FileId, Mode, Panel, SyncStatus, WorkspaceState } from './types';
+import type { AIArtifact, ConflictRecord, Documents, Draft, FileId, Mode, Panel, ReviewResult, SyncStatus, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
 import { LocalAIClient, artifactFromGateway, buildAIRequest, reconcileIdeaSegments } from './ai-client.mjs';
 
 interface ConflictChoice {
-  entity_type: 'draft' | 'ai_artifact';
-  copy: Draft | AIArtifact;
-  server: Draft | AIArtifact;
+  entity_type: 'draft' | 'ai_artifact' | 'review_result';
+  copy: Draft | AIArtifact | ReviewResult;
+  server: Draft | AIArtifact | ReviewResult;
 }
 
 const syncClient = new LocalSyncClient();
@@ -47,6 +47,8 @@ export function App() {
   const editorRevisionRef = useRef(0);
   const currentArtifact = useMemo(() => currentDraft ? latestArtifact(workspace.ai_artifacts, currentDraft.id, mode) : undefined,
     [workspace.ai_artifacts, currentDraft, mode]);
+  const currentReview = useMemo(() => currentDraft ? latestReview(workspace.review_results, currentDraft.id, 'risk') : undefined,
+    [workspace.review_results, currentDraft]);
   const handleCursorChange = useCallback((line: number, column: number) => {
     setCursorPosition({ line, column });
   }, []);
@@ -131,6 +133,36 @@ export function App() {
     queueAIArtifact(state, updated);
     repository.save(state);
     setWorkspace(state);
+    if (navigator.onLine) void flushQueue();
+  }
+
+  function toggleReviewVisibility() {
+    if (!currentReview) return;
+    const state = repository.load();
+    queueReviewResult(state, { ...currentReview, visibility: currentReview.visibility === 'hidden' ? 'visible' : 'hidden', updated_at: new Date().toISOString(), last_modified_client_id: clientId });
+    repository.save(state);
+    setWorkspace(state);
+    if (navigator.onLine) void flushQueue();
+  }
+
+  function saveLocalReview() {
+    if (!currentDraft) return;
+    const state = repository.load();
+    const now = new Date().toISOString();
+    const result: ReviewResult = {
+      id: crypto.randomUUID(), version: 0, server_sequence: 0, created_at: now, updated_at: now, deleted: false,
+      last_modified_client_id: clientId, draft_id: currentDraft.id, mode, source_draft_version: currentDraft.version,
+      model_id: 'local-review-rules', rule_version: '1.0.0', review_kind: 'risk', visibility: 'visible',
+      diagnostics: reviewCpp(documents['main.cpp']).map((issue, index) => ({
+        id: `local-${index + 1}`, level: issue.severity === 'error' ? 'error' : issue.severity === 'warning' ? 'warning' : 'info',
+        range: { start_line: issue.line, start_char: 0, end_line: issue.line, end_char: 1 }, problem: issue.message,
+        basis: '本地规则检查命中对应代码行。', suggestion: '请结合当前思路确认是否需要调整。'
+      })),
+    };
+    queueReviewResult(state, result);
+    repository.save(state);
+    setWorkspace(state);
+    setAIMessage('审查结果已独立保存。');
     if (navigator.onLine) void flushQueue();
   }
 
@@ -293,6 +325,9 @@ export function App() {
           onShow={() => setInspectorHidden(false)}
           artifact={currentArtifact}
           onToggleArtifact={toggleArtifactVisibility}
+          review={currentReview}
+          onSaveReview={saveLocalReview}
+          onToggleReview={toggleReviewVisibility}
         />
       </main>
     </div>
@@ -331,5 +366,10 @@ function unresolvedConflict(state: WorkspaceState): ConflictChoice | null {
 
 function latestArtifact(artifacts: AIArtifact[], draftId: string, mode: Mode): AIArtifact | undefined {
   return artifacts.filter((artifact) => artifact.draft_id === draftId && artifact.mode === mode && !artifact.deleted)
+    .sort((left, right) => right.server_sequence - left.server_sequence || right.version - left.version || right.updated_at.localeCompare(left.updated_at))[0];
+}
+
+function latestReview(results: ReviewResult[], draftId: string, kind: ReviewResult['review_kind']): ReviewResult | undefined {
+  return results.filter((result) => result.draft_id === draftId && result.review_kind === kind && !result.deleted)
     .sort((left, right) => right.server_sequence - left.server_sequence || right.version - left.version || right.updated_at.localeCompare(left.updated_at))[0];
 }

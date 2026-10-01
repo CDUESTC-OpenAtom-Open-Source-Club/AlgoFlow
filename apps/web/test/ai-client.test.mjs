@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { artifactFromGateway, buildAIRequest, reconcileIdeaSegments } from '../src/ai-client.mjs';
+import { assertReviewResult } from '../src/sync-client.mjs';
 
 const draft = {
   id: 'draft-1', version: 3, language: 'cpp',
@@ -54,4 +55,22 @@ test('keeps old IDs when a new idea line is inserted before them', () => {
   assert.equal(segments[1].id, 'idea-segment-a');
   assert.equal(segments[2].id, 'idea-segment-b');
   assert.notEqual(segments[0].id, 'idea-segment-a');
+});
+
+test('accepts an independent review result with diagnostics and ranges', () => {
+  assert.doesNotThrow(() => assertReviewResult({
+    id: 'review-1', version: 1, server_sequence: 2, created_at: '2026-09-15T00:00:00.000Z', updated_at: '2026-09-15T00:00:00.000Z',
+    deleted: false, last_modified_client_id: 'web', draft_id: 'draft-1', mode: 'faithful_transform', source_draft_version: 1,
+    model_id: 'review-model', rule_version: '1.0.0', review_kind: 'complexity', visibility: 'visible',
+    diagnostics: [{ id: 'd1', level: 'info', range: { start_line: 1, start_char: 0, end_line: 1, end_char: 3 }, problem: 'O(n log n)', basis: 'Sort dominates', suggestion: 'Document complexity' }]
+  }));
+});
+
+test('rejects review results with inverted ranges', () => {
+  assert.throws(() => assertReviewResult({
+    id: 'review-1', version: 1, server_sequence: 2, created_at: '2026-09-15T00:00:00.000Z', updated_at: '2026-09-15T00:00:00.000Z',
+    deleted: false, last_modified_client_id: 'web', draft_id: 'draft-1', mode: 'faithful_transform', source_draft_version: 1,
+    model_id: 'review-model', rule_version: '1.0.0', review_kind: 'risk', visibility: 'visible',
+    diagnostics: [{ id: 'd1', level: 'error', range: { start_line: 3, start_char: 0, end_line: 2, end_char: 0 }, problem: 'Bad range', basis: 'Invalid', suggestion: 'Fix' }]
+  }), /INVALID_REVIEW_RESULT/);
 });

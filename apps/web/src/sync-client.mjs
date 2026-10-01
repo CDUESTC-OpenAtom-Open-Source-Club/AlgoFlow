@@ -1,5 +1,5 @@
 const API_BASE = import.meta.env?.VITE_SYNC_API_BASE ?? 'http://127.0.0.1:8787';
-import { createAIArtifactConflictCopy, queueAIArtifact } from './storage.mjs';
+import { createAIArtifactConflictCopy, createReviewResultConflictCopy, queueAIArtifact } from './storage.mjs';
 
 export class LocalSyncClient {
   /** @param {string} [apiBase] */
@@ -36,7 +36,7 @@ export class LocalSyncClient {
  * @returns {Promise<import('./types').SyncRunResult>}
  */
 export async function synchronizeWorkspace(state, client, createId = () => crypto.randomUUID()) {
-  let next = { ...state, drafts: [...state.drafts], ai_artifacts: [...(state.ai_artifacts ?? [])], operations: [...state.operations], conflicts: [...state.conflicts], online: true };
+  let next = { ...state, drafts: [...state.drafts], ai_artifacts: [...(state.ai_artifacts ?? [])], review_results: [...(state.review_results ?? [])], operations: [...state.operations], conflicts: [...state.conflicts], online: true };
   let hadConflict = false;
   let hadFailure = false;
 
@@ -45,8 +45,22 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
       if (operation.entity_type === 'ai_artifact') {
         assertAIArtifact(operation.payload, sourceIdsForArtifact(next, /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (operation.payload))));
       }
+      if (operation.entity_type === 'review_result') assertReviewResult(operation.payload);
       const result = await client.push(operation);
       if (result.status === 'conflict') {
+        if (operation.entity_type === 'review_result') {
+          if (!result.server_entity) { hadFailure = true; continue; }
+          const local = operation.payload;
+          const server = result.server_entity;
+          assertReviewResult(server);
+          const copy = createReviewResultConflictCopy(/** @type {import('./types').ReviewResult} */ (/** @type {unknown} */ (local)), next.client_id, createId());
+          next = replaceReviewResult(next, /** @type {import('./types').ReviewResult} */ (/** @type {unknown} */ (server)));
+          next = replaceReviewResult(next, copy);
+          next.operations = next.operations.filter((item) => item.operation_id !== operation.operation_id);
+          next.conflicts.push({ id: createId(), entity_type: 'review_result', entity_id: operation.entity_id, local_copy_id: copy.id, server_entity: server, created_at: new Date().toISOString(), resolved: false });
+          hadConflict = true;
+          continue;
+        }
         if (operation.entity_type === 'ai_artifact') {
           if (!result.server_entity) { hadFailure = true; continue; }
           const local = /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (operation.payload));
@@ -89,7 +103,12 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
           assertAIArtifact(entity, sourceIdsForArtifact(next, /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (entity))));
           next = replaceAIArtifact(next, /** @type {import('./types').AIArtifact} */ (entity));
         } else {
+          if (operation.entity_type === 'review_result') {
+            assertReviewResult(entity);
+            next = replaceReviewResult(next, /** @type {import('./types').ReviewResult} */ (/** @type {unknown} */ (entity)));
+          } else {
           next = replaceDraft(next, { .../** @type {import('./types').Draft} */ (entity), sync_status: 'synced' });
+          }
         }
         next.operations = next.operations.filter((item) => item.operation_id !== operation.operation_id);
         continue;
@@ -146,6 +165,14 @@ function applyPulledChanges(state, changes, clientId) {
       if (!hasPendingOperation && (!local || change.entity.version >= local.version)) next = replaceAIArtifact(next, /** @type {import('./types').AIArtifact} */ (change.entity));
       continue;
     }
+    if (change.entity_type === 'review_result') {
+      assertReviewResult(change.entity);
+      if (change.entity.last_modified_client_id === clientId) continue;
+      const local = next.review_results.find((item) => item.id === change.entity.id);
+      const pending = next.operations.some((operation) => operation.entity_type === 'review_result' && operation.entity_id === change.entity.id);
+      if (!pending && (!local || change.entity.version >= local.version)) next = replaceReviewResult(next, /** @type {import('./types').ReviewResult} */ (/** @type {unknown} */ (change.entity)));
+      continue;
+    }
     if (change.entity_type !== 'draft') throw new Error('UNSUPPORTED_SYNC_ENTITY');
     if (change.entity.last_modified_client_id === clientId) continue;
     const hasPendingOperation = next.operations.some((operation) => operation.entity_type === 'draft' && operation.entity_id === change.entity.id);
@@ -161,6 +188,28 @@ function applyPulledChanges(state, changes, clientId) {
 function replaceAIArtifact(state, artifact) {
   const found = state.ai_artifacts.some((item) => item.id === artifact.id);
   return { ...state, ai_artifacts: found ? state.ai_artifacts.map((item) => item.id === artifact.id ? artifact : item) : [...state.ai_artifacts, artifact] };
+}
+
+/** @param {import('./types').WorkspaceState} state @param {import('./types').ReviewResult} result */
+function replaceReviewResult(state, result) {
+  const found = state.review_results.some((item) => item.id === result.id);
+  return { ...state, review_results: found ? state.review_results.map((item) => item.id === result.id ? result : item) : [...state.review_results, result] };
+}
+
+/** @param {unknown} value */
+export function assertReviewResult(value) {
+  if (!value || typeof value !== 'object') throw new Error('INVALID_REVIEW_RESULT');
+  /** @type {Record<string, any>} */
+  const result = /** @type {Record<string, any>} */ (value);
+  const required = ['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', 'mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility'];
+  if (required.some((field) => !(field in result)) || Object.keys(result).some((field) => !required.includes(field))) throw new Error('INVALID_REVIEW_RESULT');
+  if (!['explanation', 'risk', 'complexity'].includes(result.review_kind) || !['visible', 'hidden'].includes(result.visibility) || !Array.isArray(result.diagnostics)) throw new Error('INVALID_REVIEW_RESULT');
+  const ids = new Set();
+  for (const diagnostic of result.diagnostics) {
+    if (!diagnostic || typeof diagnostic !== 'object' || ids.has(diagnostic.id) || !['error', 'warning', 'info', 'hint'].includes(diagnostic.level) || typeof diagnostic.problem !== 'string' || typeof diagnostic.basis !== 'string' || typeof diagnostic.suggestion !== 'string') throw new Error('INVALID_REVIEW_RESULT');
+    ids.add(diagnostic.id);
+    if (diagnostic.range !== null && (!diagnostic.range || diagnostic.range.end_line < diagnostic.range.start_line || (diagnostic.range.end_line === diagnostic.range.start_line && diagnostic.range.end_char < diagnostic.range.start_char))) throw new Error('INVALID_REVIEW_RESULT');
+  }
 }
 
 /** @param {import('./types').WorkspaceState} state @param {import('./types').AIArtifact} artifact */

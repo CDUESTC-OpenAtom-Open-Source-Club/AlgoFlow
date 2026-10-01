@@ -341,6 +341,29 @@ test('rejects an unknown AI artifact delete instead of publishing an incomplete 
   assert.equal(store.pull('0').changes.length, 0);
 });
 
+test('persists an independent review result without changing Draft.version', () => {
+  const store = new SyncStore();
+  const draft = makeDraft('draft-review', 'int main() {}', 'web-review');
+  assert.equal(seedDraft(store, draft).status, 'applied');
+  const review = makeReview('review-1', draft.id, 'web-review');
+  const operation = { operation_id: 'review-op-1', entity_type: 'review_result', entity_id: review.id, operation_type: 'upsert', base_version: 0, client_id: 'web-review', occurred_at: review.updated_at, payload: review };
+  const applied = store.apply(operation);
+  assert.equal(applied.status, 'applied');
+  assert.equal(applied.server_entity.version, 1);
+  assert.equal(store.pull('0').changes.filter((change) => change.entity_type === 'review_result').length, 1);
+  assert.equal(store.apply(operation).status, 'duplicate');
+  assert.equal(store.pull('0').changes.find((change) => change.entity_type === 'draft').entity.version, 1);
+});
+
+test('rejects malformed review results and inverted diagnostic ranges', () => {
+  const store = new SyncStore();
+  const review = makeReview('review-invalid', 'draft-1', 'web-review');
+  review.diagnostics[0].range = { start_line: 4, start_char: 0, end_line: 2, end_char: 0 };
+  const result = store.apply({ operation_id: 'review-invalid-op', entity_type: 'review_result', entity_id: review.id, operation_type: 'upsert', base_version: 0, client_id: 'web-review', occurred_at: review.updated_at, payload: review });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.error_code, 'INVALID_REVIEW_RESULT');
+});
+
 test('retries the same AI artifact operation idempotently', () => {
   const store = new SyncStore();
   seedDraft(store, makeDraft('draft-1', '', 'draft-owner'));
@@ -507,5 +530,14 @@ function makeArtifact(id, draftId, clientId) {
     code_snippet: null, code_mappings: [], assumptions: [], missing_information: ['Equal endpoints are unspecified'],
     risk_flags: [], added_algorithm_steps: [], source_draft_version: 0, model_id: 'provider-disabled',
     rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null,
+  };
+}
+
+function makeReview(id, draftId, clientId) {
+  const now = '2026-09-15T00:00:00.000Z';
+  return {
+    id, version: 0, server_sequence: 0, created_at: now, updated_at: now, deleted: false, last_modified_client_id: clientId,
+    draft_id: draftId, mode: 'faithful_transform', source_draft_version: 0, model_id: 'local-review-rules', rule_version: '1.0.0', review_kind: 'risk',
+    diagnostics: [{ id: 'diagnostic-1', level: 'warning', range: { start_line: 1, start_char: 0, end_line: 1, end_char: 1 }, problem: 'Potential issue', basis: 'Rule matched', suggestion: 'Review this line' }], visibility: 'visible'
   };
 }

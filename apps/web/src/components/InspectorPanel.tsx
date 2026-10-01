@@ -1,6 +1,6 @@
 import { Icon } from './Icon';
 import type { ReviewIssue } from '../code-review';
-import type { AIArtifact } from '../types';
+import type { AIArtifact, ReviewResult } from '../types';
 
 interface InspectorPanelProps {
   hidden: boolean;
@@ -10,9 +10,12 @@ interface InspectorPanelProps {
   onJumpToLine: (line: number) => void;
   artifact?: AIArtifact;
   onToggleArtifact: () => void;
+  review?: ReviewResult;
+  onSaveReview: () => void;
+  onToggleReview: () => void;
 }
 
-export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine, artifact, onToggleArtifact }: InspectorPanelProps) {
+export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine, artifact, onToggleArtifact, review, onSaveReview, onToggleReview }: InspectorPanelProps) {
   const errors = issues.filter((issue) => issue.severity === 'error').length;
   return (
     <>
@@ -34,6 +37,12 @@ export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine, a
           </div>
         </div>
         <SourceTrack />
+        <section className="inspect-section ai-artifact-result">
+          <div className="inspect-title"><span>独立审查结果</span><span>{review ? `v${review.version}` : '暂无'}</span></div>
+          {review ? review.visibility === 'hidden' ? <p>审查结果已隐藏。<button type="button" className="quiet-button" onClick={onToggleReview}>显示</button></p> : review.diagnostics.length ? <ol>{review.diagnostics.map((item) => <li key={item.id}><strong>{item.level}</strong> {item.problem}<small>{item.basis} 建议：{item.suggestion}</small></li>)}</ol> : <p>当前代码未发现规则问题。</p> : <p>尚未保存独立审查结果。</p>}
+          <button type="button" className="outline-button" onClick={onSaveReview}>保存当前审查</button>
+          {review && review.visibility === 'visible' && <button type="button" className="quiet-button" onClick={onToggleReview}>隐藏结果</button>}
+        </section>
         <section className="inspect-section ai-artifact-result">
           <div className="inspect-title"><span>忠实转换结果</span><span>{artifact ? `v${artifact.version}` : '暂无'}</span></div>
           {artifact ? (

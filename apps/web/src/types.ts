@@ -92,9 +92,31 @@ export interface AIArtifact {
   template_id: string | null;
 }
 
+export type ReviewKind = 'explanation' | 'risk' | 'complexity';
+export type DiagnosticLevel = 'error' | 'warning' | 'info' | 'hint';
+export interface SourceRange { start_line: number; start_char: number; end_line: number; end_char: number; }
+export interface ReviewDiagnostic { id: string; level: DiagnosticLevel; range: SourceRange | null; problem: string; basis: string; suggestion: string; }
+export interface ReviewResult {
+  id: string;
+  version: number;
+  server_sequence: number;
+  created_at: string;
+  updated_at: string;
+  deleted: boolean;
+  last_modified_client_id: string;
+  draft_id: string;
+  mode: Mode;
+  source_draft_version: number;
+  model_id: string;
+  rule_version: string;
+  review_kind: ReviewKind;
+  diagnostics: ReviewDiagnostic[];
+  visibility: 'visible' | 'hidden';
+}
+
 export interface SyncOperation {
   operation_id: string;
-  entity_type: 'draft' | 'ai_artifact';
+  entity_type: 'draft' | 'ai_artifact' | 'review_result';
   entity_id: string;
   operation_type: 'upsert' | 'delete';
   base_version: number;
@@ -110,16 +132,17 @@ export interface WorkspaceState {
   selected_id: string;
   drafts: Draft[];
   ai_artifacts: AIArtifact[];
+  review_results: ReviewResult[];
   operations: SyncOperation[];
   conflicts: ConflictRecord[];
 }
 
 export interface ConflictRecord {
   id: string;
-  entity_type: 'draft' | 'ai_artifact';
+  entity_type: 'draft' | 'ai_artifact' | 'review_result';
   entity_id: string;
   local_copy_id: string;
-  server_entity: Draft | AIArtifact;
+  server_entity: Draft | AIArtifact | ReviewResult;
   created_at: string;
   resolved: boolean;
 }
@@ -128,14 +151,14 @@ export interface PushResult {
   operation_id: string;
   status: 'applied' | 'duplicate' | 'conflict' | 'rejected';
   version?: number;
-  server_entity?: Draft | AIArtifact | null;
+  server_entity?: Draft | AIArtifact | ReviewResult | null;
   error_code?: string;
 }
 
 export interface PullChange {
   cursor: string;
-  entity_type: 'draft' | 'ai_artifact';
-  entity: Draft | AIArtifact;
+  entity_type: 'draft' | 'ai_artifact' | 'review_result';
+  entity: Draft | AIArtifact | ReviewResult;
 }
 
 export interface PullResult {

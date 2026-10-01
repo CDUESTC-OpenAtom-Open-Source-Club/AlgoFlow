@@ -1,4 +1,4 @@
-import { validateAIArtifactEntity } from '../../../packages/contracts/validate.mjs';
+import { validateAIArtifactEntity, validateReviewResultEntity } from '../../../packages/contracts/validate.mjs';
 
 export class SyncStore {
   #entities = new Map();
@@ -22,9 +22,12 @@ export class SyncStore {
         return { operation_id: operation.operation_id, status: 'rejected', error_code: 'INVALID_AI_ARTIFACT' };
       }
     }
+    if (operation.entity_type === 'review_result' && operation.operation_type === 'upsert' && validateReviewResultEntity(operation.payload).length > 0) {
+      return { operation_id: operation.operation_id, status: 'rejected', error_code: 'INVALID_REVIEW_RESULT' };
+    }
     const key = `${operation.entity_type}:${operation.entity_id}`;
     const current = this.#entities.get(key);
-    if (operation.entity_type === 'ai_artifact' && operation.operation_type === 'delete' && !current) {
+    if (['ai_artifact', 'review_result'].includes(operation.entity_type) && operation.operation_type === 'delete' && !current) {
       return { operation_id: operation.operation_id, status: 'rejected', error_code: 'INVALID_REQUEST' };
     }
     const currentVersion = current?.version ?? 0;
@@ -34,9 +37,9 @@ export class SyncStore {
       return result;
     }
     const version = currentVersion + 1;
-    if (operation.entity_type === 'ai_artifact' && operation.operation_type === 'upsert' &&
+    if (['ai_artifact', 'review_result'].includes(operation.entity_type) && operation.operation_type === 'upsert' &&
       !this.#draftHistory.get(operation.payload.draft_id)?.has(operation.payload.source_draft_version)) {
-      return { operation_id: operation.operation_id, status: 'rejected', error_code: 'INVALID_AI_ARTIFACT' };
+      return { operation_id: operation.operation_id, status: 'rejected', error_code: operation.entity_type === 'review_result' ? 'INVALID_REVIEW_RESULT' : 'INVALID_AI_ARTIFACT' };
     }
     const entity = {
       ...(current ?? {}),
@@ -47,7 +50,7 @@ export class SyncStore {
       updated_at: operation.occurred_at,
       last_modified_client_id: operation.client_id
     };
-    if (operation.entity_type === 'ai_artifact') entity.server_sequence = this.#changes.length + 1;
+    if (['ai_artifact', 'review_result'].includes(operation.entity_type)) entity.server_sequence = this.#changes.length + 1;
     this.#entities.set(key, entity);
     if (operation.entity_type === 'draft') {
       const history = this.#draftHistory.get(entity.id) ?? new Map();
@@ -78,7 +81,7 @@ export function validateOperation(operation) {
   if (!operation.operation_id || !operation.entity_id || !operation.client_id) return 'stable identifiers are required';
   if (typeof operation.occurred_at !== 'string' || !operation.occurred_at.endsWith('Z') || Number.isNaN(Date.parse(operation.occurred_at))) return 'occurred_at must be a UTC timestamp';
   if (!Number.isInteger(operation.base_version) || operation.base_version < 0) return 'base_version is invalid';
-  if (!['draft', 'ai_artifact'].includes(operation.entity_type)) return 'entity_type is invalid';
+  if (!['draft', 'ai_artifact', 'review_result'].includes(operation.entity_type)) return 'entity_type is invalid';
   if (!['upsert', 'delete'].includes(operation.operation_type)) return 'operation_type is invalid';
   if (!operation.payload || typeof operation.payload !== 'object' || Array.isArray(operation.payload)) return 'payload is required';
   return null;

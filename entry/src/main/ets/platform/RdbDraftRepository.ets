@@ -3,10 +3,10 @@ import { relationalStore } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIArtifact, AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIMode, Draft, IdeaSegment, ReviewResult, SyncStatus } from '../domain/Models';
 import { AIArtifactPayload, artifactToPayload, payloadToArtifact } from '../domain/AIArtifactCodec';
-import { ConflictRecord, DraftPayload, SyncEntityType, SyncOperation, SyncOperationType, draftToPayload,
-  payloadToDraft } from '../domain/SyncModels';
+import { ConflictRecord, DraftPayload, ReviewResultPayload, SyncEntityType, SyncOperation, SyncOperationType, draftToPayload,
+  payloadToDraft, payloadToReview, reviewToPayload } from '../domain/SyncModels';
 import { SyncRepository } from '../domain/SyncRepository';
 
 const DOMAIN = 0x0000;
@@ -23,6 +23,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   private store?: relationalStore.RdbStore;
   private drafts: Draft[] = [];
   private artifacts: AIArtifact[] = [];
+  private reviews: ReviewResult[] = [];
   private conflicts: ConflictRecord[] = [];
   private operations: SyncOperation[] = [];
   private clientId: string = '';
@@ -41,6 +42,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     await this.loadState(this.store);
     await this.loadDrafts(this.store);
     await this.loadArtifacts(this.store);
+    await this.loadReviews(this.store);
     await this.loadConflicts(this.store);
     await this.loadOperations(this.store);
   }
@@ -129,6 +131,13 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     this.enqueue(async () => this.persistConflict(record));
   }
 
+  saveConflictReview(review: ReviewResult, record: ConflictRecord): void {
+    review.deleted = false;
+    this.replaceReview(review);
+    this.upsertConflict(record);
+    this.enqueue(async () => this.persistConflict(record));
+  }
+
   private upsertConflict(record: ConflictRecord): void {
     const index = this.conflicts.findIndex((item: ConflictRecord) => item.id === record.id);
     if (index >= 0) this.conflicts[index] = record;
@@ -171,6 +180,16 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     this.replaceArtifact(artifact);
   }
 
+  listReviews(): ReviewResult[] { return this.reviews.filter((review) => !review.deleted).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)); }
+  getReview(id: string): ReviewResult | undefined { return this.reviews.find((review) => review.id === id && !review.deleted); }
+  saveReview(review: ReviewResult): void {
+    review.deleted = false; review.lastModifiedClientId = this.clientId; review.updatedAt = new Date().toISOString();
+    this.replaceReview(review); this.queueReviewOperation(review, SyncOperationType.UPSERT);
+  }
+  applyServerReview(payload: ReviewResultPayload): void {
+    const review = payloadToReview(payload); if (review === undefined) throw new Error('INVALID_REVIEW_RESULT'); this.replaceReview(review);
+  }
+
   private async migrate(store: relationalStore.RdbStore): Promise<void> {
     if (store.version > DATABASE_VERSION) {
       throw new Error(`Unsupported database version ${store.version}`);
@@ -198,6 +217,9 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
         await store.executeSql('CREATE TABLE IF NOT EXISTS ai_artifacts (' +
           'id TEXT PRIMARY KEY, version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
           'deleted INTEGER NOT NULL, last_modified_client_id TEXT NOT NULL, draft_id TEXT NOT NULL, payload_json TEXT NOT NULL)');
+        await store.executeSql('CREATE TABLE IF NOT EXISTS review_results (' +
+          'id TEXT PRIMARY KEY, version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted INTEGER NOT NULL, ' +
+          'last_modified_client_id TEXT NOT NULL, draft_id TEXT NOT NULL, payload_json TEXT NOT NULL)');
         store.version = DATABASE_VERSION;
         store.commit();
       } catch (error) {
@@ -257,7 +279,10 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     if (store.version === DATABASE_VERSION) {
       await store.executeSql('CREATE TABLE IF NOT EXISTS ai_artifacts (' +
         'id TEXT PRIMARY KEY, version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
-        'deleted INTEGER NOT NULL, last_modified_client_id TEXT NOT NULL, draft_id TEXT NOT NULL, payload_json TEXT NOT NULL)');
+      'deleted INTEGER NOT NULL, last_modified_client_id TEXT NOT NULL, draft_id TEXT NOT NULL, payload_json TEXT NOT NULL)');
+      await store.executeSql('CREATE TABLE IF NOT EXISTS review_results (' +
+        'id TEXT PRIMARY KEY, version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted INTEGER NOT NULL, ' +
+        'last_modified_client_id TEXT NOT NULL, draft_id TEXT NOT NULL, payload_json TEXT NOT NULL)');
     }
   }
 
@@ -341,6 +366,24 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
       resultSet.close();
     }
     this.artifacts = loaded;
+  }
+
+  private async loadReviews(store: relationalStore.RdbStore): Promise<void> {
+    const resultSet = await store.querySql('SELECT payload_json FROM review_results');
+    const loaded: ReviewResult[] = [];
+    try {
+      if (resultSet.goToFirstRow()) {
+        do {
+          try {
+            const review = payloadToReview(JSON.parse(readString(resultSet, 'payload_json')) as ReviewResultPayload);
+            if (review !== undefined) loaded.push(review);
+          } catch (error) {
+            hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped malformed stored review result');
+          }
+        } while (resultSet.goToNextRow());
+      }
+    } finally { resultSet.close(); }
+    this.reviews = loaded;
   }
 
   private async loadConflicts(store: relationalStore.RdbStore): Promise<void> {
@@ -430,6 +473,14 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     this.enqueue(async () => this.persistArtifact(snapshot));
   }
 
+  private replaceReview(review: ReviewResult): void {
+    const snapshot = payloadToReview(reviewToPayload(review));
+    if (snapshot === undefined) throw new Error('INVALID_REVIEW_RESULT');
+    const index = this.reviews.findIndex((item) => item.id === snapshot.id);
+    if (index >= 0) this.reviews[index] = snapshot; else this.reviews.push(snapshot);
+    this.enqueue(async () => this.persistReview(snapshot));
+  }
+
   private queueOperation(draft: Draft, operationType: SyncOperationType): void {
     const existing = this.operations.find((operation: SyncOperation) => operation.entity_type === SyncEntityType.DRAFT && operation.entity_id === draft.id);
     const operation = new SyncOperation();
@@ -461,6 +512,16 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     this.operations = this.operations.filter((item: SyncOperation) => !(item.entity_type === SyncEntityType.AI_ARTIFACT && item.entity_id === artifact.id));
     this.operations.push(operation);
     this.enqueue(async () => this.persistOperation(operation));
+  }
+
+  private queueReviewOperation(review: ReviewResult, operationType: SyncOperationType): void {
+    const existing = this.operations.find((operation) => operation.entity_type === SyncEntityType.REVIEW_RESULT && operation.entity_id === review.id);
+    const operation = new SyncOperation();
+    operation.operation_id = existing?.operation_id ?? createOperationId(); operation.entity_type = SyncEntityType.REVIEW_RESULT;
+    operation.entity_id = review.id; operation.operation_type = operationType; operation.base_version = existing?.base_version ?? review.version;
+    operation.client_id = this.clientId; operation.occurred_at = new Date().toISOString(); operation.payload = reviewToPayload(review);
+    this.operations = this.operations.filter((item) => !(item.entity_type === SyncEntityType.REVIEW_RESULT && item.entity_id === review.id));
+    this.operations.push(operation); this.enqueue(async () => this.persistOperation(operation));
   }
 
   private removePendingOperationForEntity(entityId: string): void {
@@ -497,6 +558,12 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
       'id, version, created_at, updated_at, deleted, last_modified_client_id, draft_id, payload_json) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [artifact.id, artifact.version, artifact.createdAt, artifact.updatedAt,
       artifact.deleted ? 1 : 0, artifact.lastModifiedClientId, artifact.draftId, JSON.stringify(payload)]);
+  }
+
+  private async persistReview(review: ReviewResult): Promise<void> {
+    const payload = reviewToPayload(review);
+    await this.requireStore().executeSql('INSERT OR REPLACE INTO review_results (id, version, created_at, updated_at, deleted, last_modified_client_id, draft_id, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [review.id, review.version, review.createdAt, review.updatedAt, review.deleted ? 1 : 0, review.lastModifiedClientId, review.draftId, JSON.stringify(payload)]);
   }
 
   private async persistOperation(operation: SyncOperation): Promise<void> {

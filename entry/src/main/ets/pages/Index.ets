@@ -1,5 +1,5 @@
 import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
-import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, PseudocodeStep, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, PseudocodeStep, ReviewResult, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
 import { saveCardSnapshot } from '../platform/CardSnapshot';
@@ -98,6 +98,7 @@ struct Index {
   @State syncStatus: SyncStatus = SyncStatus.LOCAL_ONLY;
   @State segments: IdeaSegment[] = [];
   @State artifacts: AIArtifact[] = [];
+  @State reviews: ReviewResult[] = [];
   @State activeFile: EditorFile = EditorFile.MAIN;
   @State activeTool: WorkspaceTool = WorkspaceTool.NONE;
   @State drawerOpen: boolean = false;
@@ -155,7 +156,10 @@ struct Index {
     this.artifactHidden = draft.artifactHidden;
     this.syncStatus = draft.syncStatus;
     this.segments = draft.ideaSegments;
-    this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === draft.id && artifact.mode === draft.aiMode);
+    this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === draft.id && artifact.mode === draft.aiMode)
+      .sort((left: AIArtifact, right: AIArtifact) => right.serverSequence - left.serverSequence || right.version - left.version);
+    this.reviews = this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === draft.id && review.mode === draft.aiMode)
+      .sort((left: ReviewResult, right: ReviewResult) => right.serverSequence - left.serverSequence || right.version - left.version);
     this.artifactHidden = this.artifacts.length > 0 && this.artifacts[0].visibility === AIVisibility.HIDDEN;
     saveCardSnapshot(getContext(this), draft);
     this.saved = true;
@@ -496,6 +500,8 @@ struct Index {
       this.rewrite = draft.rewrite;
     this.segments = draft.ideaSegments;
       this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === draft.id && artifact.mode === draft.aiMode);
+      this.reviews = this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === draft.id && review.mode === draft.aiMode)
+        .sort((left: ReviewResult, right: ReviewResult) => right.serverSequence - left.serverSequence || right.version - left.version);
       saveCardSnapshot(getContext(this), draft);
     }
   }
@@ -526,7 +532,10 @@ struct Index {
     this.viewModel.toggleArtifact(this.selectedId);
     const current = this.viewModel.listArtifacts().find((artifact: AIArtifact) => artifact.draftId === this.selectedId && artifact.mode === this.mode);
     this.artifactHidden = current !== undefined && current.visibility === AIVisibility.HIDDEN;
-    this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === this.selectedId && artifact.mode === this.mode);
+    this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === this.selectedId && artifact.mode === this.mode)
+      .sort((left: AIArtifact, right: AIArtifact) => right.serverSequence - left.serverSequence || right.version - left.version);
+    this.reviews = this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === this.selectedId && review.mode === this.mode)
+      .sort((left: ReviewResult, right: ReviewResult) => right.serverSequence - left.serverSequence || right.version - left.version);
   }
 
   private async generateArtifact(): Promise<void> {

@@ -7,6 +7,50 @@ const outputKinds = new Set(domain.$defs.aiOutputKind.enum);
 const visibilities = new Set(domain.$defs.aiVisibility.enum);
 const artifactFields = ['mode', 'pseudocode', 'code_snippet', 'code_mappings', 'assumptions', 'missing_information', 'risk_flags', 'added_algorithm_steps', 'source_draft_version', 'model_id', 'rule_version', 'output_kind', 'visibility', 'template_id'];
 const entityFields = new Set(['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', ...artifactFields]);
+const reviewKinds = new Set(domain.$defs.reviewKind.enum);
+const diagnosticLevels = new Set(domain.$defs.diagnosticLevel.enum);
+const reviewEntityFields = new Set(['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', 'mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility']);
+
+export function validateReviewResultEntity(entity) {
+  const errors = [];
+  if (!isObject(entity)) return ['review_result payload must be an object'];
+  for (const key of Object.keys(entity)) if (!reviewEntityFields.has(key)) errors.push(`${key} is not allowed`);
+  for (const field of ['id', 'draft_id', 'last_modified_client_id', 'model_id', 'rule_version']) {
+    if (typeof entity[field] !== 'string' || entity[field].length === 0) errors.push(`${field} is required`);
+  }
+  for (const field of ['version', 'server_sequence', 'source_draft_version']) {
+    if (!Number.isInteger(entity[field]) || entity[field] < 0) errors.push(`${field} is invalid`);
+  }
+  for (const field of ['created_at', 'updated_at']) {
+    if (typeof entity[field] !== 'string' || !entity[field].endsWith('Z') || Number.isNaN(Date.parse(entity[field]))) errors.push(`${field} is invalid`);
+  }
+  if (typeof entity.deleted !== 'boolean') errors.push('deleted is invalid');
+  if (!modes.has(entity.mode)) errors.push('mode is invalid');
+  if (!reviewKinds.has(entity.review_kind)) errors.push('review_kind is invalid');
+  if (!visibilities.has(entity.visibility)) errors.push('visibility is invalid');
+  if (!Array.isArray(entity.diagnostics)) errors.push('diagnostics is invalid');
+  else {
+    const ids = new Set();
+    entity.diagnostics.forEach((item, index) => {
+      if (!isObject(item)) { errors.push(`diagnostics[${index}] is invalid`); return; }
+      for (const field of ['id', 'problem', 'basis', 'suggestion']) {
+        if (typeof item[field] !== 'string' || item[field].length === 0) errors.push(`diagnostics[${index}].${field} is invalid`);
+      }
+      if (ids.has(item.id)) errors.push(`diagnostics[${index}].id must be unique`);
+      ids.add(item.id);
+      if (!diagnosticLevels.has(item.level)) errors.push(`diagnostics[${index}].level is invalid`);
+      if (item.range !== null && !isSourceRange(item.range)) errors.push(`diagnostics[${index}].range is invalid`);
+      else if (item.range && (item.range.end_line < item.range.start_line ||
+        (item.range.end_line === item.range.start_line && item.range.end_char < item.range.start_char))) {
+        errors.push(`diagnostics[${index}].range is inverted`);
+      }
+      if (Object.keys(item).some((key) => !['id', 'level', 'range', 'problem', 'basis', 'suggestion'].includes(key))) {
+        errors.push(`diagnostics[${index}] contains unsupported fields`);
+      }
+    });
+  }
+  return errors;
+}
 
 export function validateAIArtifactEntity(entity, sourceSegmentIds = undefined) {
   const errors = [];
@@ -71,6 +115,11 @@ export function validateAIArtifactEntity(entity, sourceSegmentIds = undefined) {
   return errors;
 }
 
-function isObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
+function isObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+
+function isSourceRange(value) {
+  return isObject(value) && Number.isInteger(value.start_line) && value.start_line >= 1 &&
+    Number.isInteger(value.start_char) && value.start_char >= 0 && Number.isInteger(value.end_line) &&
+    value.end_line >= 1 && Number.isInteger(value.end_char) && value.end_char >= 0 &&
+    Object.keys(value).every((key) => ['start_line', 'start_char', 'end_line', 'end_char'].includes(key));
 }

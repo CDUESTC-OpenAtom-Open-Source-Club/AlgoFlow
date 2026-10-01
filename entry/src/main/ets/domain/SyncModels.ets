@@ -1,9 +1,16 @@
-import { AIMode, Draft, IdeaSegment, SyncStatus } from './Models';
+import { AIArtifact, AIMode, AIVisibility, DiagnosticLevel, Draft, IdeaSegment, ReviewKind, ReviewResult, SourceRange, SyncStatus } from './Models';
 import { AIArtifactPayload } from './AIArtifactCodec';
+
+export class ReviewDiagnosticPayload { id: string = ''; level: string = 'info'; range: Object | null = null; problem: string = ''; basis: string = ''; suggestion: string = ''; }
+export class ReviewResultPayload {
+  id: string = ''; version: number = 0; server_sequence: number = 0; created_at: string = ''; updated_at: string = ''; deleted: boolean = false;
+  last_modified_client_id: string = ''; draft_id: string = ''; mode: string = AIMode.FAITHFUL_TRANSFORM; source_draft_version: number = 0;
+  model_id: string = ''; rule_version: string = ''; review_kind: string = 'risk'; diagnostics: ReviewDiagnosticPayload[] = []; visibility: string = 'visible';
+}
 
 export enum SyncEntityType {
   DRAFT = 'draft',
-  AI_ARTIFACT = 'ai_artifact'
+  AI_ARTIFACT = 'ai_artifact', REVIEW_RESULT = 'review_result'
 }
 
 export enum SyncOperationType {
@@ -21,6 +28,7 @@ export enum SyncResultStatus {
 export enum SyncErrorCode {
   INVALID_REQUEST = 'INVALID_REQUEST',
   INVALID_AI_ARTIFACT = 'INVALID_AI_ARTIFACT',
+  INVALID_REVIEW_RESULT = 'INVALID_REVIEW_RESULT',
   VERSION_CONFLICT = 'VERSION_CONFLICT',
   OUT_OF_ORDER = 'OUT_OF_ORDER'
 }
@@ -53,21 +61,21 @@ export class SyncOperation {
   base_version: number = 0;
   client_id: string = '';
   occurred_at: string = '';
-  payload: DraftPayload | AIArtifactPayload = new DraftPayload();
+  payload: DraftPayload | AIArtifactPayload | ReviewResultPayload = new DraftPayload();
 }
 
 export class PushResult {
   operation_id: string = '';
   status: string = SyncResultStatus.REJECTED;
   version?: number;
-  server_entity?: DraftPayload | AIArtifactPayload | null;
+  server_entity?: DraftPayload | AIArtifactPayload | ReviewResultPayload | null;
   error_code?: string;
 }
 
 export class PullChange {
   cursor: string = '0';
   entity_type: string = SyncEntityType.DRAFT;
-  entity: DraftPayload | AIArtifactPayload = new DraftPayload();
+  entity: DraftPayload | AIArtifactPayload | ReviewResultPayload = new DraftPayload();
 }
 
 export class PullResult {
@@ -80,7 +88,7 @@ export class ConflictRecord {
   entity_type: string = SyncEntityType.DRAFT;
   entity_id: string = '';
   local_copy_id: string = '';
-  server_entity: DraftPayload | AIArtifactPayload = new DraftPayload();
+  server_entity: DraftPayload | AIArtifactPayload | ReviewResultPayload = new DraftPayload();
   created_at: string = '';
   resolved: boolean = false;
 }
@@ -130,4 +138,41 @@ function parseAIMode(value: string): AIMode {
   if (value === AIMode.PROGRESSIVE_HINT) return AIMode.PROGRESSIVE_HINT;
   if (value === AIMode.FULL_SOLUTION) return AIMode.FULL_SOLUTION;
   return AIMode.FAITHFUL_TRANSFORM;
+}
+
+export function reviewToPayload(review: ReviewResult): ReviewResultPayload {
+  const payload = new ReviewResultPayload();
+  payload.id = review.id; payload.version = review.version; payload.server_sequence = review.serverSequence;
+  payload.created_at = review.createdAt; payload.updated_at = review.updatedAt; payload.deleted = review.deleted;
+  payload.last_modified_client_id = review.lastModifiedClientId; payload.draft_id = review.draftId; payload.mode = review.mode;
+  payload.source_draft_version = review.sourceDraftVersion; payload.model_id = review.modelId; payload.rule_version = review.ruleVersion;
+  payload.review_kind = review.reviewKind; payload.visibility = review.visibility;
+  payload.diagnostics = review.diagnostics.map((item) => {
+    const result = new ReviewDiagnosticPayload();
+    result.id = item.id; result.level = item.level; result.range = item.range === null ? null : JSON.parse(JSON.stringify(item.range));
+    result.problem = item.problem; result.basis = item.basis; result.suggestion = item.suggestion; return result;
+  });
+  return payload;
+}
+
+export function payloadToReview(payload: ReviewResultPayload): ReviewResult | undefined {
+  if (payload === undefined || payload === null || typeof payload.id !== 'string' || payload.id.length === 0 ||
+    typeof payload.draft_id !== 'string' || payload.draft_id.length === 0 || !Number.isInteger(payload.version) || payload.version < 0 ||
+    !Number.isInteger(payload.server_sequence) || payload.server_sequence < 0 || typeof payload.created_at !== 'string' ||
+    typeof payload.updated_at !== 'string' || typeof payload.last_modified_client_id !== 'string' || payload.last_modified_client_id.length === 0 ||
+    !Number.isInteger(payload.source_draft_version) || payload.source_draft_version < 0 || typeof payload.model_id !== 'string' || payload.model_id.length === 0 ||
+    typeof payload.rule_version !== 'string' || payload.rule_version.length === 0 || !['explanation', 'risk', 'complexity'].includes(payload.review_kind) ||
+    !['faithful_transform', 'feasibility_analysis', 'progressive_hint', 'full_solution'].includes(payload.mode) ||
+    !['visible', 'hidden'].includes(payload.visibility) || typeof payload.deleted !== 'boolean' || !Array.isArray(payload.diagnostics)) return undefined;
+  const review = new ReviewResult(payload.id, payload.draft_id);
+  review.version = payload.version; review.serverSequence = payload.server_sequence; review.createdAt = payload.created_at; review.updatedAt = payload.updated_at;
+  review.deleted = payload.deleted; review.lastModifiedClientId = payload.last_modified_client_id; review.mode = parseAIMode(payload.mode);
+  review.sourceDraftVersion = payload.source_draft_version; review.modelId = payload.model_id; review.ruleVersion = payload.rule_version;
+  review.reviewKind = payload.review_kind as ReviewKind; review.visibility = payload.visibility as AIVisibility;
+  review.diagnostics = payload.diagnostics.map((item) => {
+    const diagnostic = new ReviewDiagnostic(); diagnostic.id = item.id; diagnostic.level = item.level as DiagnosticLevel;
+    diagnostic.range = item.range === null ? null : JSON.parse(JSON.stringify(item.range)) as SourceRange;
+    diagnostic.problem = item.problem; diagnostic.basis = item.basis; diagnostic.suggestion = item.suggestion; return diagnostic;
+  });
+  return review;
 }

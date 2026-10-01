@@ -23,6 +23,26 @@ export enum AIVisibility {
   HIDDEN = 'hidden'
 }
 
+export enum ReviewKind { EXPLANATION = 'explanation', RISK = 'risk', COMPLEXITY = 'complexity' }
+export enum DiagnosticLevel { ERROR = 'error', WARNING = 'warning', INFO = 'info', HINT = 'hint' }
+
+export class SourceRange {
+  start_line: number = 1; start_char: number = 0; end_line: number = 1; end_char: number = 0;
+}
+
+export class ReviewDiagnostic {
+  id: string = ''; level: DiagnosticLevel = DiagnosticLevel.INFO; range: SourceRange | null = null;
+  problem: string = ''; basis: string = ''; suggestion: string = '';
+}
+
+export class ReviewResult {
+  id: string; version: number = 0; serverSequence: number = 0; createdAt: string; updatedAt: string;
+  deleted: boolean = false; lastModifiedClientId: string = ''; draftId: string; mode: AIMode = AIMode.FAITHFUL_TRANSFORM;
+  sourceDraftVersion: number = 0; modelId: string = ''; ruleVersion: string = ''; reviewKind: ReviewKind = ReviewKind.RISK;
+  diagnostics: ReviewDiagnostic[] = []; visibility: AIVisibility = AIVisibility.VISIBLE;
+  constructor(id: string, draftId: string) { this.id = id; this.draftId = draftId; this.createdAt = new Date().toISOString(); this.updatedAt = this.createdAt; }
+}
+
 export class IdeaSegment {
   id: string;
   content: string;
