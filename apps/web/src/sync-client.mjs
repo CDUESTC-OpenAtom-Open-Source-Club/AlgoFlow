@@ -198,18 +198,60 @@ function replaceReviewResult(state, result) {
 
 /** @param {unknown} value */
 export function assertReviewResult(value) {
-  if (!value || typeof value !== 'object') throw new Error('INVALID_REVIEW_RESULT');
-  /** @type {Record<string, any>} */
-  const result = /** @type {Record<string, any>} */ (value);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_REVIEW_RESULT');
+  /** @type {Record<string, unknown>} */
+  const result = /** @type {Record<string, unknown>} */ (value);
   const required = ['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', 'mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility'];
   if (required.some((field) => !(field in result)) || Object.keys(result).some((field) => !required.includes(field))) throw new Error('INVALID_REVIEW_RESULT');
-  if (!['explanation', 'risk', 'complexity'].includes(result.review_kind) || !['visible', 'hidden'].includes(result.visibility) || !Array.isArray(result.diagnostics)) throw new Error('INVALID_REVIEW_RESULT');
+  if (typeof result.id !== 'string' || result.id.trim().length === 0 ||
+    typeof result.version !== 'number' || !Number.isInteger(result.version) || result.version < 0 ||
+    typeof result.server_sequence !== 'number' || !Number.isInteger(result.server_sequence) || result.server_sequence < 0 ||
+    !isUtcTimestamp(result.created_at) || !isUtcTimestamp(result.updated_at) ||
+    typeof result.deleted !== 'boolean' || typeof result.last_modified_client_id !== 'string' || result.last_modified_client_id.trim().length === 0 ||
+    typeof result.draft_id !== 'string' || result.draft_id.trim().length === 0 ||
+    typeof result.mode !== 'string' || !['faithful_transform', 'feasibility_analysis', 'progressive_hint', 'full_solution'].includes(result.mode) ||
+    typeof result.source_draft_version !== 'number' || !Number.isInteger(result.source_draft_version) || result.source_draft_version < 0 ||
+    typeof result.model_id !== 'string' || result.model_id.trim().length === 0 ||
+    typeof result.rule_version !== 'string' || result.rule_version.trim().length === 0 ||
+    typeof result.review_kind !== 'string' || !['explanation', 'risk', 'complexity'].includes(result.review_kind) ||
+    typeof result.visibility !== 'string' || !['visible', 'hidden'].includes(result.visibility) || !Array.isArray(result.diagnostics)) throw new Error('INVALID_REVIEW_RESULT');
+  const diagnostics = /** @type {unknown[]} */ (result.diagnostics);
   const ids = new Set();
-  for (const diagnostic of result.diagnostics) {
-    if (!diagnostic || typeof diagnostic !== 'object' || ids.has(diagnostic.id) || !['error', 'warning', 'info', 'hint'].includes(diagnostic.level) || typeof diagnostic.problem !== 'string' || typeof diagnostic.basis !== 'string' || typeof diagnostic.suggestion !== 'string') throw new Error('INVALID_REVIEW_RESULT');
+  for (const diagnosticValue of diagnostics) {
+    if (!diagnosticValue || typeof diagnosticValue !== 'object' || Array.isArray(diagnosticValue)) throw new Error('INVALID_REVIEW_RESULT');
+    const diagnostic = /** @type {Record<string, unknown>} */ (diagnosticValue);
+    if (
+      Object.keys(diagnostic).some((field) => !['id', 'level', 'range', 'problem', 'basis', 'suggestion'].includes(field)) ||
+      typeof diagnostic.id !== 'string' || diagnostic.id.trim().length === 0 || ids.has(diagnostic.id) ||
+      typeof diagnostic.level !== 'string' || !['error', 'warning', 'info', 'hint'].includes(diagnostic.level) ||
+      typeof diagnostic.problem !== 'string' || diagnostic.problem.trim().length === 0 ||
+      typeof diagnostic.basis !== 'string' || diagnostic.basis.trim().length === 0 ||
+      typeof diagnostic.suggestion !== 'string' || diagnostic.suggestion.trim().length === 0 ||
+      !isValidSourceRange(diagnostic.range)) throw new Error('INVALID_REVIEW_RESULT');
     ids.add(diagnostic.id);
-    if (diagnostic.range !== null && (!diagnostic.range || diagnostic.range.end_line < diagnostic.range.start_line || (diagnostic.range.end_line === diagnostic.range.start_line && diagnostic.range.end_char < diagnostic.range.start_char))) throw new Error('INVALID_REVIEW_RESULT');
   }
+}
+
+/** @param {unknown} value */
+function isUtcTimestamp(value) {
+  return typeof value === 'string' && value.length > 0 && value.endsWith('Z') && !Number.isNaN(Date.parse(value));
+}
+
+/** @param {unknown} value */
+function isValidSourceRange(value) {
+  if (value === null) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const range = /** @type {Record<string, unknown>} */ (value);
+  if (Object.keys(range).some((field) => !['start_line', 'start_char', 'end_line', 'end_char'].includes(field))) return false;
+  const startLine = range.start_line;
+  const startChar = range.start_char;
+  const endLine = range.end_line;
+  const endChar = range.end_char;
+  if (typeof startLine !== 'number' || !Number.isInteger(startLine) || startLine < 1 ||
+    typeof startChar !== 'number' || !Number.isInteger(startChar) || startChar < 0 ||
+    typeof endLine !== 'number' || !Number.isInteger(endLine) || endLine < 1 ||
+    typeof endChar !== 'number' || !Number.isInteger(endChar) || endChar < 0) return false;
+  return endLine > startLine || (endLine === startLine && endChar >= startChar);
 }
 
 /** @param {import('./types').WorkspaceState} state @param {import('./types').AIArtifact} artifact */

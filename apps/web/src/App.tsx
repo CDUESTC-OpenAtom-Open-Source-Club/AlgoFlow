@@ -5,9 +5,9 @@ import { InspectorPanel } from './components/InspectorPanel';
 import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { initialDocuments } from './data';
-import { BrowserWorkspaceRepository, queueAIArtifact, queueReviewResult, queueUpsert } from './storage.mjs';
+import { BrowserWorkspaceRepository, createLocalReviewResult, queueAIArtifact, queueReviewResult, queueUpsert } from './storage.mjs';
 import { LocalSyncClient, synchronizeWorkspace } from './sync-client.mjs';
-import type { AIArtifact, ConflictRecord, Documents, Draft, FileId, Mode, Panel, ReviewResult, SyncStatus, WorkspaceState } from './types';
+import type { AIArtifact, ConflictRecord, Documents, Draft, FileId, Mode, Panel, ReviewKind, ReviewResult, SyncStatus, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
 import { LocalAIClient, artifactFromGateway, buildAIRequest, reconcileIdeaSegments } from './ai-client.mjs';
 
@@ -44,11 +44,12 @@ export function App() {
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
   const [aiMessage, setAIMessage] = useState('');
   const [aiGenerating, setAIGenerating] = useState(false);
+  const [reviewKind, setReviewKind] = useState<ReviewKind>('risk');
   const editorRevisionRef = useRef(0);
   const currentArtifact = useMemo(() => currentDraft ? latestArtifact(workspace.ai_artifacts, currentDraft.id, mode) : undefined,
     [workspace.ai_artifacts, currentDraft, mode]);
-  const currentReview = useMemo(() => currentDraft ? latestReview(workspace.review_results, currentDraft.id, 'risk') : undefined,
-    [workspace.review_results, currentDraft]);
+  const currentReview = useMemo(() => currentDraft ? latestReview(workspace.review_results, currentDraft.id, mode, reviewKind) : undefined,
+    [workspace.review_results, currentDraft, mode, reviewKind]);
   const handleCursorChange = useCallback((line: number, column: number) => {
     setCursorPosition({ line, column });
   }, []);
@@ -142,26 +143,31 @@ export function App() {
     queueReviewResult(state, { ...currentReview, visibility: currentReview.visibility === 'hidden' ? 'visible' : 'hidden', updated_at: new Date().toISOString(), last_modified_client_id: clientId });
     repository.save(state);
     setWorkspace(state);
+    setSyncState(navigator.onLine ? 'syncing' : 'local_only');
     if (navigator.onLine) void flushQueue();
   }
 
-  function saveLocalReview() {
+  async function saveLocalReview() {
     if (!currentDraft) return;
+    const draftNeedsSave = !saved || currentDraft.code !== documents['main.cpp'] || currentDraft.idea !== documents['idea.md'] ||
+      (currentDraft.cases ?? '') !== documents['cases.txt'] || currentDraft.ai_mode !== mode;
+    if (draftNeedsSave) await saveWorkspace();
     const state = repository.load();
-    const now = new Date().toISOString();
-    const result: ReviewResult = {
-      id: crypto.randomUUID(), version: 0, server_sequence: 0, created_at: now, updated_at: now, deleted: false,
-      last_modified_client_id: clientId, draft_id: currentDraft.id, mode, source_draft_version: currentDraft.version,
-      model_id: 'local-review-rules', rule_version: '1.0.0', review_kind: 'risk', visibility: 'visible',
-      diagnostics: reviewCpp(documents['main.cpp']).map((issue, index) => ({
+    const sourceDraft = state.drafts.find((draft) => draft.id === currentDraft.id);
+    if (!sourceDraft || sourceDraft.code !== documents['main.cpp'] || sourceDraft.idea !== documents['idea.md'] ||
+      (sourceDraft.cases ?? '') !== documents['cases.txt'] || sourceDraft.ai_mode !== mode) {
+      setAIMessage('草稿保存存在冲突，请先处理冲突后再保存审查结果。');
+      return;
+    }
+    const result = createLocalReviewResult(sourceDraft, clientId, mode, reviewKind, reviewCpp(documents['main.cpp']).map((issue, index) => ({
         id: `local-${index + 1}`, level: issue.severity === 'error' ? 'error' : issue.severity === 'warning' ? 'warning' : 'info',
         range: { start_line: issue.line, start_char: 0, end_line: issue.line, end_char: 1 }, problem: issue.message,
         basis: '本地规则检查命中对应代码行。', suggestion: '请结合当前思路确认是否需要调整。'
-      })),
-    };
+      })));
     queueReviewResult(state, result);
     repository.save(state);
     setWorkspace(state);
+    setSyncState(navigator.onLine ? 'syncing' : 'local_only');
     setAIMessage('审查结果已独立保存。');
     if (navigator.onLine) void flushQueue();
   }
@@ -227,6 +233,17 @@ export function App() {
       if (navigator.onLine) void flushQueue();
       return;
     }
+    if (conflict.entity_type === 'review_result') {
+      const copy: ReviewResult = { ...(conflict.copy as ReviewResult), last_modified_client_id: clientId, visibility: 'visible' };
+      const next = { ...state, review_results: state.review_results.map((item) => item.id === copy.id ? copy : item), conflicts: state.conflicts.map((record) => record.local_copy_id === copy.id ? { ...record, resolved: true } : record) };
+      queueReviewResult(next, copy);
+      repository.save(next);
+      setWorkspace(next);
+      setConflict(null);
+      setSyncState(navigator.onLine ? 'syncing' : 'local_only');
+      if (navigator.onLine) void flushQueue();
+      return;
+    }
     const copy: Draft = {
       ...(conflict.copy as Draft),
       sync_status: navigator.onLine ? 'syncing' : 'local_only',
@@ -248,6 +265,19 @@ export function App() {
     if (conflict.entity_type === 'ai_artifact') {
       const server = conflict.server as AIArtifact;
       const next = { ...state, ai_artifacts: state.ai_artifacts.filter((artifact) => artifact.id !== conflict.copy.id).map((artifact) => artifact.id === server.id ? server : artifact), conflicts: state.conflicts.map((record) => record.local_copy_id === conflict.copy.id ? { ...record, resolved: true } : record) };
+      repository.save(next);
+      setWorkspace(next);
+      setConflict(null);
+      setSyncState('synced');
+      return;
+    }
+    if (conflict.entity_type === 'review_result') {
+      const server = conflict.server as ReviewResult;
+      const next = {
+        ...state,
+        review_results: state.review_results.filter((result) => result.id !== conflict.copy.id).map((result) => result.id === server.id ? server : result),
+        conflicts: state.conflicts.map((record) => record.local_copy_id === conflict.copy.id ? { ...record, resolved: true } : record),
+      };
       repository.save(next);
       setWorkspace(next);
       setConflict(null);
@@ -277,7 +307,7 @@ export function App() {
         <div className="sync-conflict-banner" role="alert">
           <div>
             <strong>检测到并发修改</strong>
-            <span>{conflict.entity_type === 'ai_artifact' ? '服务器 AI 结果和本地副本都已保留，请选择继续方式。' : '服务器版本和本地编辑都已保留，请选择继续方式。'}</span>
+            <span>{conflict.entity_type === 'ai_artifact' ? '服务器 AI 结果和本地副本都已保留，请选择继续方式。' : conflict.entity_type === 'review_result' ? '服务器审查结果和本地副本都已保留，请选择继续方式。' : '服务器版本和本地编辑都已保留，请选择继续方式。'}</span>
           </div>
           <div className="conflict-actions">
             <button type="button" onClick={keepConflictCopy}>保留本地冲突副本</button>
@@ -326,6 +356,8 @@ export function App() {
           artifact={currentArtifact}
           onToggleArtifact={toggleArtifactVisibility}
           review={currentReview}
+          reviewKind={reviewKind}
+          onReviewKindChange={setReviewKind}
           onSaveReview={saveLocalReview}
           onToggleReview={toggleReviewVisibility}
         />
@@ -360,6 +392,10 @@ function unresolvedConflict(state: WorkspaceState): ConflictChoice | null {
     const copy = state.ai_artifacts.find((artifact) => artifact.id === record.local_copy_id);
     return copy ? { entity_type: 'ai_artifact', copy, server: record.server_entity as AIArtifact } : null;
   }
+  if (record.entity_type === 'review_result') {
+    const copy = state.review_results.find((review) => review.id === record.local_copy_id);
+    return copy ? { entity_type: 'review_result', copy, server: record.server_entity as ReviewResult } : null;
+  }
   const copy = state.drafts.find((draft) => draft.id === record.local_copy_id);
   return copy ? { entity_type: 'draft', copy, server: record.server_entity as Draft } : null;
 }
@@ -369,7 +405,7 @@ function latestArtifact(artifacts: AIArtifact[], draftId: string, mode: Mode): A
     .sort((left, right) => right.server_sequence - left.server_sequence || right.version - left.version || right.updated_at.localeCompare(left.updated_at))[0];
 }
 
-function latestReview(results: ReviewResult[], draftId: string, kind: ReviewResult['review_kind']): ReviewResult | undefined {
-  return results.filter((result) => result.draft_id === draftId && result.review_kind === kind && !result.deleted)
+function latestReview(results: ReviewResult[], draftId: string, mode: Mode, kind: ReviewResult['review_kind']): ReviewResult | undefined {
+  return results.filter((result) => result.draft_id === draftId && result.mode === mode && result.review_kind === kind && !result.deleted)
     .sort((left, right) => right.server_sequence - left.server_sequence || right.version - left.version || right.updated_at.localeCompare(left.updated_at))[0];
 }

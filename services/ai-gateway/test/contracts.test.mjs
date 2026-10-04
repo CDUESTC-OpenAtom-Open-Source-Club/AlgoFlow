@@ -66,6 +66,14 @@ test('AI gateway mode values stay identical to the JSON Schema source of truth',
   assert.deepEqual([...AI_MODES], schema.$defs.aiMode.enum);
 });
 
+test('review result range reference resolves to its shared schema definition', async () => {
+  const source = new URL('../../../packages/contracts/schemas/domain.schema.json', import.meta.url);
+  const schema = JSON.parse(await readFile(source, 'utf8'));
+  const rangeSchema = schema.$defs.reviewResult.properties.diagnostics.items.properties.range.oneOf[0];
+  assert.equal(rangeSchema.$ref, '#/$defs/sourceRange');
+  assert.deepEqual(schema.$defs.sourceRange.required, ['start_line', 'start_char', 'end_line', 'end_char']);
+});
+
 test('accepts an AI request with explicit mode, versions, and stable idea segment ids', () => {
   assert.deepEqual(validateAIRequest(validRequest), []);
 });

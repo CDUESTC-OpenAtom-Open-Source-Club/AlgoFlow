@@ -400,7 +400,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
           record.created_at = readString(resultSet, 'created_at');
           record.resolved = readNumber(resultSet, 'resolved') === 1;
           try {
-            record.server_entity = JSON.parse(readString(resultSet, 'server_entity_json')) as DraftPayload | AIArtifactPayload;
+            record.server_entity = JSON.parse(readString(resultSet, 'server_entity_json')) as DraftPayload | AIArtifactPayload | ReviewResultPayload;
           } catch (error) {
             hilog.warn(DOMAIN, TAG, '[AlgoFlow] Skipped malformed conflict record. entity_id=%{public}s', safeLogValue(record.entity_id));
             continue;
@@ -609,6 +609,9 @@ function isPersistedConflictPayloadValid(record: ConflictRecord): boolean {
   if (record.entity_type === SyncEntityType.AI_ARTIFACT) {
     return payloadToArtifact(record.server_entity as AIArtifactPayload) !== undefined;
   }
+  if (record.entity_type === SyncEntityType.REVIEW_RESULT) {
+    return payloadToReview(record.server_entity as ReviewResultPayload) !== undefined;
+  }
   if (record.entity_type !== SyncEntityType.DRAFT) return false;
   const draft = record.server_entity as DraftPayload;
   return typeof draft.id === 'string' && draft.id.length > 0 &&
@@ -715,7 +718,7 @@ function cloneOperation(source: SyncOperation): SyncOperation {
   operation.base_version = source.base_version;
   operation.client_id = source.client_id;
   operation.occurred_at = source.occurred_at;
-  operation.payload = JSON.parse(JSON.stringify(source.payload)) as DraftPayload | AIArtifactPayload;
+  operation.payload = JSON.parse(JSON.stringify(source.payload)) as DraftPayload | AIArtifactPayload | ReviewResultPayload;
   return operation;
 }
 

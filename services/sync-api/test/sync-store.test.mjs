@@ -355,6 +355,21 @@ test('persists an independent review result without changing Draft.version', () 
   assert.equal(store.pull('0').changes.find((change) => change.entity_type === 'draft').entity.version, 1);
 });
 
+test('accepts each independent review kind', () => {
+  const store = new SyncStore();
+  const draft = makeDraft('draft-review-kinds', 'int main() {}', 'web-review');
+  assert.equal(seedDraft(store, draft).status, 'applied');
+  for (const reviewKind of ['explanation', 'risk', 'complexity']) {
+    const review = makeReview(`review-${reviewKind}`, draft.id, 'web-review');
+    review.review_kind = reviewKind;
+    const result = store.apply({ operation_id: `op-${reviewKind}`, entity_type: 'review_result', entity_id: review.id,
+      operation_type: 'upsert', base_version: 0, client_id: 'web-review', occurred_at: review.updated_at, payload: review });
+    assert.equal(result.status, 'applied', reviewKind);
+  }
+  assert.equal(store.pull('0').changes.filter((change) => change.entity_type === 'review_result').length, 3);
+  assert.equal(store.pull('0').changes.find((change) => change.entity_type === 'draft').entity.version, 1);
+});
+
 test('rejects malformed review results and inverted diagnostic ranges', () => {
   const store = new SyncStore();
   const review = makeReview('review-invalid', 'draft-1', 'web-review');

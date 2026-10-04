@@ -1,6 +1,6 @@
 import { Icon } from './Icon';
 import type { ReviewIssue } from '../code-review';
-import type { AIArtifact, ReviewResult } from '../types';
+import type { AIArtifact, ReviewKind, ReviewResult } from '../types';
 
 interface InspectorPanelProps {
   hidden: boolean;
@@ -11,11 +11,19 @@ interface InspectorPanelProps {
   artifact?: AIArtifact;
   onToggleArtifact: () => void;
   review?: ReviewResult;
+  reviewKind: ReviewKind;
+  onReviewKindChange: (kind: ReviewKind) => void;
   onSaveReview: () => void;
   onToggleReview: () => void;
 }
 
-export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine, artifact, onToggleArtifact, review, onSaveReview, onToggleReview }: InspectorPanelProps) {
+const reviewKinds: Array<{ id: ReviewKind; label: string }> = [
+  { id: 'explanation', label: '说明' },
+  { id: 'risk', label: '风险' },
+  { id: 'complexity', label: '复杂度' },
+];
+
+export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine, artifact, onToggleArtifact, review, reviewKind, onReviewKindChange, onSaveReview, onToggleReview }: InspectorPanelProps) {
   const errors = issues.filter((issue) => issue.severity === 'error').length;
   return (
     <>
@@ -38,8 +46,11 @@ export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine, a
         </div>
         <SourceTrack />
         <section className="inspect-section ai-artifact-result">
-          <div className="inspect-title"><span>独立审查结果</span><span>{review ? `v${review.version}` : '暂无'}</span></div>
-          {review ? review.visibility === 'hidden' ? <p>审查结果已隐藏。<button type="button" className="quiet-button" onClick={onToggleReview}>显示</button></p> : review.diagnostics.length ? <ol>{review.diagnostics.map((item) => <li key={item.id}><strong>{item.level}</strong> {item.problem}<small>{item.basis} 建议：{item.suggestion}</small></li>)}</ol> : <p>当前代码未发现规则问题。</p> : <p>尚未保存独立审查结果。</p>}
+          <div className="inspect-title"><span>{reviewKindLabel(reviewKind)}审查结果</span><span>{review ? `v${review.version}` : '暂无'}</span></div>
+          <div className="review-kind-selector" aria-label="审查类型">
+            {reviewKinds.map((kind) => <button key={kind.id} type="button" className={kind.id === reviewKind ? 'review-kind active' : 'review-kind'} aria-pressed={kind.id === reviewKind} onClick={() => onReviewKindChange(kind.id)}>{kind.label}</button>)}
+          </div>
+          {review ? review.visibility === 'hidden' ? <p>审查结果已隐藏。<button type="button" className="quiet-button" onClick={onToggleReview}>显示</button></p> : review.diagnostics.length ? <ol>{review.diagnostics.map((item) => <li key={item.id}><strong>{item.level}</strong> <span>{formatRange(item.range)}</span> {item.problem}<small>依据：{item.basis} 建议：{item.suggestion}</small></li>)}</ol> : <p>当前代码未发现规则问题。</p> : <p>尚未保存独立审查结果。</p>}
           <button type="button" className="outline-button" onClick={onSaveReview}>保存当前审查</button>
           {review && review.visibility === 'visible' && <button type="button" className="quiet-button" onClick={onToggleReview}>隐藏结果</button>}
         </section>
@@ -99,4 +110,15 @@ function SourceTrack() {
       </div>
     </section>
   );
+}
+
+function reviewKindLabel(kind: ReviewKind): string {
+  if (kind === 'explanation') return '说明';
+  if (kind === 'complexity') return '复杂度';
+  return '风险';
+}
+
+function formatRange(range: ReviewResult['diagnostics'][number]['range']): string {
+  if (range === null) return '全局';
+  return `第 ${range.start_line}:${range.start_char}-${range.end_line}:${range.end_char} 行`;
 }

@@ -1,7 +1,21 @@
-import { AIArtifact, AIMode, AIVisibility, DiagnosticLevel, Draft, IdeaSegment, ReviewKind, ReviewResult, SourceRange, SyncStatus } from './Models';
+import { AIArtifact, AIMode, AIVisibility, DiagnosticLevel, Draft, IdeaSegment, ReviewDiagnostic, ReviewKind, ReviewResult, SourceRange, SyncStatus } from './Models';
 import { AIArtifactPayload } from './AIArtifactCodec';
 
-export class ReviewDiagnosticPayload { id: string = ''; level: string = 'info'; range: Object | null = null; problem: string = ''; basis: string = ''; suggestion: string = ''; }
+export class SourceRangePayload {
+  start_line: number = 1;
+  start_char: number = 0;
+  end_line: number = 1;
+  end_char: number = 0;
+}
+
+export class ReviewDiagnosticPayload {
+  id: string = '';
+  level: string = 'info';
+  range: SourceRangePayload | null = null;
+  problem: string = '';
+  basis: string = '';
+  suggestion: string = '';
+}
 export class ReviewResultPayload {
   id: string = ''; version: number = 0; server_sequence: number = 0; created_at: string = ''; updated_at: string = ''; deleted: boolean = false;
   last_modified_client_id: string = ''; draft_id: string = ''; mode: string = AIMode.FAITHFUL_TRANSFORM; source_draft_version: number = 0;
@@ -158,21 +172,48 @@ export function reviewToPayload(review: ReviewResult): ReviewResultPayload {
 export function payloadToReview(payload: ReviewResultPayload): ReviewResult | undefined {
   if (payload === undefined || payload === null || typeof payload.id !== 'string' || payload.id.length === 0 ||
     typeof payload.draft_id !== 'string' || payload.draft_id.length === 0 || !Number.isInteger(payload.version) || payload.version < 0 ||
-    !Number.isInteger(payload.server_sequence) || payload.server_sequence < 0 || typeof payload.created_at !== 'string' ||
-    typeof payload.updated_at !== 'string' || typeof payload.last_modified_client_id !== 'string' || payload.last_modified_client_id.length === 0 ||
+    !Number.isInteger(payload.server_sequence) || payload.server_sequence < 0 || !isUtcTimestamp(payload.created_at) ||
+    !isUtcTimestamp(payload.updated_at) || typeof payload.last_modified_client_id !== 'string' || payload.last_modified_client_id.trim().length === 0 ||
     !Number.isInteger(payload.source_draft_version) || payload.source_draft_version < 0 || typeof payload.model_id !== 'string' || payload.model_id.length === 0 ||
     typeof payload.rule_version !== 'string' || payload.rule_version.length === 0 || !['explanation', 'risk', 'complexity'].includes(payload.review_kind) ||
     !['faithful_transform', 'feasibility_analysis', 'progressive_hint', 'full_solution'].includes(payload.mode) ||
     !['visible', 'hidden'].includes(payload.visibility) || typeof payload.deleted !== 'boolean' || !Array.isArray(payload.diagnostics)) return undefined;
+  const diagnosticIds = new Set<string>();
+  for (const item of payload.diagnostics) {
+    if (item === undefined || item === null || typeof item.id !== 'string' || item.id.trim().length === 0 || diagnosticIds.has(item.id) ||
+      !['error', 'warning', 'info', 'hint'].includes(item.level) || !hasText(item.problem) || !hasText(item.basis) ||
+      !hasText(item.suggestion) || !isValidSourceRange(item.range)) return undefined;
+    diagnosticIds.add(item.id);
+    if (Object.keys(item).some((key: string) => !['id', 'level', 'range', 'problem', 'basis', 'suggestion'].includes(key))) return undefined;
+  }
   const review = new ReviewResult(payload.id, payload.draft_id);
   review.version = payload.version; review.serverSequence = payload.server_sequence; review.createdAt = payload.created_at; review.updatedAt = payload.updated_at;
   review.deleted = payload.deleted; review.lastModifiedClientId = payload.last_modified_client_id; review.mode = parseAIMode(payload.mode);
   review.sourceDraftVersion = payload.source_draft_version; review.modelId = payload.model_id; review.ruleVersion = payload.rule_version;
   review.reviewKind = payload.review_kind as ReviewKind; review.visibility = payload.visibility as AIVisibility;
-  review.diagnostics = payload.diagnostics.map((item) => {
+  review.diagnostics = payload.diagnostics.map((item: ReviewDiagnosticPayload): ReviewDiagnostic => {
     const diagnostic = new ReviewDiagnostic(); diagnostic.id = item.id; diagnostic.level = item.level as DiagnosticLevel;
     diagnostic.range = item.range === null ? null : JSON.parse(JSON.stringify(item.range)) as SourceRange;
     diagnostic.problem = item.problem; diagnostic.basis = item.basis; diagnostic.suggestion = item.suggestion; return diagnostic;
   });
   return review;
+}
+
+function hasText(value: string): boolean {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isUtcTimestamp(value: string): boolean {
+  return typeof value === 'string' && value.length > 0 && value.endsWith('Z') && !Number.isNaN(Date.parse(value));
+}
+
+function isValidSourceRange(range: SourceRangePayload | null): boolean {
+  if (range === null) return true;
+  if (range === undefined || typeof range !== 'object') return false;
+  if (Object.keys(range).some((key: string) => !['start_line', 'start_char', 'end_line', 'end_char'].includes(key))) return false;
+  if (typeof range.start_line !== 'number' || !Number.isInteger(range.start_line) || range.start_line < 1 ||
+    typeof range.start_char !== 'number' || !Number.isInteger(range.start_char) || range.start_char < 0 ||
+    typeof range.end_line !== 'number' || !Number.isInteger(range.end_line) || range.end_line < 1 ||
+    typeof range.end_char !== 'number' || !Number.isInteger(range.end_char) || range.end_char < 0) return false;
+  return range.end_line > range.start_line || (range.end_line === range.start_line && range.end_char >= range.start_char);
 }

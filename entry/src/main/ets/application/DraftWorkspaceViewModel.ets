@@ -55,6 +55,17 @@ export class DraftWorkspaceViewModel {
   listArtifacts(): AIArtifact[] { return this.syncRepository?.listArtifacts() ?? []; }
   listReviews(): ReviewResult[] { return this.syncRepository?.listReviews() ?? []; }
 
+  saveReview(review: ReviewResult): void {
+    this.syncRepository?.saveReview(review);
+  }
+
+  toggleReview(id: string): void {
+    const review = this.syncRepository?.getReview(id);
+    if (review === undefined) return;
+    review.visibility = review.visibility === AIVisibility.HIDDEN ? AIVisibility.VISIBLE : AIVisibility.HIDDEN;
+    this.syncRepository?.saveReview(review);
+  }
+
   listConflicts(): ConflictRecord[] { return this.syncRepository?.listConflicts() ?? []; }
 
   getArtifact(id: string): AIArtifact | undefined { return this.syncRepository?.getArtifact(id); }

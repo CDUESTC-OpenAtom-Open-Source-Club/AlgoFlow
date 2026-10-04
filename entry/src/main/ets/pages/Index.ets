@@ -1,8 +1,9 @@
 import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
-import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, PseudocodeStep, ReviewResult, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIVisibility, AIMode, DiagnosticLevel, Draft, IdeaSegment, PseudocodeStep, ReviewDiagnostic, ReviewKind, ReviewResult, SourceRange, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
 import { saveCardSnapshot } from '../platform/CardSnapshot';
+import { util } from '@kit.ArkTS';
 
 enum WorkspaceTool {
   NONE = 'none', FILES = 'files', IDEA = 'idea', SNIPPET = 'snippet', AI = 'ai',
@@ -99,6 +100,7 @@ struct Index {
   @State segments: IdeaSegment[] = [];
   @State artifacts: AIArtifact[] = [];
   @State reviews: ReviewResult[] = [];
+  @State reviewKind: ReviewKind = ReviewKind.RISK;
   @State activeFile: EditorFile = EditorFile.MAIN;
   @State activeTool: WorkspaceTool = WorkspaceTool.NONE;
   @State drawerOpen: boolean = false;
@@ -118,6 +120,7 @@ struct Index {
   @State aiBaseUrl: string = '';
   @State aiMessage: string = '';
   @State aiGenerating: boolean = false;
+  @State reviewMessage: string = '';
 
   aboutToAppear(): void {
     this.initializeWorkspace();
@@ -524,6 +527,11 @@ struct Index {
   private chooseMode(nextMode: AIMode): void {
     this.viewModel.setMode(this.selectedId, nextMode);
     this.mode = nextMode;
+    this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === this.selectedId && artifact.mode === nextMode);
+    this.reviews = this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === this.selectedId && review.mode === nextMode)
+      .sort((left: ReviewResult, right: ReviewResult) =>
+        right.serverSequence - left.serverSequence || right.version - left.version || right.updatedAt.localeCompare(left.updatedAt));
+    this.artifactHidden = this.artifacts.length > 0 && this.artifacts[0].visibility === AIVisibility.HIDDEN;
     this.saved = false;
     this.syncStatus = SyncStatus.LOCAL_ONLY;
   }
@@ -536,6 +544,96 @@ struct Index {
       .sort((left: AIArtifact, right: AIArtifact) => right.serverSequence - left.serverSequence || right.version - left.version);
     this.reviews = this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === this.selectedId && review.mode === this.mode)
       .sort((left: ReviewResult, right: ReviewResult) => right.serverSequence - left.serverSequence || right.version - left.version);
+  }
+
+  private chooseReviewKind(kind: ReviewKind): void {
+    this.reviewKind = kind;
+  }
+
+  private selectedReview(): ReviewResult | undefined {
+    return this.reviews.find((review: ReviewResult) => review.draftId === this.selectedId && review.mode === this.mode &&
+      review.reviewKind === this.reviewKind && !review.deleted);
+  }
+
+  private selectedReviewDiagnostics(): ReviewDiagnostic[] {
+    return this.selectedReview()?.diagnostics ?? [];
+  }
+
+  private jumpToDiagnostic(diagnostic: ReviewDiagnostic): void {
+    if (diagnostic.range !== null) this.jumpToLine(diagnostic.range.start_line);
+  }
+
+  private refreshReviews(): void {
+    this.reviews = this.viewModel.listReviews().filter((review: ReviewResult) =>
+      review.draftId === this.selectedId && review.mode === this.mode)
+      .sort((left: ReviewResult, right: ReviewResult) =>
+        right.serverSequence - left.serverSequence || right.version - left.version || right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  private saveReview(): void {
+    if (!this.isCppFile()) return;
+    this.saveDraft();
+    const draft = this.viewModel.getDraft(this.selectedId);
+    if (draft === undefined) return;
+    if (draft.version === 0 && draft.idea.length === 0 && draft.code.length === 0 && draft.shortCode.length === 0 &&
+      draft.rewrite.length === 0 && draft.ideaSegments.length === 0) {
+      this.reviewMessage = '请先输入并保存思路或代码，再创建可同步的审查结果。';
+      return;
+    }
+    const review = new ReviewResult(util.generateRandomUUID(), draft.id);
+    review.mode = this.mode;
+    review.sourceDraftVersion = draft.version;
+    review.modelId = 'local-review-rules';
+    review.ruleVersion = '1.0.0';
+    review.reviewKind = this.reviewKind;
+    review.visibility = AIVisibility.VISIBLE;
+    review.diagnostics = this.reviewIssues.map((issue: ReviewIssue, index: number) => {
+      const diagnostic = new ReviewDiagnostic();
+      diagnostic.id = `local-${this.reviewKind}-${index + 1}`;
+      diagnostic.level = this.parseDiagnosticLevel(issue.severity);
+      diagnostic.range = new SourceRange();
+      diagnostic.range.start_line = Math.max(1, issue.line);
+      diagnostic.range.end_line = Math.max(1, issue.line);
+      diagnostic.problem = issue.message;
+      diagnostic.basis = '本地规则检查命中对应代码行。';
+      diagnostic.suggestion = '请结合当前思路确认是否需要调整。';
+      return diagnostic;
+    });
+    this.viewModel.saveReview(review);
+    this.refreshReviews();
+    this.reviewMessage = '审查结果已独立保存，可通过同步发送到 Web。';
+  }
+
+  private toggleReview(): void {
+    const review = this.selectedReview();
+    if (review === undefined) return;
+    this.viewModel.toggleReview(review.id);
+    this.refreshReviews();
+  }
+
+  private parseDiagnosticLevel(value: string): DiagnosticLevel {
+    if (value === 'error') return DiagnosticLevel.ERROR;
+    if (value === 'warning') return DiagnosticLevel.WARNING;
+    if (value === 'hint') return DiagnosticLevel.HINT;
+    return DiagnosticLevel.INFO;
+  }
+
+  private reviewKindLabel(kind: ReviewKind): string {
+    if (kind === ReviewKind.EXPLANATION) return '说明';
+    if (kind === ReviewKind.COMPLEXITY) return '复杂度';
+    return '风险';
+  }
+
+  private diagnosticLevelLabel(level: DiagnosticLevel): string {
+    if (level === DiagnosticLevel.ERROR) return '错误';
+    if (level === DiagnosticLevel.WARNING) return '警告';
+    if (level === DiagnosticLevel.HINT) return '提示';
+    return '信息';
+  }
+
+  private reviewRangeLabel(range: SourceRange | null): string {
+    if (range === null) return '全局';
+    return `第 ${range.start_line}:${range.start_char}-${range.end_line}:${range.end_char} 行`;
   }
 
   private async generateArtifact(): Promise<void> {
@@ -972,19 +1070,58 @@ struct Index {
       }.width('100%').margin({ bottom: 8 })
       if (!this.isCppFile()) {
         Text('当前文件不是 C++ 文档。').fontSize(11).fontColor('#8E8E93')
-      } else if (this.reviewIssues.length === 0) {
-        Text('基础检查通过').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#30D158')
-        Text('未发现括号、入口或头文件基础问题。').fontSize(10).fontColor('#8E8E93').margin({ top: 4 })
       } else {
+        Text(`${this.reviewKindLabel(this.reviewKind)}审查结果`).fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+        Row({ space: 5 }) {
+          Button('说明').height(29).fontSize(10).fontColor(this.reviewKind === ReviewKind.EXPLANATION ? '#07110A' : '#9BE7A9')
+            .backgroundColor(this.reviewKind === ReviewKind.EXPLANATION ? '#30D158' : '#1E3A27').borderRadius(4)
+            .onClick(() => this.chooseReviewKind(ReviewKind.EXPLANATION))
+          Button('风险').height(29).fontSize(10).fontColor(this.reviewKind === ReviewKind.RISK ? '#07110A' : '#9BE7A9')
+            .backgroundColor(this.reviewKind === ReviewKind.RISK ? '#30D158' : '#1E3A27').borderRadius(4)
+            .onClick(() => this.chooseReviewKind(ReviewKind.RISK))
+          Button('复杂度').height(29).fontSize(10).fontColor(this.reviewKind === ReviewKind.COMPLEXITY ? '#07110A' : '#9BE7A9')
+            .backgroundColor(this.reviewKind === ReviewKind.COMPLEXITY ? '#30D158' : '#1E3A27').borderRadius(4)
+            .onClick(() => this.chooseReviewKind(ReviewKind.COMPLEXITY))
+        }.width('100%').margin({ top: 7, bottom: 8 })
+        if (this.selectedReview() === undefined) {
+          Text('当前类型暂无已保存审查结果。').fontSize(10).fontColor('#8E8E93')
+        } else if (this.selectedReview()?.visibility === AIVisibility.HIDDEN) {
+          Text('审查结果已隐藏，记录仍保留并参与同步。').fontSize(10).fontColor('#8E8E93')
+        } else if (this.selectedReviewDiagnostics().length === 0) {
+          Text('当前审查未发现规则问题。').fontSize(11).fontColor('#30D158')
+        } else {
         Scroll() {
           Column() {
-            ForEach(this.reviewIssues, (issue: ReviewIssue) => {
-              Button(`第 ${issue.line} 行 · ${issue.message}`).width('100%').height(31).fontSize(10)
-                .fontColor(issue.severity === 'error' ? '#FF9A94' : '#B8B8BD')
-                .backgroundColor(Color.Transparent).onClick(() => this.jumpToLine(issue.line))
-            }, (issue: ReviewIssue) => `${issue.line}-${issue.message}`)
+            ForEach(this.selectedReviewDiagnostics(), (diagnostic: ReviewDiagnostic) => {
+              Column({ space: 3 }) {
+                Button(`${this.diagnosticLevelLabel(diagnostic.level)} · ${this.reviewRangeLabel(diagnostic.range)}`).width('100%').height(28).fontSize(10)
+                  .fontColor(diagnostic.level === DiagnosticLevel.ERROR ? '#FF9A94' : '#B8B8BD')
+                  .backgroundColor(Color.Transparent).onClick(() => this.jumpToDiagnostic(diagnostic))
+                Text(diagnostic.problem).width('100%').fontSize(10).lineHeight(15).fontColor('#ECECED')
+                Text(`依据：${diagnostic.basis}`).width('100%').fontSize(9).lineHeight(14).fontColor('#8E8E93')
+                Text(`建议：${diagnostic.suggestion}`).width('100%').fontSize(9).lineHeight(14).fontColor('#B8DDBF')
+              }.width('100%').padding({ bottom: 8 })
+            }, (diagnostic: ReviewDiagnostic) => diagnostic.id)
           }
         }.width('100%').height(145).scrollBar(BarState.Auto)
+        }
+        Button('保存当前审查结果').width('100%').height(34).fontSize(10).fontColor('#07110A')
+          .backgroundColor('#30D158').borderRadius(4).margin({ top: 8 }).onClick(() => this.saveReview())
+        if (this.reviewMessage.length > 0) {
+          Text(this.reviewMessage).width('100%').fontSize(9).lineHeight(14).fontColor('#8E8E93').margin({ top: 5 })
+        }
+        if (this.selectedReview() !== undefined) {
+          Button(this.selectedReview()?.visibility === AIVisibility.HIDDEN ? '显示审查结果' : '隐藏审查结果').width('100%').height(32).fontSize(10)
+            .fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).margin({ top: 6 }).onClick(() => this.toggleReview())
+        }
+        Text(`本地基础检查：${this.reviewIssues.length === 0 ? '通过' : `${this.reviewIssues.length} 项提示`}`).fontSize(9).fontColor('#8E8E93').margin({ top: 8 })
+        if (this.reviewIssues.length > 0) {
+          ForEach(this.reviewIssues, (issue: ReviewIssue) => {
+            Button(`第 ${issue.line} 行 · ${issue.message}`).width('100%').height(28).fontSize(9)
+              .fontColor(issue.severity === 'error' ? '#FF9A94' : '#B8B8BD')
+              .backgroundColor(Color.Transparent).onClick(() => this.jumpToLine(issue.line))
+          }, (issue: ReviewIssue) => `${issue.line}-${issue.message}`)
+        }
       }
     }.width('100%')
   }

@@ -59,6 +59,23 @@ export function cloneAIArtifact(artifact) {
 /** @param {import('./types').ReviewResult} result */
 export function cloneReviewResult(result) { return JSON.parse(JSON.stringify(result)); }
 
+/**
+ * @param {import('./types').Draft} sourceDraft
+ * @param {string} clientId
+ * @param {import('./types').Mode} mode
+ * @param {import('./types').ReviewKind} reviewKind
+ * @param {import('./types').ReviewDiagnostic[]} diagnostics
+ * @returns {import('./types').ReviewResult}
+ */
+export function createLocalReviewResult(sourceDraft, clientId, mode, reviewKind, diagnostics) {
+  const now = new Date().toISOString();
+  return {
+    id: crypto.randomUUID(), version: 0, server_sequence: 0, created_at: now, updated_at: now, deleted: false,
+    last_modified_client_id: clientId, draft_id: sourceDraft.id, mode, source_draft_version: sourceDraft.version,
+    model_id: 'local-review-rules', rule_version: '1.0.0', review_kind: reviewKind, visibility: 'visible', diagnostics,
+  };
+}
+
 /** @param {import('./types').WorkspaceState} state @param {import('./types').ReviewResult} result */
 export function queueReviewResult(state, result) {
   const existing = state.operations.find((item) => item.entity_type === 'review_result' && item.entity_id === result.id && item.operation_type === 'upsert');

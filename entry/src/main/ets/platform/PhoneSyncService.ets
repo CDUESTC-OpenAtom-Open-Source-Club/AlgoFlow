@@ -67,7 +67,7 @@ export class PhoneSyncService {
             this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.FAILED);
             return new SyncRunResult(SyncRunStatus.FAILED, '服务器未返回冲突版本');
           }
-          this.recordConflict(operation.entity_id, asDraftPayload(operation.payload), asDraftPayload(result.server_entity));
+          this.recordConflict(operation.entity_id, asDraftPayload(operation.payload as DraftPayload), asDraftPayload(result.server_entity as DraftPayload));
           this.repository.removeOperation(operation.operation_id);
           hadConflict = true;
           continue;
@@ -160,7 +160,7 @@ export class PhoneSyncService {
         skipped += 1;
         continue;
       }
-      this.repository.applyServerDraft(payloadToDraft(asDraftPayload(change.entity)));
+      this.repository.applyServerDraft(payloadToDraft(asDraftPayload(change.entity as DraftPayload)));
       applied += 1;
       hilog.info(DOMAIN, TAG,
         '[AlgoFlow] Sync pull applied. entity_id=%{public}s server_version=%{public}s',
@@ -232,7 +232,7 @@ function safeLogValue(value: string): string {
   return value.replace(/[^a-zA-Z0-9._:-]/g, '_').substring(0, 96);
 }
 
-function asDraftPayload(value: DraftPayload | AIArtifactPayload): DraftPayload {
+function asDraftPayload(value: DraftPayload): DraftPayload {
   return JSON.parse(JSON.stringify(value)) as DraftPayload;
 }
 
