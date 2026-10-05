@@ -399,10 +399,12 @@ function memoryRepository(initialState) {
 function gatewayReview(request) {
   return {
     mode: request.mode,
+    draft_id: request.draft_id,
     source_draft_version: request.draft_version,
     model_id: 'provider-review',
     rule_version: request.rule_version,
     review_kind: request.review_kind,
+    output_kind: 'review',
     diagnostics: [],
     visibility: 'visible',
   };
