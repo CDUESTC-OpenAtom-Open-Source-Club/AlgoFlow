@@ -1,5 +1,5 @@
 import { fileLabels } from '../data';
-import type { FileId, Mode } from '../types';
+import type { ApplyAIEditorChange, FileId, Mode } from '../types';
 import { CodeEditor } from './CodeEditor';
 import { Icon } from './Icon';
 
@@ -16,6 +16,8 @@ interface EditorStageProps {
   onCursorChange?: (line: number, column: number) => void;
   cursorPosition?: { line: number; column: number };
   onFileChange: (file: FileId) => void;
+  editorKey: string;
+  onEditorReady: (apply: ApplyAIEditorChange | null) => void;
 }
 
 const editorFiles: Array<{ id: FileId; icon: string }> = [
@@ -37,6 +39,8 @@ export function EditorStage({
   onCursorChange,
   cursorPosition = { line: 1, column: 1 },
   onFileChange,
+  editorKey,
+  onEditorReady,
 }: EditorStageProps) {
   const modeLabel = getModeLabel(mode);
 
@@ -53,7 +57,7 @@ export function EditorStage({
         onFileChange={onFileChange}
         onSaveFile={() => downloadFile(activeFile, code)}
       />
-      <CodeEditor activeFile={activeFile} value={code} onChange={onChange} onSave={onSave} jumpToLine={jumpToLine} onCursorChange={onCursorChange} />
+      <CodeEditor key={editorKey} activeFile={activeFile} value={code} onChange={onChange} onSave={onSave} jumpToLine={jumpToLine} onCursorChange={onCursorChange} onEditorReady={onEditorReady} />
       {bottomOpen && <BottomPanel />}
       <footer className="statusbar">
         <span><i className="status-ok" /> {activeFile}</span>

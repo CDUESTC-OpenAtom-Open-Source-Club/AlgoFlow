@@ -1,135 +1,111 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { artifactFromGateway, buildAIRequest, LocalAIClient, reconcileIdeaSegments } from '../src/ai-client.mjs';
-import { assertReviewResult } from '../src/sync-client.mjs';
+import { canUseTestData, createIdeaSegments, rangeToOffsets, toCursor, WebAIClient } from '../src/ai-client.mjs';
 
-const draft = {
-  id: 'draft-1', version: 3, language: 'cpp',
-  idea_segments: [
-    { id: 'idea-segment-a', content: 'Sort by endpoint.', position: 0 },
-    { id: 'idea-segment-b', content: 'Choose compatible intervals.', position: 1 },
-  ],
+const request = {
+  mode: 'faithful_transform', draft_id: 'draft-test', draft_version: 1,
+  language: 'cpp', rule_version: '1.0.0', problem_context: '统计',
+  idea_segments: [{ id: 'idea-1', content: '累加' }], code: 'int count = 0;',
+  output_kind: 'review', review_kind: 'risk', visibility: 'visible',
 };
 
-const validResponse = {
-  mode: 'faithful_transform',
-  pseudocode: [{ id: 'step-1', step: 'Sort by endpoint.', source_refs: ['idea-segment-a'] }],
-  code_snippet: null,
-  code_mappings: [],
-  assumptions: [],
-  missing_information: [],
-  risk_flags: [],
-  added_algorithm_steps: [],
-  source_draft_version: 3,
-  model_id: 'provider-model',
-  rule_version: '1.0.0',
-  output_kind: 'pseudocode',
-  visibility: 'visible',
-  template_id: null,
+const result = {
+  mode: request.mode, draft_id: request.draft_id, source_draft_version: request.draft_version,
+  model_id: 'test-model', rule_version: request.rule_version, review_kind: request.review_kind,
+  output_kind: 'review', diagnostics: [], visibility: request.visibility,
 };
 
-test('accepts a complete Gateway artifact and creates local entity metadata', () => {
-  const artifact = artifactFromGateway(validResponse, draft, 'web-client');
-  assert.equal(artifact.draft_id, draft.id);
-  assert.equal(artifact.version, 0);
-  assert.equal(artifact.last_modified_client_id, 'web-client');
-});
-
-for (const [name, mutate] of [
-  ['rejects non-string assumptions', (value) => ({ ...value, assumptions: [7] })],
-  ['rejects unknown source references', (value) => ({ ...value, pseudocode: [{ ...value.pseudocode[0], source_refs: ['ghost'] }] })],
-  ['rejects response entity metadata', (value) => ({ ...value, version: 'bad' })],
-  ['rejects a response draft mismatch', (value) => ({ ...value, draft_id: 'other' })],
-  ['rejects a response rule version mismatch', (value) => ({ ...value, rule_version: 'other' })],
-]) {
-  test(name, () => assert.throws(() => artifactFromGateway(mutate(validResponse), draft, 'web-client'), /INVALID_AI_ARTIFACT/));
-}
-
-test('builds requests from persisted segment ids across reordering', () => {
-  const request = buildAIRequest(draft, { 'idea.md': 'Choose compatible intervals.\nSort by endpoint.', 'main.cpp': '', 'cases.txt': '' }, 'faithful_transform');
-  assert.deepEqual(request.idea_segments.map((segment) => segment.id), ['idea-segment-b', 'idea-segment-a']);
-});
-
-test('keeps old IDs when a new idea line is inserted before them', () => {
-  const segments = reconcileIdeaSegments(draft.idea_segments, 'New thought.\nSort by endpoint.\nChoose compatible intervals.');
-  assert.equal(segments[1].id, 'idea-segment-a');
-  assert.equal(segments[2].id, 'idea-segment-b');
-  assert.notEqual(segments[0].id, 'idea-segment-a');
-});
-
-test('accepts an independent review result with diagnostics and ranges', () => {
-  const review = {
-    id: 'review-1', version: 1, server_sequence: 2, created_at: '2026-09-15T00:00:00.000Z', updated_at: '2026-09-15T00:00:00.000Z',
-    deleted: false, last_modified_client_id: 'web', draft_id: 'draft-1', mode: 'faithful_transform', source_draft_version: 1,
-    model_id: 'review-model', rule_version: '1.0.0', review_kind: 'complexity', visibility: 'visible', freshness: 'current',
-    diagnostics: [{ id: 'd1', level: 'info', range: { start_line: 1, start_char: 0, end_line: 1, end_char: 3 }, problem: 'O(n log n)', basis: 'Sort dominates', suggestion: 'Document complexity' }]
-  };
-  assert.doesNotThrow(() => assertReviewResult(review));
-  for (const reviewKind of ['explanation', 'risk', 'complexity']) {
-    assert.doesNotThrow(() => assertReviewResult({ ...review, review_kind: reviewKind }));
-  }
-});
-
-test('rejects review results with inverted ranges', () => {
-  assert.throws(() => assertReviewResult({
-    id: 'review-1', version: 1, server_sequence: 2, created_at: '2026-09-15T00:00:00.000Z', updated_at: '2026-09-15T00:00:00.000Z',
-    deleted: false, last_modified_client_id: 'web', draft_id: 'draft-1', mode: 'faithful_transform', source_draft_version: 1,
-    model_id: 'review-model', rule_version: '1.0.0', review_kind: 'risk', visibility: 'visible', freshness: 'current',
-    diagnostics: [{ id: 'd1', level: 'error', range: { start_line: 3, start_char: 0, end_line: 2, end_char: 0 }, problem: 'Bad range', basis: 'Invalid', suggestion: 'Fix' }]
-  }), /INVALID_REVIEW_RESULT/);
-});
-
-test('rejects review results with incomplete diagnostic content or ranges', () => {
-  const review = {
-    id: 'review-1', version: 1, server_sequence: 2, created_at: '2026-09-15T00:00:00.000Z', updated_at: '2026-09-15T00:00:00.000Z',
-    deleted: false, last_modified_client_id: 'web', draft_id: 'draft-1', mode: 'faithful_transform', source_draft_version: 1,
-    model_id: 'review-model', rule_version: '1.0.0', review_kind: 'risk', visibility: 'visible', freshness: 'current',
-    diagnostics: [{ id: 'd1', level: 'warning', range: null, problem: 'Potential issue', basis: 'Rule matched', suggestion: 'Review this line' }]
-  };
-  assert.throws(() => assertReviewResult({ ...review, diagnostics: [{ ...review.diagnostics[0], basis: ' ' }] }), /INVALID_REVIEW_RESULT/);
-  assert.throws(() => assertReviewResult({ ...review, diagnostics: [{ ...review.diagnostics[0], range: { start_line: 0, start_char: 0, end_line: 1, end_char: 0 } }] }), /INVALID_REVIEW_RESULT/);
-  assert.throws(() => assertReviewResult({ ...review, updated_at: '2026-09-15T00:00:00+08:00' }), /INVALID_REVIEW_RESULT/);
-});
-
-test('shared review entity vectors match the Web validator', async (t) => {
-  const source = new URL('../../../packages/contracts/vectors/review-results.json', import.meta.url);
-  const vectors = JSON.parse(await readFile(source, 'utf8'));
-  for (const vector of vectors.entities) {
-    await t.test(vector.name, () => {
-      if (vector.valid) assert.doesNotThrow(() => assertReviewResult(vector.entity), vector.name);
-      else assert.throws(() => assertReviewResult(vector.entity), /INVALID_REVIEW_RESULT/, vector.name);
-    });
-  }
-});
-
-test('cancels an in-flight review fetch from the caller signal', async () => {
+test('client maps test marker and cursor/range helpers', async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (_url, init) => new Promise((_resolve, reject) => {
-    init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+  globalThis.fetch = async () => new Response(JSON.stringify(result), { status: 200, headers: { 'X-AlgoFlow-Test-Data': 'true' } });
+  try {
+    const response = await new WebAIClient('http://example.test', { allowTestData: true }).requestReview(request);
+    assert.equal(response.isTestData, true);
+    assert.deepEqual(toCursor(3, 4), { line: 3, char: 3 });
+    assert.deepEqual(createIdeaSegments('a\n\nb', [], (() => { let index = 0; return () => `idea-${++index}`; })()), [{ id: 'idea-1', content: 'a' }, { id: 'idea-2', content: 'b' }]);
+    assert.deepEqual(rangeToOffsets('ab\ncd', { start_line: 1, start_char: 1, end_line: 2, end_char: 1 }), { from: 1, to: 4 });
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('client preserves hint diagnostics from the shared contract', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    ...result,
+    diagnostics: [{ id: 'hint-1', level: 'hint', range: null, problem: 'p', basis: 'b', suggestion: 's' }],
+  }), { status: 200 });
+  try {
+    const response = await new WebAIClient('http://example.test').requestReview(request);
+    assert.equal(response.result.diagnostics[0].level, 'hint');
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('client classifies unavailable provider', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ code: 'AI_NOT_ENABLED' }), { status: 503 });
+  try { await assert.rejects(new WebAIClient('http://example.test').requestReview({}), (error) => error.code === 'AI_NOT_ENABLED' && error.status === 503); }
+  finally { globalThis.fetch = originalFetch; }
+});
+
+test('release client rejects a marked test response even when the payload is valid', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify(result), {
+    status: 200,
+    headers: { 'X-AlgoFlow-Test-Data': 'true' },
   });
   try {
-    const controller = new AbortController();
-    const request = new LocalAIClient('http://gateway.test').review({}, { signal: controller.signal });
-    controller.abort();
-    await assert.rejects(request, /AI_REQUEST_CANCELLED/);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+    await assert.rejects(
+      new WebAIClient('http://example.test', { allowTestData: false }).requestReview(request),
+      (error) => error.code === 'AI_NOT_ENABLED' && error.status === 503 && error.isTestData === true,
+    );
+  } finally { globalThis.fetch = originalFetch; }
 });
 
-test('caps transient review retries at one retry even when a larger limit is requested', async () => {
+test('client does not infer test data from a model name without the response header', async () => {
   const originalFetch = globalThis.fetch;
-  let calls = 0;
-  globalThis.fetch = async () => {
-    calls += 1;
-    return { ok: false, status: 503, json: async () => ({ code: 'AI_PROVIDER_ERROR' }) };
-  };
+  globalThis.fetch = async () => new Response(JSON.stringify({ ...result, model_id: 'test-data-provider' }), { status: 200 });
   try {
-    const client = new LocalAIClient('http://gateway.test');
-    await assert.rejects(client.review({}, { maxRetries: 50 }), /AI_PROVIDER_ERROR/);
-    assert.equal(calls, 2);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+    const response = await new WebAIClient('http://example.test').requestReview(request);
+    assert.equal(response.isTestData, false);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('release build gate wins over an explicit test-data option', () => {
+  assert.equal(canUseTestData(true, false), false);
+  assert.equal(canUseTestData(false, true), false);
+});
+
+test('the browser uses a same-origin AI route by default', () => {
+  assert.equal(new WebAIClient().baseUrl, '/ai-api');
+});
+
+test('native fetch receives the browser global as its receiver', async () => {
+  const client = new WebAIClient('/ai-api', { fetchImpl: async function () {
+    assert.equal(this, globalThis);
+    return new Response(JSON.stringify(result));
+  } });
+  assert.deepEqual((await client.requestReview(request)).result, result);
+});
+
+test('inserting or reordering idea lines keeps their existing source IDs', () => {
+  const original = createIdeaSegments('sort\nvisit');
+  const inserted = createIdeaSegments('check\nsort\nvisit', original);
+  assert.equal(inserted[1].id, original[0].id);
+  assert.equal(inserted[2].id, original[1].id);
+  const reordered = createIdeaSegments('visit\nsort\ncheck', inserted);
+  assert.equal(reordered[0].id, original[1].id);
+  assert.equal(new Set(reordered.map(item => item.id)).size, 3);
+});
+
+test('range offsets preserve CRLF rather than counting it as one character', () => {
+  assert.deepEqual(rangeToOffsets('ab\r\ncd', { start_line: 2, start_char: 1, end_line: 2, end_char: 2 }), { from: 5, to: 6 });
+});
+
+test('range conversion rejects invalid and inverted coordinates', () => {
+  for (const range of [
+    { start_line: 0, start_char: 0, end_line: 1, end_char: 1 },
+    { start_line: 1, start_char: 3, end_line: 1, end_char: 4 },
+    { start_line: 2, start_char: 0, end_line: 1, end_char: 1 },
+    { start_line: 1, start_char: 1, end_line: 1, end_char: 0 },
+    { start_line: 1.5, start_char: 0, end_line: 2, end_char: 0 },
+  ]) assert.throws(() => rangeToOffsets('ab\ncd', range));
 });

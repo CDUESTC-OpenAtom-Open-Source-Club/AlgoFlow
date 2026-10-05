@@ -1,25 +1,26 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ActivityBar } from './components/ActivityBar';
 import { EditorStage } from './components/EditorStage';
 import { InspectorPanel } from './components/InspectorPanel';
 import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { initialDocuments } from './data';
-import { BrowserWorkspaceRepository, getReviewFreshness, hasReviewSource, queueAIArtifact, queueUpsert, sortReviewResultsNewestFirst } from './storage.mjs';
-import { LocalSyncClient, resolveAIResultConflict, synchronizeWorkspace } from './sync-client.mjs';
-import type { AIArtifact, ConflictRecord, Documents, Draft, FileId, Mode, Panel, ReviewKind, ReviewResult, SyncStatus, WorkspaceState } from './types';
+import { BrowserWorkspaceRepository, queueUpsert } from './storage.mjs';
+import { LocalSyncClient, synchronizeWorkspace } from './sync-client.mjs';
+import type { ConflictRecord, Documents, Draft, FileId, Mode, Panel, SyncStatus, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
-import { LocalAIClient, artifactFromGateway, buildAIRequest, reconcileIdeaSegments } from './ai-client.mjs';
-import { createReviewResult, toggleReviewVisibility as toggleReviewVisibilityUseCase } from './review-use-case.mjs';
+import { WebAIClient, toCursor } from './ai-client.mjs';
+import { BrowserAIResultRepository } from './ai-result-storage.mjs';
+import { AISession } from './ai-session.mjs';
+import type { AIContext, ApplyAIEditorChange } from './types';
 
 interface ConflictChoice {
-  entity_type: 'draft' | 'ai_artifact' | 'review_result';
-  copy: Draft | AIArtifact | ReviewResult;
-  server: Draft | AIArtifact | ReviewResult;
+  copy: Draft;
+  server: Draft;
 }
 
 const syncClient = new LocalSyncClient();
-const aiClient = new LocalAIClient();
+const aiClient = new WebAIClient();
 
 export function App() {
   const [clientId] = useState(getClientId);
@@ -43,47 +44,73 @@ export function App() {
   const [conflict, setConflict] = useState<ConflictChoice | null>(() => unresolvedConflict(workspace));
   const [jumpToLine, setJumpToLine] = useState(0);
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
-  const [aiMessage, setAIMessage] = useState('');
-  const [aiGenerating, setAIGenerating] = useState(false);
-  const [aiRequestKind, setAIRequestKind] = useState<'review' | 'artifact' | null>(null);
-  const [reviewKind, setReviewKind] = useState<ReviewKind>('risk');
-  const [selectedReviewId, setSelectedReviewId] = useState('');
-  const editorRevisionRef = useRef(0);
-  const aiAbortControllerRef = useRef<AbortController | null>(null);
-  const currentArtifact = useMemo(() => currentDraft ? latestArtifact(workspace.ai_artifacts, currentDraft.id, mode) : undefined,
-    [workspace.ai_artifacts, currentDraft, mode]);
-  const reviewHistory = useMemo(() => currentDraft
-    ? sortReviewResultsNewestFirst(listReviewHistory(workspace.review_results, currentDraft.id, mode, reviewKind).map((review) => ({
-      ...review,
-      freshness: isReviewCurrentAgainstEditor(workspace, review, currentDraft, documents) ? 'current' : 'stale',
-    })))
-    : [], [workspace, currentDraft, mode, reviewKind, documents]);
-  const currentReview = useMemo(() => reviewHistory.find((review) => review.id === selectedReviewId) ?? reviewHistory[0],
-    [reviewHistory, selectedReviewId]);
-  const currentReviewSourceAvailable = currentReview ? hasReviewSource(workspace, currentReview) : false;
-  const currentReviewStale = currentReview ? !isReviewCurrentAgainstEditor(workspace, currentReview, currentDraft, documents) : false;
+  const [aiSession] = useState(() => new AISession(aiClient, new BrowserAIResultRepository()));
+  const aiState = useSyncExternalStore(aiSession.subscribe, aiSession.getSnapshot, aiSession.getSnapshot);
+  const editorApply = useRef<ApplyAIEditorChange | null>(null);
+  const editEpoch = useRef(0);
+  const hasUnsavedEdits = useRef(false);
+  const syncRunning = useRef(false);
+  const syncAgain = useRef(false);
+  const inFlightOperations = useRef(new Set<string>());
+  const handleEditorReady = useCallback((apply: ApplyAIEditorChange | null) => { editorApply.current = apply; }, []);
   const handleCursorChange = useCallback((line: number, column: number) => {
     setCursorPosition({ line, column });
   }, []);
 
-  const flushQueue = useCallback(async (): Promise<SyncStatus> => {
+  useLayoutEffect(() => {
+    if (currentDraft) aiSession.setContext(makeAIContext(currentDraft, documents, activeFile, mode));
+  }, [aiSession, currentDraft, documents, activeFile, mode]);
+
+  useEffect(() => () => aiSession.dispose(), [aiSession]);
+
+  useEffect(() => {
+    for (const draft of workspace.drafts) if (draft.deleted) aiSession.removeDraft(draft.id);
+  }, [aiSession, workspace.drafts]);
+
+  const flushQueue = useCallback(async () => {
+    if (syncRunning.current) { syncAgain.current = true; return; }
+    syncRunning.current = true;
+    try {
+    do {
+    syncAgain.current = false;
+    const startedAt = editEpoch.current;
     const state = repository.load();
+    repository.save(state);
     if (!navigator.onLine) {
       setSyncState('local_only');
       setWorkspace(state);
-      return 'local_only';
+      return;
     }
     setSyncState('syncing');
+    inFlightOperations.current = new Set(state.operations.map(operation => operation.operation_id));
     const result = await synchronizeWorkspace(state, syncClient);
+    // A save or selection during the request belongs to a newer local state.
+    // Retry against that state; operation IDs make a repeated push idempotent.
+    if (JSON.stringify(repository.load()) !== JSON.stringify(state)) {
+      syncAgain.current = true;
+      continue;
+    }
     repository.save(result.state);
-    setWorkspace(result.state);
+    setWorkspace(previous => {
+      if (!hasUnsavedEdits.current) return result.state;
+      const local = previous.drafts.find(draft => draft.id === previous.selected_id);
+      return local ? replaceDraft({ ...result.state, selected_id: previous.selected_id }, local) : result.state;
+    });
     const draft = result.state.drafts.find((item) => item.id === result.state.selected_id) ?? result.state.drafts[0];
-    if (draft) setDocuments(draftToDocuments(draft));
+    if (draft && startedAt === editEpoch.current && !hasUnsavedEdits.current) {
+      aiSession.cancel();
+      setDocuments(draftToDocuments(draft));
+      setMode(draft.ai_mode);
+    }
     setSyncState(result.status);
     const pendingConflict = unresolvedConflict(result.state);
     if (pendingConflict) setConflict(pendingConflict);
-    return result.status;
-  }, [clientId, repository]);
+    } while (syncAgain.current);
+    } finally {
+      inFlightOperations.current.clear();
+      syncRunning.current = false;
+    }
+  }, [aiSession, repository]);
 
   useEffect(() => {
     void flushQueue();
@@ -98,20 +125,35 @@ export function App() {
   }, [flushQueue]);
 
   function updateActiveDocument(value: string) {
-    setDocuments((current) => ({ ...current, [activeFile]: value }));
-    editorRevisionRef.current += 1;
+    hasUnsavedEdits.current = true;
+    const next = { ...documents, [activeFile]: value };
+    editEpoch.current += 1;
+    if (currentDraft) aiSession.setContext(makeAIContext(currentDraft, next, activeFile, mode));
+    setDocuments(next);
     setSaved(false);
   }
 
-  function saveWorkspace(): Promise<void> {
+  function selectFile(file: FileId) {
+    if (currentDraft) aiSession.setContext(makeAIContext(currentDraft, documents, file, mode));
+    setActiveFile(file);
+  }
+
+  function selectMode(nextMode: Mode) {
+    hasUnsavedEdits.current = true;
+    editEpoch.current += 1;
+    if (currentDraft) aiSession.setContext(makeAIContext(currentDraft, documents, activeFile, nextMode));
+    setMode(nextMode);
+    setSaved(false);
+  }
+
+  function saveWorkspace() {
     const base = repository.load();
     const draft = currentDraft;
-    if (!draft) return Promise.resolve();
+    if (!draft) return;
     const updated: Draft = {
       ...draft,
       code: documents['main.cpp'],
       idea: documents['idea.md'],
-      idea_segments: reconcileIdeaSegments(draft.idea_segments ?? [], documents['idea.md']),
       cases: documents['cases.txt'],
       ai_mode: mode,
       updated_at: new Date().toISOString(),
@@ -120,11 +162,17 @@ export function App() {
     };
     const next = replaceDraft({ ...base, online: navigator.onLine }, updated);
     queueUpsert(next, updated);
+    // Never mutate the payload of an operation that may already be committed.
+    // A fresh operation with the old base preserves the newer edit as a
+    // conflict if the earlier push won the race.
+    next.operations = next.operations.map(operation => operation.entity_id === updated.id && inFlightOperations.current.has(operation.operation_id)
+      ? { ...operation, operation_id: crypto.randomUUID() } : operation);
     repository.save(next);
     setWorkspace(next);
+    hasUnsavedEdits.current = false;
     setSaved(true);
     setSyncState(navigator.onLine ? 'syncing' : 'local_only');
-    return navigator.onLine ? flushQueue().then(() => undefined) : Promise.resolve();
+    if (navigator.onLine) void flushQueue();
   }
 
   function syncNow() {
@@ -135,178 +183,61 @@ export function App() {
     void flushQueue();
   }
 
-  function toggleArtifactVisibility() {
-    if (!currentArtifact) return;
-    const state = repository.load();
-    const updated: AIArtifact = {
-      ...currentArtifact,
-      visibility: currentArtifact.visibility === 'hidden' ? 'visible' : 'hidden',
-      updated_at: new Date().toISOString(),
-      last_modified_client_id: clientId,
-    };
-    queueAIArtifact(state, updated);
-    repository.save(state);
-    setWorkspace(state);
-    if (navigator.onLine) void flushQueue();
-  }
-
-  async function toggleReviewVisibility() {
-    if (!currentReview) return;
-    try {
-      const result = await toggleReviewVisibilityUseCase({
-        repository,
-        reviewId: currentReview.id,
-        clientId,
-        isOnline: () => navigator.onLine,
-        synchronize: flushQueue,
-      });
-      setWorkspace(result.state);
-      setSyncState(result.syncStatus);
-    } catch (error) {
-      setAIMessage(error instanceof Error ? error.message : '审查结果显示状态更新失败');
-    }
-  }
-
-  function chooseReviewKind(kind: ReviewKind) {
-    setReviewKind(kind);
-    setSelectedReviewId('');
-  }
-
-  async function saveLocalReview() {
-    if (!currentDraft) return;
-    if (aiGenerating) return;
-    setAIGenerating(true);
-    setAIRequestKind('review');
-    setAIMessage('正在请求 AI Gateway 审查...');
-    const controller = new AbortController();
-    aiAbortControllerRef.current = controller;
-    try {
-      const result = await createReviewResult({
-        repository,
-        aiClient,
-        draftId: currentDraft.id,
-        documents,
-        mode,
-        reviewKind,
-        clientId,
-        isOnline: () => navigator.onLine,
-        synchronize: flushQueue,
-        getEditorRevision: () => editorRevisionRef.current,
-        signal: controller.signal,
-      });
-      setWorkspace(result.state);
-      setSyncState(result.syncStatus);
-      if (result.reviewId) setSelectedReviewId(result.reviewId);
-      setAIMessage(result.syncStatus === 'failed'
-        ? '审查结果已本地保存；同步失败，可稍后重试。'
-        : result.syncStatus === 'conflict'
-          ? '审查结果已保存，请处理同步冲突。'
-          : '审查结果已独立保存，可同步到手机端。');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'AI 审查请求失败';
-      setAIMessage(message === 'REVIEW_DRAFT_NOT_SYNCED' || message === 'DRAFT_NEEDS_SAVE'
-        ? '请先保存并同步当前草稿，再请求审查结果。'
-        : message);
-    } finally {
-      if (aiAbortControllerRef.current === controller) aiAbortControllerRef.current = null;
-      setAIRequestKind(null);
-      setAIGenerating(false);
-    }
-  }
-
-  function cancelAIRequest() {
-    aiAbortControllerRef.current?.abort();
-  }
-
-  async function generateArtifact() {
-    if (!currentDraft || mode !== 'faithful_transform' || aiGenerating) return;
-    if (!documents['idea.md'].trim()) {
-      setAIMessage('请先输入思路内容。');
-      return;
-    }
-    setAIGenerating(true);
-    setAIRequestKind('artifact');
-    setAIMessage('正在请求 AI Gateway...');
-    const generationRevision = editorRevisionRef.current;
-    const controller = new AbortController();
-    aiAbortControllerRef.current = controller;
-    try {
-      if (!saved || (currentDraft.idea_segments ?? []).length === 0) await saveWorkspace();
-      const state = repository.load();
-      const draft = state.drafts.find((item) => item.id === currentDraft.id) ?? currentDraft;
-      const request = buildAIRequest(draft, documents, mode);
-      const response = await aiClient.generate(request, { signal: controller.signal });
-      if (controller.signal.aborted) throw new Error('AI_REQUEST_CANCELLED');
-      const latestState = repository.load();
-      const latestDraft = latestState.drafts.find((item) => item.id === draft.id);
-      if (!latestDraft || latestDraft.version !== draft.version || latestState.selected_id !== draft.id || editorRevisionRef.current !== generationRevision) {
-        throw new Error('DRAFT_CHANGED_RETRY_AI');
-      }
-      const artifact = artifactFromGateway(response, draft, clientId, request.idea_segments.map((segment) => segment.id), request.rule_version);
-      queueAIArtifact(latestState, artifact);
-      repository.save(latestState);
-      setWorkspace(latestState);
-      setAIMessage('忠实转换结果已保存，可同步到手机端。');
-      if (navigator.onLine) void flushQueue();
-    } catch (error) {
-      setAIMessage(error instanceof Error ? error.message : 'AI 请求失败');
-    } finally {
-      if (aiAbortControllerRef.current === controller) aiAbortControllerRef.current = null;
-      setAIRequestKind(null);
-      setAIGenerating(false);
-    }
-  }
-
   function selectDraft(draftId: string) {
     if (!saved) saveWorkspace();
     const state = repository.load();
     const draft = state.drafts.find((item) => item.id === draftId);
     if (!draft) return;
+    editEpoch.current += 1;
+    aiSession.setContext(makeAIContext(draft, draftToDocuments(draft), activeFile, draft.ai_mode));
     const next = { ...state, selected_id: draftId };
     repository.save(next);
     setWorkspace(next);
     setDocuments(draftToDocuments(draft));
     setMode(draft.ai_mode);
+    hasUnsavedEdits.current = false;
     setSaved(true);
     setSyncState(draft.sync_status);
   }
 
-  function resolveConflict(resolution: 'keep_local' | 'use_server') {
+  function keepConflictCopy() {
     if (!conflict) return;
+    editEpoch.current += 1;
+    aiSession.cancel();
     const state = repository.load();
-    if (conflict.entity_type !== 'draft') {
-      const record = state.conflicts.find((item) => item.local_copy_id === conflict.copy.id && !item.resolved);
-      if (!record) return;
-      const next = resolveAIResultConflict(state, record, resolution, clientId);
-      repository.save(next);
-      setWorkspace(next);
-      setConflict(null);
-      setSyncState(resolution === 'use_server' ? 'synced' : navigator.onLine ? 'syncing' : 'local_only');
-      if (resolution === 'keep_local' && navigator.onLine) void flushQueue();
-      return;
-    }
-    if (resolution === 'keep_local') {
-      const copy: Draft = { ...(conflict.copy as Draft), sync_status: navigator.onLine ? 'syncing' : 'local_only' };
-      const next = replaceDraft({ ...state, selected_id: copy.id }, copy);
-      next.conflicts = state.conflicts.map((record) => record.local_copy_id === copy.id ? { ...record, resolved: true } : record);
-      queueUpsert(next, copy);
-      repository.save(next);
-      setWorkspace(next);
-      setDocuments(draftToDocuments(copy));
-      setConflict(null);
-      setSyncState(navigator.onLine ? 'syncing' : 'local_only');
-      if (navigator.onLine) void flushQueue();
-      return;
-    }
-    const server = conflict.server as Draft;
+    const copy: Draft = {
+      ...conflict.copy,
+      sync_status: navigator.onLine ? 'syncing' : 'local_only',
+    };
+    const next = replaceDraft({ ...state, selected_id: copy.id }, copy);
+    next.conflicts = state.conflicts.map((record) => record.local_copy_id === copy.id ? { ...record, resolved: true } : record);
+    queueUpsert(next, copy);
+    repository.save(next);
+    setWorkspace(next);
+    setDocuments(draftToDocuments(copy));
+    hasUnsavedEdits.current = false;
+    setSaved(true);
+    setMode(copy.ai_mode);
+    setConflict(null);
+    setSyncState(navigator.onLine ? 'syncing' : 'local_only');
+    if (navigator.onLine) void flushQueue();
+  }
+
+  function useServerVersion() {
+    if (!conflict) return;
+    editEpoch.current += 1;
+    aiSession.cancel();
+    const state = repository.load();
     let next = replaceDraft(
-      { ...state, selected_id: server.id, drafts: state.drafts.filter((draft) => draft.id !== conflict.copy.id) },
-      { ...server, sync_status: 'synced' },
+      { ...state, selected_id: conflict.server.id, drafts: state.drafts.filter((draft) => draft.id !== conflict.copy.id) },
+      { ...conflict.server, sync_status: 'synced' },
     );
     next.conflicts = state.conflicts.map((record) => record.local_copy_id === conflict.copy.id ? { ...record, resolved: true } : record);
     repository.save(next);
     setWorkspace(next);
-    setDocuments(draftToDocuments(server));
+    setDocuments(draftToDocuments(conflict.server));
+    hasUnsavedEdits.current = false;
+    setMode(conflict.server.ai_mode);
     setConflict(null);
     setSaved(true);
     setSyncState('synced');
@@ -322,11 +253,11 @@ export function App() {
         <div className="sync-conflict-banner" role="alert">
           <div>
             <strong>检测到并发修改</strong>
-            <span>{conflictMessage(conflict.entity_type)}</span>
+            <span>服务器版本和本地编辑都已保留，请选择继续方式。</span>
           </div>
           <div className="conflict-actions">
-            <button type="button" onClick={() => resolveConflict('keep_local')}>保留本地冲突副本</button>
-            <button type="button" onClick={() => resolveConflict('use_server')}>采用服务器版本</button>
+            <button type="button" onClick={keepConflictCopy}>保留本地冲突副本</button>
+            <button type="button" onClick={useServerVersion}>采用服务器版本</button>
           </div>
         </div>
       )}
@@ -341,12 +272,10 @@ export function App() {
           query={query}
           saved={saved}
           onDraftChange={selectDraft}
-          onFileChange={setActiveFile}
-          onModeChange={setMode}
+          onFileChange={selectFile}
+          onModeChange={selectMode}
           onQueryChange={setQuery}
-          aiMessage={aiMessage}
-          aiGenerating={aiGenerating}
-          onGenerateArtifact={generateArtifact}
+          ideaSegments={aiState.segments}
         />
         <EditorStage
           activeFile={activeFile}
@@ -360,7 +289,9 @@ export function App() {
           jumpToLine={jumpToLine}
           cursorPosition={cursorPosition}
           onCursorChange={handleCursorChange}
-          onFileChange={setActiveFile}
+          onFileChange={selectFile}
+          editorKey={`${currentDraft?.id}:${activeFile}`}
+          onEditorReady={handleEditorReady}
         />
         <InspectorPanel
           hidden={inspectorHidden}
@@ -368,24 +299,26 @@ export function App() {
           onJumpToLine={setJumpToLine}
           onHide={() => setInspectorHidden(true)}
           onShow={() => setInspectorHidden(false)}
-          artifact={currentArtifact}
-          onToggleArtifact={toggleArtifactVisibility}
-          review={currentReview}
-          reviewSourceAvailable={currentReviewSourceAvailable}
-          reviewStale={currentReviewStale}
-          reviewHistory={reviewHistory}
-          onReviewSelect={setSelectedReviewId}
-          reviewKind={reviewKind}
-          reviewBusy={aiRequestKind === 'review'}
-          aiRequestBusy={aiGenerating}
-          onReviewKindChange={chooseReviewKind}
-          onSaveReview={saveLocalReview}
-          onCancelAI={cancelAIRequest}
-          onToggleReview={toggleReviewVisibility}
+          aiState={aiState}
+          mode={mode}
+          activeFile={activeFile}
+          canAcceptCompletion={aiSession.canAcceptCompletion()}
+          onReview={(kind) => { void aiSession.requestReview(kind); }}
+          onCompletion={() => { void aiSession.requestCompletion(toCursor(cursorPosition.line, cursorPosition.column)); }}
+          onAcceptCompletion={() => { aiSession.acceptCompletion(change => editorApply.current?.(change) ?? false); }}
+          onRejectCompletion={() => aiSession.rejectCompletion()}
+          onCancel={() => aiSession.cancel()}
+          onToggleResult={(id, hidden) => aiSession.setHidden(id, hidden)}
+          onRetryStorage={() => aiSession.retryStorage()}
         />
       </main>
     </div>
   );
+}
+
+function makeAIContext(draft: Draft, documents: Documents, fileId: FileId, mode: Mode): AIContext {
+  return { draftId: draft.id, draftVersion: draft.version, fileId, mode,
+    code: documents['main.cpp'], idea: documents['idea.md'], problemContext: draft.title || '当前草稿' };
 }
 
 function getClientId(): string {
@@ -410,35 +343,6 @@ function replaceDraft(state: WorkspaceState, draft: Draft): WorkspaceState {
 function unresolvedConflict(state: WorkspaceState): ConflictChoice | null {
   const record: ConflictRecord | undefined = state.conflicts.find((item) => !item.resolved);
   if (!record) return null;
-  if (record.entity_type === 'ai_artifact') {
-    const copy = state.ai_artifacts.find((artifact) => artifact.id === record.local_copy_id);
-    return copy ? { entity_type: 'ai_artifact', copy, server: record.server_entity as AIArtifact } : null;
-  }
-  if (record.entity_type === 'review_result') {
-    const copy = state.review_results.find((review) => review.id === record.local_copy_id);
-    return copy ? { entity_type: 'review_result', copy, server: record.server_entity as ReviewResult } : null;
-  }
   const copy = state.drafts.find((draft) => draft.id === record.local_copy_id);
-  return copy ? { entity_type: 'draft', copy, server: record.server_entity as Draft } : null;
-}
-
-function latestArtifact(artifacts: AIArtifact[], draftId: string, mode: Mode): AIArtifact | undefined {
-  return artifacts.filter((artifact) => artifact.draft_id === draftId && artifact.mode === mode && !artifact.deleted)
-    .sort((left, right) => right.server_sequence - left.server_sequence || right.version - left.version || right.updated_at.localeCompare(left.updated_at))[0];
-}
-
-function conflictMessage(entityType: ConflictChoice['entity_type']): string {
-  if (entityType === 'ai_artifact') return '服务器 AI 结果和本地副本都已保留，请选择继续方式。';
-  if (entityType === 'review_result') return '服务器审查结果和本地副本都已保留，请选择继续方式。';
-  return '服务器版本和本地编辑都已保留，请选择继续方式。';
-}
-
-function listReviewHistory(results: ReviewResult[], draftId: string, mode: Mode, kind: ReviewResult['review_kind']): ReviewResult[] {
-  return results.filter((result) => result.draft_id === draftId && result.mode === mode && result.review_kind === kind && !result.deleted)
-}
-
-function isReviewCurrentAgainstEditor(state: WorkspaceState, review: ReviewResult, draft: Draft | undefined, currentDocuments: Documents): boolean {
-  return draft !== undefined && draft.id === review.draft_id && draft.version === review.source_draft_version &&
-    draft.code === currentDocuments['main.cpp'] && draft.idea === currentDocuments['idea.md'] &&
-    (draft.cases ?? '') === currentDocuments['cases.txt'] && getReviewFreshness(state, review, currentDocuments['main.cpp']) === 'current';
+  return copy ? { copy, server: record.server_entity } : null;
 }

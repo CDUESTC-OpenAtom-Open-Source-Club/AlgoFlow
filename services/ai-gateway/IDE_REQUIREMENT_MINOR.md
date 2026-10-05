@@ -2,7 +2,7 @@
 
 - 优先级：次要（P2）
 - 所属：`services/ai-gateway`
-- 状态：待排期
+- 状态：工程实现范围已完成（可关闭 issue #5）；设备、真实 RDB、真实 Provider 与云部署按已确认范围延期
 - 提出方：AlgoFlow Web / OpenHarmony IDE
 
 ## 背景
@@ -37,7 +37,7 @@
 - 每条审查建议都能定位到代码范围或明确标记为全局建议，并记录来源草稿版本。
 - 局部补全不会返回完整题解、`main` 或未请求的新增算法步骤。
 - 未配置 provider 返回 `AI_NOT_ENABLED`；provider 异常返回 `AI_PROVIDER_ERROR`；产物不符合契约返回 `INVALID_AI_ARTIFACT`。
-- 至少补充正常、错误思路、提示注入、越权补解、超时、空结果和格式错误测试向量。
+- 至少补充正常、错误思路、包含注入文本的结构校验、越权补解、超时、空结果和格式错误测试向量。真实模型的提示注入防护需要单独对抗评测。
 - 客户端拒绝或隐藏建议后，用户代码和既有 AI 产物保持不变。
 
 ## 依赖与风险
@@ -45,3 +45,268 @@
 - 需要先确定默认模型、预算、隐私文案和第三方内容传输边界。
 - 需要评审代码片段发送范围、限流、超时、审计字段和结果保留期限。
 - 在 provider 和安全策略确认前，接口只能保持“AI 未启用”或返回分类错误，不能使用 Mock 冒充结果。
+
+## 2026-09-25 已确认的范围决策
+
+以下决定来自 issue #5 计划讨论；记录决定不代表已经完成实现或验收。
+
+- 最终目标为本地 Gateway 联调与 Web、手机双端验收，不包含本次华为云生产部署。
+- 真实 Provider 暂不接入。供应商、模型、预算、受控配置及真实模型评测均作为延期项记录，不填入生产值，不接收或保存客户端密钥。
+- 本期仅启用 `faithful_transform`，提供 `explanation`、`risk`、`complexity` 三类审查和局部补全；其他模式保持明确不可用，不自动降级或升级。
+- 补全只返回普通 C++ 局部片段，不生成宏或其他预处理指令，不返回 `main`、完整题解或无来源的新算法步骤。用户原文件中的预处理代码保持可编辑，不因 AI 门禁被删除或改写。
+- 每个草稿本地保留各类审查及补全的最近一次结果和隐藏状态。原始 IDE AI 结果本期不跨端同步；用户接受后产生的代码变更使用现有草稿保存和同步链路。
+- 允许测试专用固定响应，必须明确标注“测试数据”。测试响应仅证明协议和交互，不证明真实模型效果、语义忠实性或提示注入抵抗能力。
+- 普通启动与实际部署交付不装配测试 Provider；未配置真实 Provider 时返回 `AI_NOT_ENABLED`，两端显示“AI 不可用 / 未配置模型”。禁止请求失败后自动回退到测试响应。
+- 测试响应使用 `X-AlgoFlow-Test-Data: true` 响应头标记，不扩展公共结果 Schema。Web／手机后续阶段依据此头识别测试响应，并把来源标记持久化到各自本地结果记录，重启后仍显示“测试数据”；不得用模型名推断来源。
+- Gateway 将客户端断开映射为传给 Provider 的 `AbortSignal`；已断开的连接不再写响应，Provider 应监听信号并释放工作。服务端主动超时保留 `502 AI_PROVIDER_ERROR`。
+- 测试结果通过 `X-AlgoFlow-Test-Data: true` 响应头识别，不增加公共结果字段。Web／手机后续阶段必须将该来源标记随本地最近结果持久化，刷新／重启后仍显示“测试数据”；不得通过 `model_id` 字符串猜测来源。
+- Gateway 将客户端断开转换为传给 Provider 的 `AbortSignal`；Provider 必须遵守取消信号并释放在途资源。客户端已断开时不写响应；Gateway 自身超时仍返回 `502 AI_PROVIDER_ERROR`。
+- 最终合并由用户操作；本计划不授权推送、合并或修改 `main`。
+
+## 原分阶段实施计划（历史规划；当前状态以最新交付记录为准）
+
+### 1. 对齐公共契约并补齐 Gateway 门禁（已实现并本地验证）
+
+- 为 IDE 请求及结果补齐显式输出类型，区分审查和补全；与忠实转换现有的 `pseudocode` / `code_snippet` 契约隔离，避免扩大原接口允许的输出范围。
+- 审查诊断必须携带 `range`：对象表示具体范围，`null` 明确表示全局建议，不再允许省略。
+- 保留请求与产物的模式、草稿、版本、规则、输出类型及可见性匹配检查；来源引用只能指向本次请求中的稳定思路 ID。
+- 在明确的 C++ 文本分析边界内处理反斜杠续行、注释和字面量，再执行预处理指令及入口检查；补充宏入口、续行入口和误拦合法文本的回归。不把原始文本正则描述为完整 C++ 语义分析。
+- 保持 B2 的光标包含、上下各 3 行、最多 7 行、500 字符及整文件拒绝规则，保留 B4 的调用失败 `502 AI_PROVIDER_ERROR` 与非法产物 `422 INVALID_AI_ARTIFACT` 分类。
+- 修正“仅有排序思路却将新增贪心选择标成合法”的测试样例。将来源 ID 有效、结构有效和算法语义忠实分别验收。
+- 更新共享 Schema、测试向量和契约说明；旧 IDE 请求缺少新增必填字段时明确报错，已有忠实转换接口保持兼容。
+
+### 2. 建立测试专用联调入口及不可用交付路径（工程已交付）
+
+阶段 2 决策：使用独立 Node 启动模块，通过显式环境变量配置场景、监听 host 和 port；结果不扩展公共 Schema，统一使用 `X-AlgoFlow-Test-Data: true` 响应头，客户端在后续阶段识别并保存“测试数据”来源。Gateway 将请求断开映射为 Provider `AbortSignal`，断开后不写响应；主动超时保持 `502 AI_PROVIDER_ERROR`。云服务部署不在本阶段实施。
+
+- 新增独立测试入口，装配固定响应 Provider，覆盖成功、空诊断、非法产物、延迟、取消和失败场景；普通 Gateway 入口不导入或装配它。
+- 测试来源必须可被两端识别并持续显示“测试数据”，结果落库后仍保留来源标记。测试缓存与正式缓存隔离，正式模式不能把历史测试结果展示为真实结果。
+- 正式配置下验证 `/status` 能力不可用、三个 AI 端点在合法请求下返回 `503 AI_NOT_ENABLED`，客户端显示不可用原因且不会伪造成功结果。
+- Gateway 默认仅本机监听；手机联调通过显式配置的受控局域网监听完成。Web 使用明确的开发代理或限定来源配置，不为联调开放无限制生产跨域访问。
+- 此步骤不新增云服务、真实供应商适配器或团队密钥配置。
+
+### 3. 完成 Web 请求、结果和本地存储
+
+- 新增独立的 AI HTTP 客户端、请求状态用例及本地结果仓储；`App.tsx` 继续只负责页面状态和区域编排。
+- 补齐稳定思路片段的维护与恢复，沿用公共契约及手机端的字段含义，不按每次请求重新生成全部来源 ID。
+- 三类审查分别触发、展示及隐藏；诊断显示级别、问题、依据、建议以及范围或全局标识，与本地基础检查和用户原文分开。
+- 补全先预览原范围和建议文本，用户主动接受后才通过 CodeMirror 局部事务修改代码；拒绝或隐藏不修改原文，接受支持撤销。
+- 请求记录草稿 ID、文档标识、模式、服务端版本、本地代码与思路快照及请求代次。代码、思路、文档或草稿改变后，旧结果只能标记过期查看，不能直接接受；取消或较旧请求的回调不能覆盖较新的结果。
+- 使用独立的本地结果存储，按草稿、模式及审查类型/补全类型保留最近一次结果、来源元数据、处理状态和隐藏状态。不得将这些字段因展开整个 Draft 对象而带入同步操作。
+- 刷新后恢复结果；存储失败显示可操作错误，不清空用户工作区。删除草稿时清理其本地结果。
+
+### 4. 完成手机端用例、界面和数据库迁移
+
+- 为审查/补全建立严格模型与仓储端口，扩展 `HttpAIProvider` 和应用用例；页面不直接访问网络或数据库。
+- 接入与 Web 相同的来源、版本、请求代次、过期检查、失败恢复及手动接受规则，保持 `main.cpp` 与独立短代码不互相覆盖。
+- 工具面板提供三类审查与补全预览、接受、拒绝和隐藏入口，主代码编辑区继续占据主体区域。
+- 修复已有隐藏状态未实际控制结果渲染的问题；隐藏影响结果展示，不改写原文，不触发额外模型调用。
+- 为本次 IDE 审查/补全结果增加独立本地存储，显式迁移现有数据库版本；保留草稿、同步队列、游标和冲突副本，禁止通过删除数据库完成升级。
+- 同步应用远端草稿时保留本地 AI 结果及隐藏状态，并根据内容变化标记过期；AI 结果不随 Draft 同步上传。
+- 补充迁移失败回滚、重启恢复、删除草稿关联清理和版本不兼容时的恢复说明。旧版应用不得直接写入无法识别的新版数据库。
+- 使用当前锁定 SDK 支持的编辑与撤销机制验证接受操作；不宣称未实际验证的原生编辑能力已经完成。
+
+### 5. 双端验收、文档与提交
+
+- 以测试专用响应执行“请求 → 预览 → 接受/拒绝/隐藏 → 刷新/重启恢复”双端流程。
+- 验证请求期间编辑代码、修改思路、切换草稿、收到同步更新、连续请求乱序和取消后的迟到响应；所有过期补全均不得套用到当前内容。
+- 验证接受后的普通草稿同步，包括离线保存、恢复提交和并发冲突；不将该结果描述为 OpenHarmony 分布式能力。
+- 验证正式交付模式不装配测试 Provider、不读取测试缓存、无真实 Provider 时明确不可用。
+- 更新本需求单、契约说明、服务启动说明及实际构建/测试记录，逐项区分“已验证”“待设备验证”和“待真实 Provider 验证”。
+- 建议按五个可审查提交组织：契约与门禁、测试联调与不可用路径、Web、手机与迁移、双端验收及文档。阶段 1 已获实施及提交授权，其余阶段等待后续明确授权，不自动推送或合并。
+
+## 预计修改和新增范围
+
+- 公共契约与 Gateway：现有 Schema、向量、`src/contracts.mjs`、`src/server.mjs` 和回归测试；按需要新增浏览器可复用的纯校验模块、C++ 片段检查模块及测试入口，领域校验不绑定 UI 或 Provider 品牌。
+- Web：`types.ts`、`storage.mjs`、相关同步映射、`App.tsx`、编辑器/侧栏/结果面板及必要样式；新增 AI 客户端、请求用例、本地结果仓储和针对性测试。
+- 手机：领域模型和端口、`HttpAIProvider.ets`、`DraftWorkspaceViewModel.ets`、`RdbDraftRepository.ets`、`Index.ets` 及对应测试；按职责拆分新增 IDE AI 模型、结果仓储适配器或结果组件。
+- 默认不新增 npm 依赖、系统权限、C++ 工具链、云服务或正式签名配置；如实施时确有必要，先说明用途与影响并另行确认。
+- 保留未跟踪的 `run-demo-gateway.mjs` 原样，不将个人演示脚本直接作为正式入口或纳入提交。
+
+## 全计划验收门禁（按阶段执行）
+
+阶段 1 执行 Node 契约／HTTP 回归与差异检查；Web、手机、存储迁移及双端交互门禁随对应阶段执行，不提前标记通过。
+
+- Node：运行 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`，并运行新增纯用例/存储测试；补齐入口绕过、合法片段误拦、输出类型、全局范围、来源映射、旧结果、测试数据隔离等回归。
+- Web：在 `apps/web` 运行 `npx tsc -p tsconfig.app.json --noEmit`、`npx tsc -p tsconfig.node.json --noEmit`、`npm run build`，再执行实际浏览器交互验收。
+- 手机：使用已锁定 DevEco/Hvigor 工具链构建，并运行有意义的领域/应用用例、数据库迁移和 Hypium 测试；设备上验收输入、滚动、接受/撤销、隐藏、重启和网络恢复。当前设备连接与安装条件尚未核验，不能用构建或 Previewer 通过替代设备验收，也不自动配置签名。
+- 变更检查：运行 `git diff --check`；逐项报告实际命令、环境和结果。未执行项不得填写“通过”。
+- 测试数据的正常链路与正式模式的不可用链路必须分别验收，不能互相替代。
+
+## 延期项及整体完成条件
+
+- **延期：真实 Provider 接入。** 后续确认供应商、模型、预算、受控密钥配置与隐私数据流后，单独实施适配器并开展本地真实模型联调。
+- **延期：真实 Provider 接入与模型行为验收。** 使用错误/不完整思路、要求新增解法的诱导、提示注入、格式异常和超时等样本评测真实模型；仅校验字段类型、来源 ID 和固定响应不能证明算法忠实或注入抵抗。
+- 完成阶段 2–5 后可以交付“工程功能与测试响应双端验收完成、正式模式明确不可用”。只有延期的真实模型验收以及实际双端设备验收补齐后，才可按原完整范围判定 issue #5 完成；未经用户明确调整验收范围，不把延期项视为已完成。
+
+## 阶段五计划：设备与测试响应双端验收（交付边界已确认，工单拆分待审）
+
+本节记录计划，不表示已执行验收或已获功能实施授权。用户已确认设备缺失期间只交付准备成果，不标记设备验收通过；纯术语表单独维护，执行计划仍保留于本需求单。基线为 pr18 的 `2dcec426e02dd500167a3cd9a58a4238d28605ae`；上阶段报告 Node 519/519 通过，本轮未重跑回归。2026-09-26 只读复核：hdc 无连接目标、工程无 signingConfigs。真实模型、云部署、#25 提示代码生成、正式签名继续延期；不推送、不修改或合并 main，个人脚本保持原样。
+
+### 建议顺序和交付物
+
+1. **验收准备与测试补齐。** 为现有设备测试补齐 v1 草稿全部相关字段、同步操作及其 operation_id/base_version、游标、冲突记录/副本的迁移前后断言；使用隔离测试库，不以删除用户库恢复。区分真实历史 v1 数据样例与当前测试中“v2 建库后退到 v1”的合成样例。补齐三类审查/补全/兼容转换的结果槽位、测试分区、隐藏旧消息、写入失败后重试、真实删除与远端墓碑清理验证。准备固定版本、启动命令、场景输入、预期输出和证据表。
+2. **设备与本地网络前置检查。** 选定可安装的 API 20 目标，记录实际系统/runtimeOS、工具链、安装和开发签名条件。不自行配置正式签名。显式配置受控局域网地址，确认手机可达本地 Gateway 和 sync-api。测试服务与草稿数据隔离，不能用手机的 127.0.0.1 指代电脑，也不能把只监听电脑回环地址的 Web 辅助服务当作手机联调入口。
+3. **真实 RDB 与手机交互实测。** 执行设备 Hypium，验证首次建库、v1→v2 数据保留、失败回滚/重试、高版本拒绝及损坏记录。另做应用进程终止再启动，验证最近结果/隐藏/测试标记恢复、未完成请求恢复取消、补全恢复后只读过期。验收原生输入/粘贴/长代码滚动、三类审查、补全预览/接受/拒绝/隐藏、撤回及后续编辑保护；同时采集 Gateway 侧取消证据，不能只凭客户端取消文字判定底层请求已中止。
+4. **Web 与手机同草稿验收。** 在隔离草稿验证手机接受后仅本地保存排队、用户同步后 Web 收到相同代码，及反方向编辑同步。覆盖离线保存、恢复提交、同步期间继续编辑、并发冲突副本、远端删除，以及同步内容变化使旧补全不可接受。核对实际同步载荷不包含 AI 结果/隐藏/预览；手机短代码不被 main.cpp 补全覆盖。双端指 Web+手机，不以两个 Web 标签页替代。
+5. **正常交付路径与收尾。** Web 生产构建、手机 Release 分别验证测试响应拒绝、测试缓存不加载、无 Provider 明确不可用、失败不回退测试数据。修复验收范围内问题并增加回归，按变更执行 Node、Web TypeScript/构建、API 20 构建和 git diff --check。证据记录环境、commit、命令、实际结果与未验项；必要修复和验收文档分别组织可审查提交。
+
+### 判定边界
+
+- 准备完成：用例、隔离数据、启动说明及证据表就绪；不等于设备验证通过。
+- 阶段五通过：真实 RDB、手机交互、Web+手机同步及正常交付隔离路径均有实测证据；数据丢失、越界写入、过期接受、AI 状态同步泄漏或测试数据进入正常模式均为阻断项。
+- 环境缺失：只完成不依赖环境的准备工作，对实测项标记“未执行”，不以 Node 替身、构建或 Previewer 代替。
+- 模型行为验收：真实模型是否忠实于错误/不完整思路、是否抵抗注入，仍为延期项。阶段五测试响应验收通过不能自动关闭原完整范围的 issue #5。
+
+### 已确认的文档与交付安排
+
+- 设备缺失期间交付验收准备包，实测票保持未执行；设备接入和安装条件由后续环境核验确定，不能用测试替身或构建结果替代。
+- 根目录 CONTEXT.md 仅维护产品术语，执行计划保留在本需求单。当前没有需要新增 ADR 的不可逆架构决策。
+
+### 工单拆分草案（T 编号仅本地讨论标识，不是 GitHub issue 编号）
+
+以下各票引用 #5 为背景，但不修改或关闭父 issue。每票只修复该验收行为直接涉及的问题，不顺带引入新模式、依赖、签名或云资源。票的完成证据必须注明准备验证或设备实测，不能混用。
+
+1. **T1：升级后保留草稿与待同步工作——验收准备。** 阻塞：无。交付覆盖首次建库、历史 v1 升级及失败恢复的隔离样例和可执行检查；比对主代码、独立短代码、思路、待同步操作、基础版本、游标和冲突副本，失败不推进版本，高版本拒绝写入。完成标准：样例来源与合成样例区别写清，自动检查和测试 HAP 构建通过，设备步骤齐备；真实 RDB 执行结果保持未执行。
+2. **T2：本地 AI 结果可恢复且不进入同步——验收准备。** 阻塞：无。交付从三类审查/补全/兼容转换到本地结果、隐藏、恢复和删除的完整测试场景；覆盖各槽位及测试分区互不覆盖、过期禁止接受、普通删除/远端墓碑清理、存储错误可见和重试恢复。完成标准：用例回归与测试 HAP 构建通过，断言 AI 操作不产生草稿同步载荷；进程重启与真实存储失败的设备检查保持未执行。
+3. **T3：隔离联调环境与可观测取消——验收准备。** 阻塞：无。交付独立测试草稿、本地 Gateway/sync-api 启动与清理说明，以及请求开始、客户端取消、Provider 收到中止的关联证据；仅测试入口暴露验收观测，不记录完整代码、思路或凭据。完成标准：本地回环链路和延迟/错误场景可重复验证，手机局域网配置明确；不声称已观察到原生手机取消链路。
+4. **T4：设备上验证迁移、结果恢复与接受／撤回。** 阻塞：T1、T2；外部前置：可安装的 API 20 目标及已获授权的开发安装条件。交付真实 RDB 和手机单端证据，包含进程终止重启、输入/滚动、隐藏、接受/拒绝、后续编辑保护及短代码不被覆盖。完成标准：设备信息和实际结果逐项记录，必要修复有回归；只有全部必测项通过才标记本票实测完成。
+5. **T5：设备取消及迟到响应不能恢复写入权限。** 阻塞：T3、T4。交付原生请求到 Provider 中止的端到端证据，覆盖取消、编辑、切稿/文件/模式、离开页面和新请求；旧回调不得恢复接受权限，每次操作仅一次请求。完成标准：区分客户端中止、Gateway 超时与非法产物，保留既定 502/422 契约；SDK 本地超时分类只记录实测事实及与 #20 的差异，不凭旧票恢复自动重试。
+6. **T6：接受后普通代码在 Web 与手机间安全同步。** 阻塞：T3、T4。交付同草稿双向编辑、手机接受后只本地排队、手动同步、离线恢复、并发冲突和同步期间继续编辑的实测证据。完成标准：较新编辑不丢失，AI 结果/隐藏不进入载荷，同步变化使旧补全失效，远端删除清理本地结果；不以两个 Web 标签页代替手机。
+7. **T7：正常交付配置拒绝测试响应和测试缓存。** 阻塞：T2、T3；外部前置：可安装手机 Release 验证包，不授权正式签名。交付 Web 生产包与手机 Release 的测试数据拒绝、缓存隔离、无 Provider 不可用及无自动回退证据。完成标准：两端实际运行验证，不仅检查编译开关；没有手机条件时仅记录 Web 已验与手机待验，整票保持未完成。
+
+准备交付边界为 T1–T3；设备实测交付需 T4–T7 全部通过。T5 与 T6 互不阻塞；T7 无需等待手机编辑流程验收完成，可在其自身前置条件满足后独立验证。最后汇总票内证据至本需求单，不另造只写总结的实施票，也不自动关闭 #5。
+
+### Tracker 发布前检查
+
+- 已核实目标为当前 GitHub 仓库；尚未发布以上工单，需先确认颗粒度、阻塞关系及是否合并/拆分。
+- 当前仓库有 enhancement、documentation 等默认标签，但没有 to-tickets 默认要求的 ready-for-agent，未发现技能的 triage 配置。发布前运行 `/setup-matt-pocock-skills` 配置，或由用户明确指定替代标签策略；不自行创建标签。
+- 旧 #19、#21 含“跨端同步 AI 产物”的历史目标，与当前“本地 AI 结果不入同步”决策冲突。它们只作为背景关联，不作为实施要求或本批阻塞项；本轮不修改这些旧票。#20 的重试建议同样不能覆盖当前单次请求策略。
+
+## 历史规划基线
+
+- 当前分支：`pr18`；提交：`e497ae3968925a2797894aadd9536a1d58f2fe63`。
+- 2026-09-25 上一轮审查实际运行 Node 回归，242 项通过；额外 HTTP 探针仍发现宏/续行入口、范围省略等验收缺口。该历史结果不代表本计划中的工作已经通过。
+- 计划轮次仅记录决策与计划，未修改功能实现、接入模型或创建 commit；后续阶段 1 授权及实施结果见下文。该历史记录不表示后续阶段已经执行。
+
+## 2026-09-25 阶段 1 实施与验证记录
+
+- IDE 审查请求／结果要求 `output_kind: "review"`，补全要求 `output_kind: "completion"`；与旧忠实转换输出类型隔离。诊断必须显式携带具体 `range` 或 `null`，不再默认把省略范围视为全局建议。
+- 新增无依赖 C++ 片段词法模块，覆盖宏／预处理指令、`main` 标识符、续行、注释、普通及原始字符串、数字分隔符。共享向量包含 59 个片段样例，同时验证纯门禁和 HTTP `422`／`200`。Schema 单独校验不足以实现片段门禁；任意 C++ 编译合法性和算法语义仍未验证。
+- 保留 B2 的光标、7 行窗口、500 字符及整文件拒绝规则；保留 B4 的 Provider 调用失败 `502` 与非法产物 `422` 分类。新增必填字段、跨能力输出类型、元数据匹配、全局范围和旧接口兼容性回归。请求相对边界向量先断言请求及产物结构合法，再明确断言 `422`，避免被 `400` 掩盖。
+- 修正正常补全样例：唯一思路是右端点排序，结果仅补充排序，不再新增贪心选择循环；审查样例对缺失选择规则作单独提示。固定样例不等于真实模型忠实性验收。
+- 实际环境：Windows PowerShell，Node.js `v24.14.1`，分支 `pr18`。`main` 不参与修改或合并；未跟踪的个人 `run-demo-gateway.mjs` 保持原样，不纳入提交。
+- 针对性回归：`node --test --test-reporter=spec --test-name-pattern 'C\+\+ completion fragment' services/ai-gateway/test/contracts.test.mjs`。先复现两个 CR 单行注释后的入口／指令漏检（连同父测试报告 3 项失败），修复后 60/60 通过。
+- 完整回归：`node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`，373/373 通过，0 失败、0 跳过。
+- 语法检查：分别执行 `node --check packages/contracts/cpp-fragment.mjs`、`node --check services/ai-gateway/src/contracts.mjs`、`node --check services/ai-gateway/src/server.mjs`、`node --check services/ai-gateway/test/contracts.test.mjs`，均退出码 0。
+- 差异检查：`git diff --check` 退出码 0，无空白错误；Git 提示按现有配置转换 LF/CRLF，不是测试失败。
+- 兼容性：新旧 IDE 调用方、Provider 和 Gateway 需配套升级或回滚，详见 `packages/contracts/README.md`。本阶段无数据库或客户端存储变更，无新增依赖、权限、云服务或签名配置。
+- 未执行：Web 构建／浏览器交互、手机构建／设备验收、测试专用 Provider 联调、真实模型调用及对抗评测。阶段 1 完成不代表整个 issue #5 完成。
+
+## 2026-09-26 阶段 2 实施记录（部分）
+
+- 已新增 `services/ai-gateway/test-provider.mjs`。仅通过 `ALGFLOW_TEST_AI_HOST`、`ALGFLOW_TEST_AI_PORT`、`ALGFLOW_TEST_AI_SCENARIO` 和 `ALGFLOW_TEST_AI_TIMEOUT_MS` 显式配置；支持 `success`、`empty`、`invalid`、`delay`、`failure` 场景，普通入口不会自动加载。
+- 测试入口的三类成功响应均带 `X-AlgoFlow-Test-Data: true` 和 `Cache-Control: no-store`；公共结果 Schema 未增加测试字段。客户端识别和本地持久化仍属于阶段 3/4。
+- Gateway 已向 `generate`、`review`、`complete` 传递 `AbortSignal`，客户端断开后不写响应；三类能力均有断开回归。服务端主动超时的 `502 AI_PROVIDER_ERROR` 保持不变。
+- 阶段 2 当前仍未提交；待补充独立入口的启动验收和取消场景说明后再创建 commit。
+
+## 2026-09-26 Web 收尾门禁
+
+- 隔离的 `test/editor-acceptance.html` 使用实际 CodeEditor；已在内置浏览器验证 LF/CRLF 多行接受、3:12 光标位置、单步撤销，以及外部 LF→CRLF 切换后再次接受。修复为 CodeMirror Text 显式拆行和可重配置的换行序列化。
+- 同步串行执行，期间发生保存或选中草稿变化时重读本地状态；已发出的操作不再复用 ID 改写 payload。未保存编辑保留原基础版本，后续冲突显式保留副本，避免静默覆盖。
+- 使用仅本机 `test/acceptance-server.mjs` 的两个隔离草稿验证请求中切稿/编辑取消，Provider 收到两次 abort；同步期间继续编辑、服务不可达时保存并刷新、恢复后产生冲突副本并保留较新文本均通过。
+- 以 `VITE_AI_ALLOW_TEST_DATA=true` 构建生产产物，本机静态服务和 `/ai-api` 路由已在浏览器验证；测试响应仍被拒绝，切换无 Provider 后明确提示未配置模型。测试缓存隔离由既有浏览器补验与仓储回归覆盖；未部署生产服务。
+- Node 合并回归 415/415，生产构建（含 app/node TypeScript）通过；保留大于 500 kB chunk 的既有提示。验收辅助页面不属于生产构建入口；辅助服务只显式启动且只监听 127.0.0.1。
+
+## 2026-09-26 阶段四手机工程交付与验收边界
+
+- Web 收尾提交：`fd569e0`（`fix(web): verify newline edits and preserve concurrent work`）。手机工程另行提交，提交标识见 Git 日志中的 `feat(phone): add isolated AI review and completion workflow`。
+- 手机新增 `IDEAIModels`、`IDEAIContract`、`IDEAISession` 和 `RdbAIResultRepository`；更新 Index、ViewModel、HttpAIProvider、RdbDraftRepository、PhoneSyncService 及取消/同步端口。审查会话追加、局部补全预览/接受/拒绝/隐藏、只读旧结果和受上下文保护的撤回均由独立用例控制。兼容 `/requests` 使用相同单次网络调用及严格产物门禁，旧入口不自动写代码。
+- 原生 HTTP destroy 执行取消，代次阻止迟到响应恢复权限。代码、思路、文件、模式、草稿、版本、页面离开或新请求使旧结果失效。补全接受只修改 main.cpp，进入既有本地保存与队列，不自动调用同步；同步期间新保存分配新 operation_id，返回旧响应时保留新编辑，后续同步显式处理版本冲突。
+- RDB v1→v2 事务仅新增 ai_results，主键分为草稿/模式/槽位/测试标志；失败回滚，高版本拒绝。普通草稿、队列、游标、冲突和 artifact_hidden 保留兼容，AI 新操作不写 artifact_hidden。旧消息更新按 result_id 限定；测试结果不能落入正常缓存。重启只读过期，loading 恢复 cancelled；墓碑/删除清理结果，迟到保存不能复活已删除草稿的结果。失败显示重试，不删除用户库。
+- 数据库恢复策略：升级失败先保留原库并解决空间/权限等实际原因，再重试；不手工降版本、不删除数据库。v2 之后若需退回 v1 应使用升级前备份，禁止旧应用写入 v2。损坏记录保留原数据并报告错误，修复/导出应另行评审。
+- Node.js v24.14.1 / Windows PowerShell，阶段四基线实际执行 `node --test --test-reporter=spec apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`：519/519 通过，0 失败、0 跳过。其中手机 104 项执行真实 .ets 代码的 Node 类型转换版本，SDK 网络与 RDB 使用替身；包含公共 C++ 59 个向量、审查/补全契约、取消竞态、来源/范围、CRLF 接受/撤回、稳定 ID、槽位与同步保留。Node 类型转换有实验 API 提示，不能替代 ArkTS 编译或真实 RDB 验收。
+- 使用锁定 DevEco 6.0.0 / API 20 工具链构建。环境：DEVECO_SDK_HOME=`C:/Program Files/Huawei/DevEco Studio/sdk`，JAVA_HOME=`C:/Program Files/Huawei/DevEco Studio/jbr`；调用 `tools/node/node.exe tools/hvigor/bin/hvigorw.js --mode module -p product=default -p module=entry@default -p buildMode=debug assembleHap --no-daemon`，Release 将 buildMode 改为 release，测试 HAP 将 module 改为 entry@ohosTest。Debug、Release、ohosTest 均通过编译打包；未签名，保留 SDK deprecated/可能抛异常及 Release 混淆提示。Release 生成的 BuildProfile 明确 DEBUG=false；测试响应及测试缓存开关在发布模式强制关闭。
+- `entry/src/ohosTest/ets/test/AIStorage.test.ets` 已接入测试套件并编译，使用独立测试数据库覆盖首次建库、升级保留、回滚重试、重开恢复、旧消息槽位、损坏记录、写入失败、删除清理与高版本拒绝。**未在真实 RDB 执行**。`hdc list targets` 实际返回 `[Empty]`，无 signingConfigs，未安装设备、未验证设备输入/滚动/取消/隐藏/接受/撤回/进程重启。
+- 状态：工程完成、设备待验。未接真实模型，未做阶段五双端验收，未做云部署、#25 提示代码生成或正式签名；云服务厂商仍未确定。阶段四不等于 issue #5 整体完成。分支 pr18；不合并、不推送，个人 run-demo-gateway.mjs 不提交。
+
+## 2026-09-27 阶段五 T1 验收准备交付
+
+- 为 `entry/src/ohosTest/ets/test/AIStorage.test.ets` 补齐隔离 v1 样例：草稿全部字段、独立短代码、稳定思路片段、待同步 operation_id/base_version/payload、游标以及冲突副本。升级后逐项断言这些普通工作数据保持不变，并只新增 `ai_results`；同时覆盖结果槽位、重开恢复、损坏记录、删除清理、写入失败和高版本拒绝。
+- 为 `tests/phone-ai.test.mjs` 增加迁移准备 fixture，断言 v1→v2 不重建或删除 `drafts`、`sync_operations`、`sync_state`、`conflicts`，只创建一次 `ai_results`。fixture 是合成的隔离测试样例，不代表读取了真实历史 v1 数据库。
+- 实际执行：`node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，520/520 通过，0 失败、0 跳过；`git diff --check` 通过。
+- 实际执行 API 20 Debug 测试 HAP 构建：`tools/node/node.exe tools/hvigor/bin/hvigorw.js --mode module -p product=default -p module=entry@ohosTest -p buildMode=debug assembleHap --no-daemon`，构建成功；仅有未配置 `signingConfigs` 的既有跳过签名警告。该构建仍不等于真实 RDB 或设备验收，`hdc list targets` 当前为 `[Empty]`，设备安装/交互和真实 RDB 仍未执行。
+- 状态：T1 工程准备完成、设备与真实 RDB 待验；不标记设备验收通过，不接入真实 Provider/云服务，不修改或合并 `main`。个人 `run-demo-gateway.mjs` 保持未提交。
+
+## 2026-09-27 阶段五 T2 验收准备交付
+
+- 修正 `RdbAIResultRepository.list()` 的去重键：同一草稿、模式和能力槽位下，正常结果与测试结果按 `is_test` 分区独立保留，避免 Debug 测试数据覆盖正常缓存。
+- 新增 Node 回归覆盖三类审查/补全槽位、测试与正常缓存并存、隐藏/重试失败恢复，以及 AI 结果保存与删除仅操作 `ai_results`；不产生 `drafts`、`sync_operations`、`sync_state` 或 `conflicts` 写入。
+- 本轮准备测试使用 Node SDK 替身和隔离记录，未执行真实 RDB 写入失败、进程重启或设备交互；结果只能作为工程准备证据，不能标记设备验收通过。
+
+## 2026-09-27 阶段五 T3 验收准备交付
+
+- 新增 `services/ai-gateway/LOCAL_TEST_RUNBOOK.md`，固定本地测试 Provider、sync-api 的启动/停止、隔离草稿命名、端口配置、手机局域网前置条件和清理边界。测试 Provider 与正式 Gateway 入口分离，个人根目录 `run-demo-gateway.mjs` 未纳入提交。
+- 独立测试 Provider 新增脱敏阶段日志：`request_started`、`request_completed`、`request_failed`、`request_aborted`。日志只包含能力、调用代次、隔离草稿 ID 和场景，不记录代码、思路或凭据。
+- 实际进程级冒烟：启动 `ALGFLOW_TEST_AI_SCENARIO=delay` 的 `test-provider.mjs` 于 `127.0.0.1:18989`，使用隔离草稿 `t3-isolated-20260927-01` 发起 `/reviews` 请求并在响应前由 `curl --max-time 1` 关闭连接；日志以同一 `call_id=review-1` 观察到 `request_started` 与 `request_aborted`，之后停止测试进程。该证据证明本地 Gateway 到测试 Provider 的取消信号链路，不代表手机原生取消或真实 Provider 验收。
+- 本阶段仍不部署云服务、不接真实模型；设备、真实 RDB、手机局域网和签名验收保持待验。
+
+## 2026-09-27 阶段五 T4 验收准备交付
+
+- 新增 `services/ai-gateway/DEVICE_ACCEPTANCE_RUNBOOK.md`，固定 API 20 构建/安装前检查、隔离数据库、局域网前置、T4-01 至 T4-10 执行矩阵和证据要求。
+- 新增 Node 回归确认局部补全只通过 `main.cpp` 回调写入，独立短代码保持不变；接受后切换草稿上下文会立即禁用撤回，短代码仍保持不变。
+- 本轮只完成准备材料和替身回归。当前 `hdc list targets` 无设备，真实 RDB、安装、输入/滚动、进程重启、接受/撤回和设备日志均未执行，阶段五 T4 与 issue #5 不标记设备验收通过。
+- 实际执行 `node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`：523/523 通过；`tests/phone-ai.test.mjs` 定向回归为 108/108。实际执行 API 20 `entry@ohosTest` Debug HAP 构建成功，仅有未配置 `signingConfigs` 的既有跳过签名警告；这些结果仍不等于真实设备/RDB 验收。
+
+## 2026-09-26 浏览器补验记录
+
+- 使用 Codex 内置浏览器访问独立本地端口 14173，测试 Provider 位于 18789；没有使用真实模型，没有操作现有草稿或上传验收内容。
+- 发现并修复浏览器原生 fetch 的接收对象错误：作为客户端实例方法调用会失败，现显式以 globalThis 调用；新增回归，避免 Node 环境宽松行为掩盖浏览器异常。
+- 页面已验证：三类审查成功并显示“测试数据”；重复风险审查追加消息；隐藏最近结果后刷新只恢复最近一条且保留隐藏状态；恢复显示；补全预览不写代码，显式接受产生未保存修改，Ctrl+Z 恢复原文；拒绝不写代码；刷新后的补全及切换 idea.md 后的补全禁止接受。
+- 延迟场景已在响应前取消，页面显示“请求已取消”；未单独采集 Provider 端 AbortSignal 的浏览器链路证据，服务端断开测试仍由既有回归覆盖。
+- 在同一来源关闭 VITE_AI_ALLOW_TEST_DATA 后，测试缓存不展示；请求测试 Provider 显示“AI 不可用：当前配置不允许测试数据”。这验证普通开发配置隔离，不等同于部署后的生产反向代理验收。
+- 实际执行合并 Node 回归 393/393（Web 14，Gateway/Sync 379）；npm run build 通过（含 app/node TypeScript 检查），仍有既有的大于 500 kB chunk 提示。
+- 尚未覆盖的浏览器矩阵：CRLF 多行插入/外部换行格式变化、同步更新期间竞态、多草稿切换、生产静态托管链路。阶段三不得据此称为全矩阵验收完成，手机端和真实模型仍未验收。
+
+## 2026-09-26 阶段 3 Web 实施记录
+
+- 新增 Web `WebAIClient`，调用 `/reviews`、`/completions` 并保留 `/requests` 兼容入口；按 HTTP 分类显示 `AI_NOT_ENABLED`、`AI_PROVIDER_ERROR` 和 `INVALID_AI_ARTIFACT`，仅从 `X-AlgoFlow-Test-Data: true` 响应头识别“测试数据”。
+- 新增独立 `algoflow.ai-results.v1` 本地结果仓储，按草稿、能力和审查类型只保留最近结果；结果不进入 `WorkspaceState`、同步操作或同步 payload，刷新后可恢复来源标记和隐藏状态。
+- Inspector 增加 explanation/risk/complexity 三类可追加审查消息，以及局部补全预览、隐藏和显式接受入口。审查不会写 `.cpp`；补全接受前校验草稿版本、代码快照、文件和过期状态，接受只发起 CodeMirror 局部事务，后续仍需用户保存后才进入普通同步链路。
+- 请求代次和 `AbortController` 防止取消、编辑、切换草稿或迟到响应覆盖新结果；代码/思路快照变化后结果标记为过期，过期补全不可接受。Web 端接口类型可供后续 OpenHarmony 端镜像使用，本阶段未修改手机端。
+- 测试数据 Provider、真实模型接入、云服务部署和新的提示代码生成入口均未在本阶段实现；`run-demo-gateway.mjs` 为未跟踪个人脚本，未纳入提交。
+- 修复记录：同源 `/ai-api` 开发代理、重复审查消息追加、稳定思路片段恢复、CRLF 范围换算、结果分区与缓存错误恢复、请求代次/取消竞态、测试数据隔离和 CodeMirror 可撤销接受事务均已补齐；新增 Web 端客户端、存储和会话回归覆盖。
+- 实际验证：`node --test apps/web/test/*.test.mjs`（13/13）；`node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`（379/379）；`npx tsc -p apps/web/tsconfig.app.json --noEmit`（通过）；`npx tsc -p apps/web/tsconfig.node.json --noEmit`（通过）；`npm run build`（Vite 构建通过）；`git diff --check`（通过）。
+- 未执行：真实 Provider 联调、OpenHarmony 构建/设备验收和云端部署。当前环境的 Computer Use RPC 未配置，无法完成浏览器人工交互验收；因此不把浏览器验收写成已通过。测试 Provider、真实模型接入、云服务部署和新的提示代码生成入口仍未在本阶段实现。
+
+## 2026-09-27 阶段五 T5 验收准备交付
+
+- 新增 `services/ai-gateway/T5_CANCELLATION_ACCEPTANCE_RUNBOOK.md`，固定客户端取消、编辑/切换上下文、离开页面、新请求和迟到回调的验收矩阵；明确每个操作只发起一次请求，失败必须由用户主动重试。
+- Gateway 服务端超时现在会先中止传给 Provider 的同一 `AbortSignal`，然后保持既定 `502 AI_PROVIDER_ERROR`；客户端断开仍不写响应，Provider 产物契约、来源或范围错误仍返回 `422 INVALID_AI_ARTIFACT`。
+- 新增回归覆盖 Gateway 超时触发 Provider abort，以及手机端连续请求只保留新代次、迟到成功/失败均不能恢复补全接受权限。未引入自动重试，也未改变 `/requests` 兼容入口。
+- 实际验证：Windows PowerShell、Node.js v24.14.1；执行 `node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，525/525 通过；执行 `node --check services/ai-gateway/src/server.mjs` 和 `git diff --check`，均通过。API 20 工具链构建可复用阶段四结果。当前 `hdc list targets` 无设备，未执行原生 HTTP 到 Provider 的端到端取消、设备安装/交互、真实 RDB 或真实 Provider；状态为“工程准备完成、设备待验”，不标记 T5 或 issue #5 整体完成。
+
+## 2026-09-27 阶段五 T6 验收准备交付
+
+- 新增 `services/ai-gateway/T6_SYNC_ACCEPTANCE_RUNBOOK.md`，固定接受后仅本地排队、手动同步、Web/手机双向编辑、离线恢复、并发冲突、同步期间继续编辑和远端墓碑清理的验收矩阵。
+- 新增手机回归：接受回调只更新本地草稿、不启动同步；同步期间较新编辑保留新操作身份；版本冲突保留服务器版本和本地冲突副本；远端墓碑只清理对应 `ai_results`，不写入同步操作表；pull 拒绝低于本地版本的旧变更并清空已删除草稿的会话结果。
+- Web/sync-api 既有回归继续覆盖双客户端冲突副本、离线队列恢复、幂等操作、游标失败不推进及手机草稿拉取路径；本轮未改变同步协议或 AI 结果隔离边界。
+- 实际验证：Windows PowerShell、Node.js v24.14.1；执行 `node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，530/530 通过；执行 API 20 `entry@ohosTest` Debug HAP 构建，成功（保留未配置 signingConfigs 的既有跳过签名警告）；执行 `git diff --check`，通过。当前 `hdc list targets` 无设备，未执行手机安装、局域网双端、真实 RDB、输入/交互或重启验收；状态为“工程准备完成、设备待验”，不标记 T6 或 issue #5 整体完成。
+
+## 2026-09-27 阶段五 T7 验收准备交付
+
+- 新增 `services/ai-gateway/T7_RELEASE_DATA_ACCEPTANCE_RUNBOOK.md`，固定正常交付配置的测试响应拒绝、测试/正常缓存分区、无 Provider 不可用和无自动回退验收边界；测试 Provider、真实模型、云服务和正式签名仍不在范围内。
+- Web 回归新增：Release 客户端即使收到结构合法且带 `X-AlgoFlow-Test-Data: true` 的响应也返回 `AI_NOT_ENABLED`；只有响应头能标记测试数据，`model_id` 不得推断来源；正常仓储拒绝测试写入且不读取测试分区。手机 Node 替身回归新增 Release 仓储在执行 SQL 前拒绝测试写入。
+- 实际验证（Windows PowerShell、Node.js v24.14.1）：`node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，536/536 通过；先设置 `$env:VITE_AI_ALLOW_TEST_DATA='true'` 再执行 `npm run build`（Web TypeScript 检查与 Vite 生产构建）通过；`node --check services/ai-gateway/src/server.mjs` 与 `git diff --check` 通过。
+- 手机 Release/真实 RDB/设备安装与交互尚未执行；`hdc list targets` 无设备时只交付工程准备成果，不标记 T7、阶段五或 issue #5 整体完成。未接入真实模型或云服务，云服务厂商仍未确定；个人 `run-demo-gateway.mjs` 保持未提交。
+
+## 2026-09-28 工程完成与范围调整
+
+- 本次与组织仓库 `origin/main`（`746ef41`）的对比基线为合并基点；当前分支 `pr18` 在该基线之上包含 issue #5 的工程实现。对比结果为 57 个已跟踪文件、5896 行新增、284 行删除；根目录 `CONTEXT.md` 和 `run-demo-gateway.mjs` 为未跟踪个人文件，不计入组织仓库对比。
+- 已修正 Web AI 缓存槽位遗漏 `isTestData` 的问题。正常与测试结果按独立槽位共存，`listForDraft()` 按正常结果在前、测试结果在后返回；测试结果继续显示明确的测试标记。
+- 已修正手机旧 `/requests` 转换结果的隐藏状态：`artifact_hidden` 通过 `DraftWorkspaceViewModel` 持久化，加载时恢复，并只控制旧转换结果区域；新的 `ai_results` 会话不读写该字段。
+- 兼容 `requestAI()` 仍返回 `AIResult`，请求通过 `IDEAISession.requestTransform()` 委托 Provider，并移除成功结果写入 `Draft.aiArtifacts` 的路径；新的 AI 结果只进入独立 AI 结果仓储。
+- 共享诊断级别已补齐 `hint`：Web 类型、UI“提示”标签、OpenHarmony 解析器和手机文本展示均与 Schema 镜像一致，并加入 Web/手机回归向量。
+- 同步边界补充修正：Web 保存只轮换当前草稿的在途 operation ID；契约文档已与 Gateway 超时中止 Provider 的实际 `AbortSignal` 行为一致。
+- 实际验证环境：Windows PowerShell、Node.js v24.14.1。执行 `node --test apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，539/539 通过；`npx tsc -p tsconfig.app.json --noEmit`、`npx tsc -p tsconfig.node.json --noEmit`、`npm run build` 和 `git diff --check` 均通过。构建保留既有的大于 500 kB chunk 提示。
+- 工程完成不等于设备或生产验收：当前没有可用 `hdc` 设备，未执行真实 RDB 写入、手机安装/交互、真实 Provider/模型、云部署、正式签名或对抗评测。上述内容作为延期项，不阻塞本期工程实现范围关闭。

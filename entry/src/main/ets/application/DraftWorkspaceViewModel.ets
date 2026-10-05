@@ -1,43 +1,73 @@
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, ReviewFreshness, ReviewKind, ReviewResult, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIErrorCode, AIMode, AIOutputKind, AIRequest, AIRequestSegment, AIResult,
+  AIVisibility, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIProvider } from '../domain/AIProvider';
 import { SyncRepository } from '../domain/SyncRepository';
 import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
-import { AIGatewayReviewPayload, ConflictRecord, SyncEntityType, reviewSourceMatchesDraft, reviewToPayload } from '../domain/SyncModels';
-import { HttpAIClient, AIRequestInput, AIRequestIdeaSegment, ReviewRequestInput } from '../platform/HttpAIClient';
-import { gatewayPayloadToArtifact } from '../domain/AIArtifactCodec';
-import { gatewayPayloadToReview } from '../domain/SyncModels';
-import { util } from '@kit.ArkTS';
+import { HttpAIProvider } from '../platform/HttpAIProvider';
+import { IDEAISession } from './IDEAISession';
+import { AIResultRepository, IDEContext } from '../domain/IDEAIModels';
 
-export type ReviewGateway = (baseUrl: string, request: ReviewRequestInput, client?: HttpAIClient) => Promise<AIGatewayReviewPayload>;
+const RULE_VERSION = '1.0.0';
 
 export class DraftWorkspaceViewModel {
+  aiSession: IDEAISession | null = null;
+  private aiFile: string = 'main.cpp';
+  private aiDraft: string = '';
+  private syncing: boolean = false;
   private repository: DraftRepository;
   private syncRepository?: SyncRepository;
-  private reviewGateway: ReviewGateway;
-  private createReviewId: () => string;
-  private activeAIClient: HttpAIClient | undefined = undefined;
+  private aiProvider: AIProvider;
+  private aiBaseUrl: string = 'http://127.0.0.1:8788';
+  private allowTestData: boolean = false;
+  private aiRequestInFlight: boolean = false;
+  private aiRequestGeneration: number = 0;
   private sequence: number = 1;
   private segmentSequence: number = 1;
 
-  constructor(repository: DraftRepository, syncRepository?: SyncRepository, reviewGateway?: ReviewGateway,
-    createReviewId: () => string = () => util.generateRandomUUID()) {
+  constructor(repository: DraftRepository, syncRepository?: SyncRepository, aiProvider?: AIProvider) {
     this.repository = repository;
     this.syncRepository = syncRepository;
-    this.reviewGateway = reviewGateway ?? ((baseUrl: string, request: ReviewRequestInput, client?: HttpAIClient) =>
-      (client ?? new HttpAIClient(baseUrl)).review(request));
-    this.createReviewId = createReviewId;
+    this.aiProvider = aiProvider ?? new HttpAIProvider(this.aiBaseUrl);
   }
 
   async initialize(): Promise<void> {
     await this.repository.initialize();
+    this.aiBaseUrl = this.repository.getAIBaseUrl();
+    this.aiProvider = new HttpAIProvider(this.aiBaseUrl, 0, 10000, this.allowTestData);
+  }
+
+  configureAI(repository: AIResultRepository, allowTestData: boolean): void {
+    this.allowTestData = allowTestData;
+    this.aiSession?.dispose();
+    const provider = new HttpAIProvider(this.aiBaseUrl, 0, 10000, allowTestData);
+    this.aiProvider = provider;
+    this.aiSession = new IDEAISession(provider, repository);
+  }
+
+  selectAIContext(id: string, file: string): void {
+    this.aiDraft = id; this.aiFile = file;
+    const draft = this.repository.get(id);
+    if (draft === undefined) { void this.aiSession?.removeDraft(id); return; }
+    const context = new IDEContext(); context.draftId = draft.id; context.version = draft.version;
+    context.file = file; context.mode = draft.aiMode; context.code = draft.code; context.idea = draft.idea;
+    context.problemContext = draft.title || '当前草稿';
+    context.segments = draft.ideaSegments.map(segment => new AIRequestSegment(segment.id, segment.content));
+    this.aiSession?.setContext(context);
   }
 
   async synchronize(): Promise<SyncRunResult | undefined> {
     if (this.syncRepository === undefined || this.syncRepository.listPendingOperations === undefined) return undefined;
-    await this.repository.flush();
-    const result = await new PhoneSyncService(this.syncRepository).synchronize();
-    await this.repository.flush();
-    return result;
+    if (this.syncing) return undefined;
+    this.syncing = true;
+    this.cancelAI();
+    try {
+      await this.repository.flush();
+      const result = await new PhoneSyncService(this.syncRepository).synchronize();
+      await this.repository.flush();
+      this.selectAIContext(this.aiDraft, this.aiFile);
+      return result;
+    } finally { this.syncing = false; }
   }
 
   getSyncBaseUrl(): string {
@@ -48,8 +78,74 @@ export class DraftWorkspaceViewModel {
     this.syncRepository?.setBaseUrl(baseUrl);
   }
 
-  cancelAIRequest(): void {
-    this.activeAIClient?.cancel();
+  setAIBaseUrl(baseUrl: string, allowTestData: boolean = false): void {
+    this.aiRequestGeneration += 1;
+    this.aiRequestInFlight = false;
+    this.aiProvider.cancel();
+    this.aiBaseUrl = baseUrl;
+    this.allowTestData = allowTestData;
+    const provider = new HttpAIProvider(baseUrl, 0, 10000, allowTestData);
+    this.aiProvider = provider;
+    this.repository.setAIBaseUrl(baseUrl);
+    this.aiSession?.setProvider(provider);
+  }
+
+  getAIBaseUrl(): string {
+    return this.aiBaseUrl;
+  }
+
+  isAIRequestInFlight(): boolean {
+    return this.aiRequestInFlight;
+  }
+
+  cancelAI(): void {
+    this.aiRequestGeneration += 1;
+    this.aiRequestInFlight = false;
+    this.aiProvider.cancel();
+    this.aiSession?.cancel();
+  }
+
+  async requestAI(id: string, mode: AIMode): Promise<AIResult> {
+    const draft = this.repository.get(id);
+    if (draft === undefined) {
+      return AIResult.failure(AIErrorCode.INVALID_REQUEST, '草稿不存在');
+    }
+    if (draft.ideaSegments.length === 0) {
+      return AIResult.failure(AIErrorCode.INVALID_REQUEST, '请先在 idea.md 中填写思路片段');
+    }
+    const problemContext = buildProblemContext(draft);
+    if (problemContext.length === 0) {
+      return AIResult.failure(AIErrorCode.INVALID_REQUEST, '请先填写草稿标题或思路内容');
+    }
+    const segments = draft.ideaSegments.map((segment: IdeaSegment) =>
+      new AIRequestSegment(segment.id, segment.content));
+    const request = new AIRequest(mode, draft.id, draft.version, 'cpp', RULE_VERSION,
+      problemContext, segments, AIOutputKind.PSEUDOCODE,
+      draft.artifactHidden ? AIVisibility.HIDDEN : AIVisibility.VISIBLE);
+    const requestGeneration = ++this.aiRequestGeneration;
+    this.aiRequestInFlight = true;
+    try {
+      const result = await IDEAISession.requestTransform(this.aiProvider, request);
+      if (requestGeneration !== this.aiRequestGeneration) {
+        return AIResult.failure(AIErrorCode.CANCELLED, 'AI 请求已取消');
+      }
+      return result;
+    } finally {
+      if (requestGeneration === this.aiRequestGeneration) this.aiRequestInFlight = false;
+    }
+  }
+
+  setArtifactHidden(id: string, hidden: boolean): void {
+    const draft = this.repository.get(id);
+    if (draft === undefined) return;
+    draft.artifactHidden = hidden;
+    this.repository.save(draft);
+  }
+
+  getArtifact(id: string, mode: AIMode): AIArtifact | undefined {
+    const draft = this.repository.get(id);
+    if (draft === undefined) return undefined;
+    return draft.artifactForMode(mode);
   }
 
   ensureStarterDraft(): string {
@@ -68,131 +164,8 @@ export class DraftWorkspaceViewModel {
   listDrafts(): Draft[] { return this.repository.list(); }
   getDraft(id: string): Draft | undefined { return this.repository.get(id); }
 
-  listArtifacts(): AIArtifact[] { return this.syncRepository?.listArtifacts() ?? []; }
-  listReviews(): ReviewResult[] {
-    const reviews = this.syncRepository?.listReviews() ?? [];
-    return reviews.map((review: ReviewResult) => {
-      review.freshness = this.isReviewCurrent(review.id) ? ReviewFreshness.CURRENT : ReviewFreshness.STALE;
-      return review;
-    });
-  }
-  hasReviewSource(id: string): boolean {
-    const review = this.syncRepository?.getReview(id);
-    if (review === undefined || this.syncRepository === undefined) return false;
-    const payload = reviewToPayload(review);
-    return reviewSourceMatchesDraft(payload, this.syncRepository.getDraft(review.draftId),
-      this.syncRepository.getDraftSourceCode(review.draftId, review.sourceDraftVersion));
-  }
-
-  isReviewCurrent(id: string): boolean {
-    const review = this.syncRepository?.getReview(id);
-    const draft = review === undefined ? undefined : this.syncRepository?.getDraft(review.draftId);
-    if (review === undefined || draft === undefined || draft.deleted || draft.version !== review.sourceDraftVersion ||
-      this.syncRepository?.hasPendingOperation(SyncEntityType.DRAFT, draft.id)) return false;
-    const snapshotCode = this.syncRepository?.getDraftSourceCode(review.draftId, review.sourceDraftVersion);
-    return snapshotCode === undefined || snapshotCode === draft.code;
-  }
-
-  saveReview(review: ReviewResult): void {
-    const draft = this.syncRepository?.getDraft(review.draftId);
-    review.freshness = draft !== undefined && draft.version === review.sourceDraftVersion &&
-      !this.syncRepository?.hasPendingOperation(SyncEntityType.DRAFT, draft.id) ? ReviewFreshness.CURRENT : ReviewFreshness.STALE;
-    this.syncRepository?.saveReview(review);
-  }
-
-  async toggleReview(id: string): Promise<void> {
-    const review = this.syncRepository?.getReview(id);
-    if (review === undefined) return;
-    if (!this.isReviewCurrent(id) || !this.hasReviewSource(id)) throw new Error('REVIEW_RESULT_STALE');
-    review.visibility = review.visibility === AIVisibility.HIDDEN ? AIVisibility.VISIBLE : AIVisibility.HIDDEN;
-    review.freshness = ReviewFreshness.CURRENT;
-    this.syncRepository?.saveReview(review);
-    await this.repository.flush();
-  }
-
-  listConflicts(): ConflictRecord[] { return this.syncRepository?.listConflicts() ?? []; }
-
-  async resolveReviewConflict(conflictId: string, resolution: 'keep_local' | 'use_server'): Promise<void> {
-    if (this.syncRepository === undefined) throw new Error('AI_SYNC_REPOSITORY_REQUIRED');
-    this.syncRepository.resolveReviewConflict(conflictId, resolution);
-    await this.repository.flush();
-  }
-
-  getArtifact(id: string): AIArtifact | undefined { return this.syncRepository?.getArtifact(id); }
-
-  saveArtifact(artifact: AIArtifact): void { this.syncRepository?.saveArtifact(artifact); }
-
-  async generateFaithfulArtifact(id: string, baseUrl: string): Promise<AIArtifact> {
-    if (this.syncRepository === undefined) throw new Error('AI_SYNC_REPOSITORY_REQUIRED');
-    const draft = this.repository.get(id);
-    if (draft === undefined) throw new Error('DRAFT_NOT_FOUND');
-    if (draft.ideaSegments.length === 0) throw new Error('AI_IDEA_REQUIRED');
-    const request = new AIRequestInput();
-    request.mode = AIMode.FAITHFUL_TRANSFORM;
-    request.draft_id = draft.id;
-    request.draft_version = draft.version;
-    request.problem_context = draft.idea.length > 0 ? draft.idea : draft.title;
-    request.idea_segments = draft.ideaSegments.map((segment: IdeaSegment) =>
-      new AIRequestIdeaSegment(segment.id, segment.content));
-    const client = new HttpAIClient(baseUrl);
-    this.activeAIClient = client;
-    try {
-      const response = await client.generate(request);
-      if (client.wasCancelled()) throw new Error('AI_REQUEST_CANCELLED');
-      if (response.mode !== request.mode || response.source_draft_version !== request.draft_version ||
-        response.rule_version !== request.rule_version || response.output_kind !== request.output_kind ||
-        response.visibility !== request.visibility) throw new Error('INVALID_AI_ARTIFACT');
-      const artifact = gatewayPayloadToArtifact(response, util.generateRandomUUID(), draft.id, draft.version,
-        this.syncRepository.getClientId(), draft.ideaSegments.map((segment: IdeaSegment) => segment.id));
-      if (artifact === undefined) throw new Error('INVALID_AI_ARTIFACT');
-      this.syncRepository.saveArtifact(artifact);
-      return artifact;
-    } finally {
-      if (this.activeAIClient === client) this.activeAIClient = undefined;
-    }
-  }
-
-  async generateReview(id: string, baseUrl: string, mode: AIMode, reviewKind: ReviewKind): Promise<ReviewResult> {
-    if (this.syncRepository === undefined) throw new Error('AI_SYNC_REPOSITORY_REQUIRED');
-    const draft = this.repository.get(id);
-    if (draft === undefined) throw new Error('DRAFT_NOT_FOUND');
-    if (draft.version < 1 || draft.syncStatus !== SyncStatus.SYNCED ||
-      this.syncRepository.hasPendingOperation(SyncEntityType.DRAFT, draft.id)) throw new Error('REVIEW_DRAFT_NOT_SYNCED');
-    const sourceVersion = draft.version;
-    const sourceCode = draft.code;
-    const sourceIdea = draft.idea;
-    const request = new ReviewRequestInput();
-    request.mode = mode;
-    request.draft_id = draft.id;
-    request.draft_version = sourceVersion;
-    request.code = sourceCode;
-    request.idea = sourceIdea;
-    request.review_kind = reviewKind;
-    const client = new HttpAIClient(baseUrl);
-    this.activeAIClient = client;
-    try {
-      const response = await this.reviewGateway(baseUrl, request, client);
-      if (client.wasCancelled()) throw new Error('AI_REQUEST_CANCELLED');
-      if (response.mode !== request.mode || response.source_draft_version !== request.draft_version ||
-        response.rule_version !== request.rule_version || response.review_kind !== request.review_kind ||
-        response.visibility !== request.visibility) throw new Error('INVALID_REVIEW_RESULT');
-      const latestDraft = this.repository.get(id);
-      if (latestDraft === undefined || latestDraft.version !== sourceVersion || latestDraft.code !== sourceCode ||
-        latestDraft.idea !== sourceIdea || latestDraft.syncStatus !== SyncStatus.SYNCED ||
-        this.syncRepository.hasPendingOperation(SyncEntityType.DRAFT, id)) throw new Error('DRAFT_CHANGED_RETRY_REVIEW');
-      const review = gatewayPayloadToReview(response, this.createReviewId(), draft.id, sourceVersion,
-        this.syncRepository.getClientId());
-      if (review === undefined || review.mode !== mode || review.reviewKind !== reviewKind ||
-        review.sourceDraftVersion !== sourceVersion) throw new Error('INVALID_REVIEW_RESULT');
-      this.syncRepository.saveReview(review);
-      await this.repository.flush();
-      return review;
-    } finally {
-      if (this.activeAIClient === client) this.activeAIClient = undefined;
-    }
-  }
-
   update(id: string, title: string, idea: string, code: string, shortCode: string, rewrite: string): void {
+    this.cancelAI();
     const draft = this.repository.get(id);
     if (draft === undefined) return;
     draft.title = title;
@@ -204,18 +177,25 @@ export class DraftWorkspaceViewModel {
     draft.updatedAt = new Date().toISOString();
     draft.syncStatus = SyncStatus.LOCAL_ONLY;
     this.repository.save(draft);
+    this.selectAIContext(id, this.aiFile);
   }
 
   private buildIdeaSegments(draft: Draft, idea: string): IdeaSegment[] {
     const contents = idea.split('\n').map((item: string) => item.trim())
       .filter((item: string) => item.length > 0);
+    const used: string[] = [];
+    const matches = contents.map((content: string) => {
+      const found = draft.ideaSegments.find(item => item.content.trim() === content && !used.includes(item.id));
+      if (found !== undefined) used.push(found.id);
+      return found;
+    });
     const segments: IdeaSegment[] = [];
     contents.forEach((content: string, position: number) => {
-      const sameContent = draft.ideaSegments.find((item: IdeaSegment) =>
-        item.content === content && segments.find((used: IdeaSegment) => used.id === item.id) === undefined);
-      const samePosition = draft.ideaSegments.find((item: IdeaSegment) =>
-        item.position === position && segments.find((used: IdeaSegment) => used.id === item.id) === undefined);
+      const sameContent = matches[position];
+      const samePosition = contents.length === draft.ideaSegments.length ? draft.ideaSegments.find((item: IdeaSegment) =>
+        item.position === position && !used.includes(item.id)) : undefined;
       const matched = sameContent === undefined ? samePosition : sameContent;
+      if (matched !== undefined && !used.includes(matched.id)) used.push(matched.id);
       const id = matched === undefined ? `idea_segment_${Date.now()}_${this.segmentSequence++}` : matched.id;
       segments.push(new IdeaSegment(id, content, position));
     });
@@ -223,27 +203,29 @@ export class DraftWorkspaceViewModel {
   }
 
   setMode(id: string, mode: AIMode): void {
+    this.cancelAI();
     const draft = this.repository.get(id);
     if (draft === undefined) return;
     draft.aiMode = mode;
     draft.updatedAt = new Date().toISOString();
     draft.syncStatus = SyncStatus.LOCAL_ONLY;
     this.repository.save(draft);
+    this.selectAIContext(id, this.aiFile);
   }
 
   toggleArtifact(id: string): void {
-    const draft = this.repository.get(id);
-    if (draft === undefined) return;
-    const artifact = this.syncRepository?.listArtifacts().find((item: AIArtifact) =>
-      item.draftId === id && item.mode === draft.aiMode);
-    if (artifact === undefined) return;
-    artifact.visibility = artifact.visibility === AIVisibility.HIDDEN ? AIVisibility.VISIBLE : AIVisibility.HIDDEN;
-    this.syncRepository?.saveArtifact(artifact);
+    this.aiSession?.records.forEach(record => this.aiSession?.setHidden(record.id, !record.hidden));
   }
 
   deleteDraft(id: string): string {
+    this.cancelAI();
+    this.aiSession?.removeDraft(id);
     this.repository.delete(id);
     const remaining = this.repository.list();
     return remaining.length > 0 ? remaining[0].id : this.createDraft();
   }
+}
+
+function buildProblemContext(draft: Draft): string {
+  return draft.title || '当前草稿';
 }

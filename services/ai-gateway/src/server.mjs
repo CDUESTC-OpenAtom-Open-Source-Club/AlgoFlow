@@ -1,17 +1,48 @@
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
-import { validateAIArtifact, validateAIRequest, validateReviewRequest, validateReviewResponse } from './contracts.mjs';
+import {
+  validateAIArtifact,
+  validateAIRequest,
+  validateCompletionRequest,
+  validateCompletionResult,
+  validateReviewRequest,
+  validateReviewResult
+} from './contracts.mjs';
 
-export function createAIGateway({ aiProvider = null, templates = [], enabledModes = ['faithful_transform'], timeoutMs = 30000 } = {}) {
+const DEFAULT_TIMEOUT_MS = 30000;
+
+export function createAIGateway({
+  aiProvider = null,
+  templates = [],
+  enabledModes = ['faithful_transform'],
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  responseHeaders = {}
+} = {}) {
   const enabledModeSet = new Set(enabledModes);
-  const hasProvider = aiProvider !== null &&
-    (typeof aiProvider.generate === 'function' || typeof aiProvider.review === 'function');
-  const hasArtifactProvider = aiProvider !== null && typeof aiProvider.generate === 'function';
-  const hasReviewProvider = aiProvider !== null && typeof aiProvider.review === 'function';
+  const hasGenerate = aiProvider !== null && typeof aiProvider.generate === 'function';
+  const hasReview = aiProvider !== null && typeof aiProvider.review === 'function';
+  const hasComplete = aiProvider !== null && typeof aiProvider.complete === 'function';
+  const anyEnabled = hasGenerate || hasReview || hasComplete;
   return createServer(async (request, response) => {
     response.setHeader('Content-Type', 'application/json; charset=utf-8');
+    for (const [name, value] of Object.entries(responseHeaders)) response.setHeader(name, value);
+    const abortController = new AbortController();
+    let requestClosed = false;
+    const abortOnDisconnect = () => {
+      if (!response.writableEnded) {
+        requestClosed = true;
+        abortController.abort();
+      }
+    };
+    request.on('error', () => {});
+    request.on('aborted', abortOnDisconnect);
+    response.on('close', abortOnDisconnect);
     if (request.method === 'GET' && request.url === '/status') {
-      response.end(JSON.stringify({ enabled: hasProvider, code: hasProvider ? 'AI_ENABLED' : 'AI_NOT_ENABLED' }));
+      writeJson(response, 200, {
+        enabled: anyEnabled,
+        code: anyEnabled ? 'AI_ENABLED' : 'AI_NOT_ENABLED',
+        capabilities: { transform: hasGenerate, review: hasReview, completion: hasComplete }
+      });
       return;
     }
     if (request.method === 'POST' && request.url === '/requests') {
@@ -19,19 +50,22 @@ export function createAIGateway({ aiProvider = null, templates = [], enabledMode
       const errors = validateAIRequest(body);
       if (errors.length) { writeJson(response, 400, { code: 'INVALID_REQUEST', errors }); return; }
       if (!enabledModeSet.has(body.mode)) { writeJson(response, 409, { code: 'AI_MODE_NOT_AVAILABLE', mode: body.mode }); return; }
-      if (!hasArtifactProvider) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
+      if (!hasGenerate) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
+      let artifact;
       try {
-        const artifact = await generateWithTimeout(aiProvider, body, templates, timeoutMs);
+        artifact = await withTimeout(aiProvider.generate({ request: body, templates, signal: abortController.signal }), timeoutMs, abortController);
+      } catch {
+        if (requestClosed) return;
+        writeProviderError(response);
+        return;
+      }
+      try {
         const artifactErrors = validateAIArtifact(artifact);
-        artifactErrors.push(...validateArtifactAgainstRequest(artifact, body, templates));
+        if (!artifactErrors.length) artifactErrors.push(...validateArtifactAgainstRequest(artifact, body, templates));
         if (artifactErrors.length) { writeJson(response, 422, { code: 'INVALID_AI_ARTIFACT', errors: artifactErrors }); return; }
         writeJson(response, 200, artifact);
-      } catch (error) {
-        if (error !== null && typeof error === 'object' && error.code === 'AI_TIMEOUT') {
-          writeJson(response, 504, { code: 'AI_PROVIDER_TIMEOUT' });
-        } else {
-          writeJson(response, 502, { code: 'AI_PROVIDER_ERROR' });
-        }
+      } catch {
+        writeInvalidArtifactError(response);
       }
       return;
     }
@@ -40,19 +74,46 @@ export function createAIGateway({ aiProvider = null, templates = [], enabledMode
       const errors = validateReviewRequest(body);
       if (errors.length) { writeJson(response, 400, { code: 'INVALID_REQUEST', errors }); return; }
       if (!enabledModeSet.has(body.mode)) { writeJson(response, 409, { code: 'AI_MODE_NOT_AVAILABLE', mode: body.mode }); return; }
-      if (!hasReviewProvider) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
+      if (!hasReview) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
+      let result;
       try {
-        const review = await generateWithTimeout(aiProvider, body, templates, timeoutMs, 'review');
-        const reviewErrors = validateReviewResponse(review);
-        reviewErrors.push(...validateReviewAgainstRequest(review, body));
-        if (reviewErrors.length) { writeJson(response, 422, { code: 'INVALID_AI_REVIEW', errors: reviewErrors }); return; }
-        writeJson(response, 200, review);
-      } catch (error) {
-        if (error !== null && typeof error === 'object' && error.code === 'AI_TIMEOUT') {
-          writeJson(response, 504, { code: 'AI_PROVIDER_TIMEOUT' });
-        } else {
-          writeJson(response, 502, { code: 'AI_PROVIDER_ERROR' });
-        }
+        result = await withTimeout(aiProvider.review({ request: body, signal: abortController.signal }), timeoutMs, abortController);
+      } catch {
+        if (requestClosed) return;
+        writeProviderError(response);
+        return;
+      }
+      try {
+        const resultErrors = validateReviewResult(result);
+        if (!resultErrors.length) resultErrors.push(...validateReviewAgainstRequest(result, body));
+        if (resultErrors.length) { writeJson(response, 422, { code: 'INVALID_AI_ARTIFACT', errors: resultErrors }); return; }
+        writeJson(response, 200, result);
+      } catch {
+        writeInvalidArtifactError(response);
+      }
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/completions') {
+      const body = await readJson(request);
+      const errors = validateCompletionRequest(body);
+      if (errors.length) { writeJson(response, 400, { code: 'INVALID_REQUEST', errors }); return; }
+      if (!enabledModeSet.has(body.mode)) { writeJson(response, 409, { code: 'AI_MODE_NOT_AVAILABLE', mode: body.mode }); return; }
+      if (!hasComplete) { writeJson(response, 503, { code: 'AI_NOT_ENABLED' }); return; }
+      let result;
+      try {
+        result = await withTimeout(aiProvider.complete({ request: body, signal: abortController.signal }), timeoutMs, abortController);
+      } catch {
+        if (requestClosed) return;
+        writeProviderError(response);
+        return;
+      }
+      try {
+        const resultErrors = validateCompletionResult(result);
+        if (!resultErrors.length) resultErrors.push(...validateCompletionAgainstRequest(result, body));
+        if (resultErrors.length) { writeJson(response, 422, { code: 'INVALID_AI_ARTIFACT', errors: resultErrors }); return; }
+        writeJson(response, 200, result);
+      } catch {
+        writeInvalidArtifactError(response);
       }
       return;
     }
@@ -82,49 +143,111 @@ function validateArtifactAgainstRequest(artifact, request, templates) {
   return errors;
 }
 
-function validateReviewAgainstRequest(review, request) {
-  if (!review || typeof review !== 'object') return [];
+function validateReviewAgainstRequest(result, request) {
+  if (!result || typeof result !== 'object') return [];
   const errors = [];
-  if (review.mode !== request.mode) errors.push('review mode must match request mode');
-  if (review.source_draft_version !== request.draft_version) errors.push('review source_draft_version must match request draft_version');
-  if (review.rule_version !== request.rule_version) errors.push('review rule_version must match request rule_version');
-  if (review.review_kind !== request.review_kind) errors.push('review review_kind must match request review_kind');
-  if (review.visibility !== request.visibility) errors.push('review visibility must match request visibility');
-  if (Array.isArray(review.diagnostics) && typeof request.code === 'string') {
-    const lines = request.code.split('\n');
-    review.diagnostics.forEach((diagnostic, index) => {
-      const range = diagnostic?.range;
-      if (range && (range.start_line > lines.length || range.end_line > lines.length ||
-        range.start_char > lines[range.start_line - 1]?.length || range.end_char > lines[range.end_line - 1]?.length)) {
-        errors.push(`diagnostics[${index}].range is outside the source code`);
-      }
-    });
+  if (result.mode !== request.mode) errors.push('result mode must match request mode');
+  if (result.draft_id !== request.draft_id) errors.push('result draft_id must match request draft_id');
+  if (result.source_draft_version !== request.draft_version) errors.push('result source_draft_version must match request draft_version');
+  if (result.rule_version !== request.rule_version) errors.push('result rule_version must match request rule_version');
+  if (result.review_kind !== request.review_kind) errors.push('result review_kind must match request review_kind');
+  if (result.output_kind !== request.output_kind) errors.push('result output_kind must match request output_kind');
+  if (result.visibility !== request.visibility) errors.push('result visibility must match request visibility');
+  for (const [index, diagnostic] of (result.diagnostics ?? []).entries()) {
+    errors.push(...validateRangeWithinCode(diagnostic.range, request.code, `diagnostics[${index}].range`));
   }
   return errors;
 }
 
-async function readJson(request) {
-  const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
-  catch { return null; }
+function validateCompletionAgainstRequest(result, request) {
+  if (!result || typeof result !== 'object') return [];
+  const errors = [];
+  if (result.mode !== request.mode) errors.push('result mode must match request mode');
+  if (result.draft_id !== request.draft_id) errors.push('result draft_id must match request draft_id');
+  if (result.source_draft_version !== request.draft_version) errors.push('result source_draft_version must match request draft_version');
+  if (result.rule_version !== request.rule_version) errors.push('result rule_version must match request rule_version');
+  if (result.output_kind !== request.output_kind) errors.push('result output_kind must match request output_kind');
+  if (result.visibility !== request.visibility) errors.push('result visibility must match request visibility');
+  const sourceIds = new Set(request.idea_segments.map((segment) => segment.id));
+  for (const ref of result.source_refs ?? []) {
+    if (!sourceIds.has(ref)) errors.push(`unknown source_ref: ${ref}`);
+  }
+  const range = result.replaced_range;
+  const cursor = request.cursor;
+  errors.push(...validateRangeWithinCode(range, request.code, 'replaced_range'));
+  // Cursor containment includes both endpoints, allowing insertion at the cursor.
+  const startsAfterCursor = range.start_line > cursor.line ||
+    (range.start_line === cursor.line && range.start_char > cursor.char);
+  const endsBeforeCursor = range.end_line < cursor.line ||
+    (range.end_line === cursor.line && range.end_char < cursor.char);
+  if (startsAfterCursor || endsBeforeCursor) {
+    errors.push('replaced_range must contain the cursor');
+  }
+  if (range.start_line < cursor.line - 3 || range.end_line > cursor.line + 3) {
+    errors.push('replaced_range must stay within three lines of the cursor (at most seven lines)');
+  }
+  const lines = request.code.split(/\r?\n/);
+  if (range.start_line === 1 && range.start_char === 0 &&
+      range.end_line === lines.length && range.end_char === lines[lines.length - 1].length) {
+    errors.push('replaced_range must not replace the entire file');
+  }
+  return errors;
 }
 
-async function generateWithTimeout(aiProvider, request, templates, timeoutMs, operation = 'generate') {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => {
+function validateRangeWithinCode(range, code, path) {
+  if (!range || typeof code !== 'string') return [];
+  const errors = [];
+  const lines = code.split(/\r?\n/);
+  if (range.start_line > lines.length) errors.push(`${path}.start_line exceeds request code`);
+  if (range.end_line > lines.length) errors.push(`${path}.end_line exceeds request code`);
+  const startLine = lines[range.start_line - 1];
+  const endLine = lines[range.end_line - 1];
+  if (startLine !== undefined && range.start_char > startLine.length) {
+    errors.push(`${path}.start_char exceeds request code line`);
+  }
+  if (endLine !== undefined && range.end_char > endLine.length) {
+    errors.push(`${path}.end_char exceeds request code line`);
+  }
+  return errors;
+}
+
+function withTimeout(promise, timeoutMs, abortController = null) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      // A Gateway timeout is a provider cancellation, but remains a 502 to the client.
+      abortController?.abort();
       const error = new Error('AI provider timed out');
-      error.code = 'AI_TIMEOUT';
+      error.code = 'AI_PROVIDER_TIMEOUT';
       reject(error);
     }, timeoutMs);
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); }
+    );
   });
+}
+
+function writeProviderError(response) {
+  writeJson(response, 502, { code: 'AI_PROVIDER_ERROR' });
+}
+
+function writeInvalidArtifactError(response) {
+  writeJson(response, 422, {
+    code: 'INVALID_AI_ARTIFACT',
+    errors: ['Provider result could not be validated']
+  });
+}
+
+async function readJson(request) {
+  const chunks = [];
   try {
-    const method = operation === 'review' ? aiProvider.review : aiProvider.generate;
-    return await Promise.race([method({ request, templates }), timeout]);
-  } finally {
-    clearTimeout(timer);
+    for await (const chunk of request) chunks.push(chunk);
+  } catch {
+    return null;
   }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { return null; }
 }
 
 function writeJson(response, statusCode, body) {

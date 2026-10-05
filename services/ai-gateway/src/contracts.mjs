@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { validateCompletionFragment } from '../../../packages/contracts/cpp-fragment.mjs';
 
 const schemas = {
   domain: loadSchema('../../../packages/contracts/schemas/domain.schema.json'),
@@ -9,25 +10,61 @@ const schemas = {
 export const AI_MODES = new Set(schemas.domain.$defs.aiMode.enum);
 export const AI_OUTPUT_KINDS = new Set(schemas.domain.$defs.aiOutputKind.enum);
 export const AI_VISIBILITIES = new Set(schemas.domain.$defs.aiVisibility.enum);
+export const REVIEW_KINDS = new Set(schemas.domain.$defs.reviewKind.enum);
+export const DIAGNOSTIC_LEVELS = new Set(schemas.domain.$defs.diagnosticLevel.enum);
+export const REVIEW_OUTPUT_KIND = schemas.ai.$defs.reviewOutputKind.const;
+export const COMPLETION_OUTPUT_KIND = schemas.ai.$defs.completionOutputKind.const;
 
 export function validateAIRequest(request) {
   const errors = validateSchema(request, schemas.ai.$defs.request, 'request');
-  if (Array.isArray(request?.idea_segments)) {
+  errors.push(...validateIdeaSegmentIds(request?.idea_segments));
+  return errors;
+}
+
+export function validateReviewRequest(request) {
+  const errors = validateSchema(request, schemas.ai.$defs.reviewRequest, 'reviewRequest');
+  errors.push(...validateIdeaSegmentIds(request?.idea_segments));
+  return errors;
+}
+
+export function validateReviewResult(result) {
+  const errors = validateSchema(result, schemas.ai.$defs.reviewResult, 'reviewResult');
+  if (errors.length) return errors;
+  if (Array.isArray(result?.diagnostics)) {
     const ids = new Set();
-    request.idea_segments.forEach((segment, index) => {
-      if (ids.has(segment?.id)) errors.push(`idea_segments[${index}].id must be unique`);
-      ids.add(segment?.id);
+    result.diagnostics.forEach((diagnostic, index) => {
+      if (ids.has(diagnostic?.id)) errors.push(`diagnostics[${index}].id must be unique`);
+      ids.add(diagnostic?.id);
+      if (diagnostic?.range) {
+        if (diagnostic.range.end_line < diagnostic.range.start_line) errors.push(`diagnostics[${index}].range end_line must not precede start_line`);
+        if (diagnostic.range.end_line === diagnostic.range.start_line && diagnostic.range.end_char < diagnostic.range.start_char) errors.push(`diagnostics[${index}].range end_char must not precede start_char`);
+      }
     });
   }
   return errors;
 }
 
-export function validateReviewRequest(request) {
-  return validateSchema(request, schemas.ai.$defs.reviewRequest, 'review_request');
+export function validateCompletionRequest(request) {
+  const errors = validateSchema(request, schemas.ai.$defs.completionRequest, 'completionRequest');
+  errors.push(...validateIdeaSegmentIds(request?.idea_segments));
+  return errors;
+}
+
+export function validateCompletionResult(result) {
+  const errors = validateSchema(result, schemas.ai.$defs.completionResult, 'completionResult');
+  if (errors.length) return errors;
+  errors.push(...validateCompletionFragment(result.suggestion_text));
+  const range = result?.replaced_range;
+  if (range) {
+    if (range.end_line < range.start_line) errors.push('replaced_range end_line must not precede start_line');
+    if (range.end_line === range.start_line && range.end_char < range.start_char) errors.push('replaced_range end_char must not precede start_char');
+  }
+  return errors;
 }
 
 export function validateAIArtifact(artifact) {
   const errors = validateSchema(artifact, schemas.ai.$defs.artifact, 'artifact');
+  if (errors.length) return errors;
   if (Array.isArray(artifact?.pseudocode)) {
     const ids = new Set();
     artifact.pseudocode.forEach((step, index) => {
@@ -41,22 +78,14 @@ export function validateAIArtifact(artifact) {
   return errors;
 }
 
-export function validateReviewResponse(response) {
-  const errors = validateSchema(response, schemas.ai.$defs.reviewResponse, 'review_response');
-  if (Array.isArray(response?.diagnostics)) {
-    const ids = new Set();
-    response.diagnostics.forEach((diagnostic, index) => {
-      if (ids.has(diagnostic?.id)) errors.push(`diagnostics[${index}].id must be unique`);
-      ids.add(diagnostic?.id);
-      const range = diagnostic?.range;
-      if (range && Number.isInteger(range.start_line) && Number.isInteger(range.start_char) &&
-        Number.isInteger(range.end_line) && Number.isInteger(range.end_char) &&
-        (range.end_line < range.start_line ||
-          (range.end_line === range.start_line && range.end_char < range.start_char))) {
-        errors.push(`diagnostics[${index}].range must not be inverted`);
-      }
-    });
-  }
+function validateIdeaSegmentIds(segments) {
+  if (!Array.isArray(segments)) return [];
+  const errors = [];
+  const ids = new Set();
+  segments.forEach((segment, index) => {
+    if (ids.has(segment?.id)) errors.push(`idea_segments[${index}].id must be unique`);
+    ids.add(segment?.id);
+  });
   return errors;
 }
 

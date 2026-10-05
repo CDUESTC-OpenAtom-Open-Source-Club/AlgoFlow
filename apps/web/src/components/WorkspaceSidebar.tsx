@@ -1,5 +1,5 @@
 import { files, modes } from '../data';
-import type { Draft, FileId, Mode, Panel } from '../types';
+import type { Draft, FileId, IdeaSegment, Mode, Panel } from '../types';
 import { Icon } from './Icon';
 
 interface WorkspaceSidebarProps {
@@ -14,9 +14,7 @@ interface WorkspaceSidebarProps {
   onFileChange: (file: FileId) => void;
   onModeChange: (mode: Mode) => void;
   onQueryChange: (query: string) => void;
-  aiMessage: string;
-  aiGenerating: boolean;
-  onGenerateArtifact: () => void;
+  ideaSegments: IdeaSegment[];
 }
 
 export function WorkspaceSidebar({
@@ -31,9 +29,7 @@ export function WorkspaceSidebar({
   onFileChange,
   onModeChange,
   onQueryChange,
-  aiMessage,
-  aiGenerating,
-  onGenerateArtifact,
+  ideaSegments,
 }: WorkspaceSidebarProps) {
   return (
     <aside className="side-panel">
@@ -53,8 +49,8 @@ export function WorkspaceSidebar({
       {activePanel === 'search' && (
         <SearchPanel query={query} onQueryChange={onQueryChange} />
       )}
-      {activePanel === 'source' && <SourcePanel />}
-      {activePanel === 'ai' && <AiPanel mode={mode} onModeChange={onModeChange} aiMessage={aiMessage} aiGenerating={aiGenerating} onGenerateArtifact={onGenerateArtifact} />}
+      {activePanel === 'source' && <SourcePanel segments={ideaSegments} />}
+      {activePanel === 'ai' && <AiPanel mode={mode} onModeChange={onModeChange} />}
       {activePanel === 'versions' && <VersionsPanel />}
     </aside>
   );
@@ -139,11 +135,10 @@ function SearchPanel({ query, onQueryChange }: SearchPanelProps) {
   );
 }
 
-function SourcePanel() {
+function SourcePanel({ segments }: { segments: IdeaSegment[] }) {
   return (
     <div className="panel-content">
-      <SourceCard index="01" title="按右端点排序" segment="idea_segment_1" />
-      <SourceCard index="02" title="依次选择不冲突区间" segment="idea_segment_2" />
+      {segments.map((segment, index) => <SourceCard key={segment.id} index={String(index + 1).padStart(2, '0')} title={segment.content} segment={segment.id} />)}
       <p className="muted-copy">来源轨道将随着编辑内容保持稳定。</p>
     </div>
   );
@@ -170,12 +165,9 @@ function SourceCard({ index, title, segment }: SourceCardProps) {
 interface AiPanelProps {
   mode: Mode;
   onModeChange: (mode: Mode) => void;
-  aiMessage: string;
-  aiGenerating: boolean;
-  onGenerateArtifact: () => void;
 }
 
-function AiPanel({ mode, onModeChange, aiMessage, aiGenerating, onGenerateArtifact }: AiPanelProps) {
+function AiPanel({ mode, onModeChange }: AiPanelProps) {
   return (
     <div className="panel-content">
       <span className="eyebrow">AI MODE</span>
@@ -193,11 +185,8 @@ function AiPanel({ mode, onModeChange, aiMessage, aiGenerating, onGenerateArtifa
         ))}
       </div>
       <div className="ai-disabled">
-        <strong>{aiGenerating ? '正在生成忠实转换' : 'AI Gateway'}</strong>
-        <p>{aiMessage || '只保存 Gateway 返回的真实结果，不生成模拟结果。'}</p>
-        <button type="button" className="outline-button" disabled={aiGenerating || mode !== 'faithful_transform'} onClick={onGenerateArtifact}>
-          {aiGenerating ? '请求中' : '生成忠实转换'}
-        </button>
+        <strong>{mode === 'faithful_transform' ? '忠实转换 · 按需请求' : '该 AI 模式尚未接入'}</strong>
+        <p>在右侧思路检查中请求审查或预览局部补全。未配置模型时会明确显示 AI 不可用。</p>
       </div>
     </div>
   );

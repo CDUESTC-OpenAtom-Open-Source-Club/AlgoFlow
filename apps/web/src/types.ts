@@ -12,11 +12,150 @@ export type Documents = Record<FileId, string>;
 
 export type SyncStatus = 'local_only' | 'syncing' | 'synced' | 'conflict' | 'failed';
 
+export type ReviewKind = 'explanation' | 'risk' | 'complexity';
+export type AIRequestState = 'loading' | 'success' | 'unavailable' | 'error' | 'cancelled' | 'accepted' | 'rejected';
+
 export interface IdeaSegment {
   id: string;
   content: string;
-  position: number;
 }
+
+export interface AIRange {
+  start_line: number;
+  start_char: number;
+  end_line: number;
+  end_char: number;
+}
+
+export interface AICursor {
+  line: number;
+  char: number;
+}
+
+export interface AISourceRequest {
+  mode: Mode;
+  draft_id: string;
+  draft_version: number;
+  language: 'cpp';
+  rule_version: string;
+  problem_context: string;
+  idea_segments: IdeaSegment[];
+  code: string;
+  visibility: 'visible' | 'hidden';
+}
+
+export interface AIReviewRequest extends AISourceRequest {
+  output_kind: 'review';
+  review_kind: ReviewKind;
+}
+
+export interface AICompletionRequest extends AISourceRequest {
+  output_kind: 'completion';
+  cursor: AICursor;
+}
+
+// Local application ports; these fields are not part of Draft or the wire Schema.
+export interface AIContext {
+  draftId: string;
+  draftVersion: number;
+  fileId: FileId;
+  mode: Mode;
+  code: string;
+  idea: string;
+  problemContext: string;
+}
+
+export interface AIResponse<T> {
+  result: T;
+  isTestData: boolean;
+}
+
+export interface AIClientPort {
+  requestReview(request: AIReviewRequest, options: { signal: AbortSignal }): Promise<AIResponse<AIReviewResult>>;
+  requestCompletion(request: AICompletionRequest, options: { signal: AbortSignal }): Promise<AIResponse<AICompletionResult>>;
+}
+
+export interface AIReviewDiagnostic {
+  id: string;
+  level: 'info' | 'warning' | 'error' | 'hint';
+  range: AIRange | null;
+  problem: string;
+  basis: string;
+  suggestion: string;
+}
+
+export interface AIReviewResult {
+  mode: Mode;
+  draft_id: string;
+  source_draft_version: number;
+  model_id: string;
+  rule_version: string;
+  review_kind: ReviewKind;
+  output_kind: 'review';
+  diagnostics: AIReviewDiagnostic[];
+  visibility: 'visible' | 'hidden';
+}
+
+export interface AICompletionResult {
+  mode: Mode;
+  draft_id: string;
+  source_draft_version: number;
+  model_id: string;
+  rule_version: string;
+  output_kind: 'completion';
+  replaced_range: AIRange;
+  suggestion_text: string;
+  source_refs: string[];
+  visibility: 'visible' | 'hidden';
+}
+
+export interface AIResultRecord {
+  id: string;
+  draftId: string;
+  capability: 'review' | 'completion';
+  mode: Mode;
+  reviewKind?: ReviewKind;
+  state: AIRequestState;
+  result: AIReviewResult | AICompletionResult | null;
+  errorCode?: string;
+  errorMessage?: string;
+  isTestData: boolean;
+  hidden: boolean;
+  stale: boolean;
+  requestGeneration: number;
+  sourceDraftVersion: number;
+  sourceFile: FileId;
+  sourceCode: string;
+  sourceIdea: string;
+  sourceProblemContext: string;
+  sourceSegments: IdeaSegment[];
+  sourceCursor: AICursor | null;
+  updatedAt: string;
+}
+
+export interface AIResultRepository {
+  listForDraft(draftId: string, mode: Mode): AIResultRecord[];
+  save(record: AIResultRecord): void;
+  update(record: AIResultRecord): void;
+  reconcileSegments(draftId: string, idea: string, fallback?: IdeaSegment[]): IdeaSegment[];
+  removeDraft(draftId: string): void;
+}
+
+export interface AISessionState {
+  reviews: AIResultRecord[];
+  completion: AIResultRecord | null;
+  segments: IdeaSegment[];
+  storageError: string;
+}
+
+export interface AIEditorChange {
+  id: string;
+  sourceCode: string;
+  range: AIRange;
+  insert: string;
+}
+
+export type ApplyAIEditorChange = (change: AIEditorChange) => boolean;
 
 export interface Draft {
   id: string;
@@ -29,7 +168,6 @@ export interface Draft {
   title: string;
   language: 'cpp';
   idea: string;
-  idea_segments: IdeaSegment[];
   code: string;
   cases?: string;
   rewrite: string;
@@ -38,93 +176,9 @@ export interface Draft {
   sync_status: SyncStatus;
 }
 
-export interface AIArtifactPayload {
-  mode: Mode;
-  pseudocode: { id: string; step: string; source_refs: string[] }[];
-  code_snippet: string | null;
-  code_mappings: { step_id: string; start_line: number; end_line: number }[];
-  assumptions: string[];
-  missing_information: string[];
-  risk_flags: string[];
-  added_algorithm_steps: string[];
-  source_draft_version: number;
-  model_id: string;
-  rule_version: string;
-  output_kind: 'pseudocode' | 'code_snippet';
-  visibility: 'visible' | 'hidden';
-  template_id: string | null;
-}
-
-export interface PseudocodeStep {
-  id: string;
-  step: string;
-  source_refs: string[];
-}
-
-export interface CodeMapping {
-  step_id: string;
-  start_line: number;
-  end_line: number;
-}
-
-export interface AIArtifact {
-  id: string;
-  version: number;
-  server_sequence: number;
-  created_at: string;
-  updated_at: string;
-  deleted: boolean;
-  last_modified_client_id: string;
-  draft_id: string;
-  mode: Mode;
-  pseudocode: PseudocodeStep[];
-  code_snippet: string | null;
-  code_mappings: CodeMapping[];
-  assumptions: string[];
-  missing_information: string[];
-  risk_flags: string[];
-  added_algorithm_steps: string[];
-  source_draft_version: number;
-  model_id: string;
-  rule_version: string;
-  output_kind: 'pseudocode' | 'code_snippet';
-  visibility: 'visible' | 'hidden';
-  template_id: string | null;
-}
-
-export type ReviewKind = 'explanation' | 'risk' | 'complexity';
-export type ReviewFreshness = 'current' | 'stale';
-export type DiagnosticLevel = 'error' | 'warning' | 'info' | 'hint';
-export interface SourceRange { start_line: number; start_char: number; end_line: number; end_char: number; }
-export interface ReviewDiagnostic { id: string; level: DiagnosticLevel; range: SourceRange | null; problem: string; basis: string; suggestion: string; }
-export interface ReviewResult {
-  id: string;
-  version: number;
-  server_sequence: number;
-  created_at: string;
-  updated_at: string;
-  deleted: boolean;
-  last_modified_client_id: string;
-  draft_id: string;
-  mode: Mode;
-  source_draft_version: number;
-  model_id: string;
-  rule_version: string;
-  review_kind: ReviewKind;
-  diagnostics: ReviewDiagnostic[];
-  visibility: 'visible' | 'hidden';
-  freshness: ReviewFreshness;
-}
-
-export interface DraftVersionSnapshot {
-  draft_id: string;
-  version: number;
-  code: string;
-}
-
 export interface SyncOperation {
   operation_id: string;
-  entity_type: 'draft' | 'ai_artifact' | 'review_result';
+  entity_type: 'draft' | 'code_document' | 'ai_artifact';
   entity_id: string;
   operation_type: 'upsert' | 'delete';
   base_version: number;
@@ -139,19 +193,15 @@ export interface WorkspaceState {
   online: boolean;
   selected_id: string;
   drafts: Draft[];
-  draft_history?: DraftVersionSnapshot[];
-  ai_artifacts: AIArtifact[];
-  review_results: ReviewResult[];
   operations: SyncOperation[];
   conflicts: ConflictRecord[];
 }
 
 export interface ConflictRecord {
   id: string;
-  entity_type: 'draft' | 'ai_artifact' | 'review_result';
   entity_id: string;
   local_copy_id: string;
-  server_entity: Draft | AIArtifact | ReviewResult;
+  server_entity: Draft;
   created_at: string;
   resolved: boolean;
 }
@@ -160,14 +210,14 @@ export interface PushResult {
   operation_id: string;
   status: 'applied' | 'duplicate' | 'conflict' | 'rejected';
   version?: number;
-  server_entity?: Draft | AIArtifact | ReviewResult | null;
+  server_entity?: Draft | null;
   error_code?: string;
 }
 
 export interface PullChange {
   cursor: string;
-  entity_type: 'draft' | 'ai_artifact' | 'review_result';
-  entity: Draft | AIArtifact | ReviewResult;
+  entity_type: 'draft' | 'code_document' | 'ai_artifact';
+  entity: Draft;
 }
 
 export interface PullResult {

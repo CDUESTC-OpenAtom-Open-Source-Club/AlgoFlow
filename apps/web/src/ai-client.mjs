@@ -1,147 +1,229 @@
-import { assertAIArtifact } from './sync-client.mjs';
-import { assertReviewResult } from './storage.mjs';
+import domainSchema from '../../../packages/contracts/schemas/domain.schema.json' with { type: 'json' };
+import aiSchema from '../../../packages/contracts/schemas/ai.schema.json' with { type: 'json' };
+import { validateCompletionFragment } from '../../../packages/contracts/cpp-fragment.mjs';
 
-const DEFAULT_AI_BASE = import.meta.env?.VITE_AI_GATEWAY_BASE ?? 'http://127.0.0.1:8788';
+const TEST_DATA_HEADER = 'X-AlgoFlow-Test-Data';
+export const ALLOW_TEST_AI = import.meta.env?.DEV === true && import.meta.env?.VITE_AI_ALLOW_TEST_DATA === 'true';
 
-export class LocalAIClient {
-  /** @param {string} [baseUrl] */
-  constructor(baseUrl = DEFAULT_AI_BASE) {
+/**
+ * Vite replaces import.meta.env.DEV with false in release bundles. The optional
+ * build flag keeps Node contract tests able to inject an explicit test mode
+ * while making an explicit constructor option harmless in a release bundle.
+ * @param {boolean} requested
+ * @param {boolean | undefined} [isDev]
+ */
+export function canUseTestData(requested, isDev = import.meta.env?.DEV) {
+  return requested === true && isDev !== false;
+}
+
+/** @type {Record<number, [string, string]>} */
+const HTTP_ERRORS = {
+  400: ['INVALID_REQUEST', '请求参数无效，请检查思路和代码内容'],
+  409: ['AI_MODE_NOT_AVAILABLE', '当前模式尚未接入，请选择忠实转换'],
+  422: ['INVALID_AI_ARTIFACT', 'AI 产物不符合契约，已拒绝使用'],
+  502: ['AI_PROVIDER_ERROR', 'AI 服务异常或超时，请稍后重试'],
+  503: ['AI_NOT_ENABLED', 'AI 不可用 / 未配置模型'],
+};
+
+export class AIClientError extends Error {
+  /** @param {string} code @param {string} message @param {number} status @param {boolean} [isTestData] */
+  constructor(code, message, status, isTestData = false) {
+    super(message);
+    this.name = 'AIClientError';
+    this.code = code;
+    this.status = status;
+    this.isTestData = isTestData;
+  }
+}
+
+export class WebAIClient {
+  /** @param {string} [baseUrl] @param {{fetchImpl?: typeof fetch, allowTestData?: boolean}} [options] */
+  constructor(baseUrl = import.meta.env?.VITE_AI_GATEWAY_BASE || '/ai-api', { fetchImpl = globalThis.fetch, allowTestData = ALLOW_TEST_AI } = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
+    this.fetchImpl = fetchImpl;
+    this.allowTestData = canUseTestData(allowTestData);
   }
 
-  /** @param {Record<string, unknown>} request @param {{ signal?: AbortSignal, maxRetries?: number, timeoutMs?: number }} [options] */
-  async generate(request, options = {}) {
-    return this.postJson('/requests', request, options, 'AI_REQUEST_FAILED');
+  /** @param {import('./types').AIReviewRequest} request @param {{signal?: AbortSignal}} [options] */
+  async requestReview(request, options = {}) {
+    const response = await this.#request('/reviews', request, options);
+    try { return { result: parseReviewResult(response.result, request), isTestData: response.isTestData }; }
+    catch (error) { if (error instanceof AIClientError) error.isTestData = response.isTestData; throw error; }
   }
 
-  /** @param {Record<string, unknown>} request @param {{ signal?: AbortSignal, maxRetries?: number, timeoutMs?: number }} [options] */
-  async review(request, options = {}) {
-    return this.postJson('/reviews', request, options, 'AI_REVIEW_FAILED');
+  /** @param {import('./types').AICompletionRequest} request @param {{signal?: AbortSignal}} [options] */
+  async requestCompletion(request, options = {}) {
+    const response = await this.#request('/completions', request, options);
+    try { return { result: parseCompletionResult(response.result, request), isTestData: response.isTestData }; }
+    catch (error) { if (error instanceof AIClientError) error.isTestData = response.isTestData; throw error; }
   }
 
-  /** @param {string} path @param {Record<string, unknown>} request @param {{ signal?: AbortSignal, maxRetries?: number, timeoutMs?: number }} options @param {string} fallbackCode */
-  async postJson(path, request, options, fallbackCode) {
-    const maxRetries = Math.max(0, Math.min(Number.isInteger(options.maxRetries) ? (options.maxRetries ?? 1) : 1, 1));
-    const timeoutMs = options.timeoutMs ?? 30000;
-    for (let attempt = 0; ; attempt += 1) {
-      if (options.signal?.aborted) throw new Error('AI_REQUEST_CANCELLED');
-      const requestController = new AbortController();
-      const timeout = setTimeout(() => requestController.abort(), timeoutMs);
-      const abortFromCaller = () => requestController.abort();
-      options.signal?.addEventListener('abort', abortFromCaller, { once: true });
-      try {
-        const response = await fetch(`${this.baseUrl}${path}`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), signal: requestController.signal,
-        });
-        const result = await response.json();
-        if (!response.ok) {
-          const error = new Error(result.code ?? fallbackCode);
-          if ([502, 503, 504].includes(response.status)) Object.assign(error, { retryable: true });
-          throw error;
-        }
-        return result;
-      } catch (error) {
-        if (options.signal?.aborted) throw new Error('AI_REQUEST_CANCELLED');
-        if (requestController.signal.aborted) throw new Error('AI_REQUEST_TIMEOUT');
-        const retryable = error instanceof TypeError || (error instanceof Error && /** @type {Error & { retryable?: boolean }} */ (error).retryable === true);
-        if (!retryable || attempt >= maxRetries) throw error;
-      } finally {
-        clearTimeout(timeout);
-        options.signal?.removeEventListener('abort', abortFromCaller);
-      }
+  /** @param {Record<string, unknown>} request @param {{signal?: AbortSignal}} [options] */
+  requestTransform(request, options = {}) {
+    return this.#request('/requests', request, options);
+  }
+
+  /** @param {string} path @param {object} body @param {{signal?: AbortSignal}} [options] */
+  async #request(path, body, { signal } = {}) {
+    let response;
+    try {
+      response = await this.fetchImpl.call(globalThis, `${this.baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal,
+        cache: 'no-store',
+      });
+    } catch (/** @type {unknown} */ error) {
+      if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
+      throw new AIClientError('NETWORK_ERROR', '无法连接 AI 服务，请检查服务地址和网络', 0);
     }
+    const isTestData = response.headers.get(TEST_DATA_HEADER)?.trim().toLowerCase() === 'true';
+    if (isTestData && !this.allowTestData) {
+      throw new AIClientError('AI_NOT_ENABLED', 'AI 不可用：当前配置不允许测试数据，请检查服务配置', 503, true);
+    }
+    if (!response.ok) {
+      const [code, message] = HTTP_ERRORS[response.status] ?? ['AI_HTTP_ERROR', `AI 服务请求失败（HTTP ${response.status}）`];
+      throw new AIClientError(code, message, response.status, isTestData);
+    }
+    /** @type {unknown} */
+    let payload = null;
+    try { payload = await response.json(); } catch (error) {
+      if (signal?.aborted) throw error;
+      throw invalidArtifact();
+    }
+    return { result: objectValue(payload), isTestData };
   }
 }
 
-/** @param {import('./types').Draft} draft @param {import('./types').Documents} documents @param {import('./types').Mode} mode */
-export function buildAIRequest(draft, documents, mode) {
-  const ideaSegments = reconcileIdeaSegments(draft.idea_segments ?? [], documents['idea.md'])
-    .map((segment) => ({ id: segment.id, content: segment.content }));
-  if (ideaSegments.length === 0) throw new Error('AI_IDEA_REQUIRED');
-  return {
-    mode, draft_id: draft.id, draft_version: draft.version, language: draft.language,
-    rule_version: '1.0.0', problem_context: documents['idea.md'] || draft.title,
-    idea_segments: ideaSegments, output_kind: 'pseudocode', visibility: 'visible',
-  };
-}
-
-/** @param {import('./types').Draft} draft @param {import('./types').Documents} documents @param {import('./types').Mode} mode @param {import('./types').ReviewKind} reviewKind */
-export function buildReviewRequest(draft, documents, mode, reviewKind) {
-  return {
-    mode, draft_id: draft.id, draft_version: draft.version, language: draft.language,
-    rule_version: '1.0.0', code: documents['main.cpp'], idea: documents['idea.md'], review_kind: reviewKind, visibility: 'visible',
-  };
-}
-
-/** @param {import('./types').IdeaSegment[]} existing @param {string} idea @returns {import('./types').IdeaSegment[]} */
-export function reconcileIdeaSegments(existing, idea) {
-  const previousByContent = /** @type {Map<string, import('./types').IdeaSegment[]>} */ (new Map());
-  const previousByPosition = /** @type {Map<number, import('./types').IdeaSegment>} */ (new Map());
-  for (const segment of existing) {
-    const content = segment.content.trim();
-    if (!content) continue;
-    const matches = previousByContent.get(content) ?? [];
-    matches.push(segment);
-    previousByContent.set(content, matches);
-    previousByPosition.set(segment.position, segment);
-  }
+/**
+ * Preserve unchanged lines first, including moves and duplicate occurrences.
+ * Only an unambiguous same-position edit reuses an unmatched identity.
+ * @param {string} idea
+ * @param {import('./types').IdeaSegment[]} [previous]
+ * @param {() => string} [createId]
+ * @returns {import('./types').IdeaSegment[]}
+ */
+export function createIdeaSegments(idea, previous = [], createId = () => `idea-${crypto.randomUUID()}`) {
+  const contents = idea.split(/\r\n|\n|\r/).filter(content => content.trim());
   const used = new Set();
-  const lines = idea.split('\n').map((raw) => raw.trim()).filter((raw) => raw.length > 0);
-  const remainingContents = new Map();
-  for (const raw of lines) remainingContents.set(raw, (remainingContents.get(raw) ?? 0) + 1);
-  return lines.map((raw, index) => {
-    remainingContents.set(raw, remainingContents.get(raw) - 1);
-    const contentMatches = previousByContent.get(raw) ?? [];
-    const sameContent = contentMatches.find((segment) => !used.has(segment.id));
-    const samePosition = previousByPosition.get(index);
-    const positionReservedForLater = samePosition && (remainingContents.get(samePosition.content.trim()) ?? 0) > 0;
-    const reused = sameContent ?? (samePosition && !used.has(samePosition.id) && !positionReservedForLater ? samePosition : undefined);
-    const id = reused?.id ?? `idea_segment_${crypto.randomUUID()}`;
-    used.add(id);
-    return { id, content: raw, position: index };
+  const matches = contents.map(content => {
+    const match = previous.find(segment => !used.has(segment.id) && segment.content.trim() === content.trim());
+    if (match) used.add(match.id);
+    return match;
+  });
+  return contents.map((content, index) => {
+    let match = matches[index];
+    const atPosition = previous[index];
+    if (!match && previous.length === contents.length && atPosition && !used.has(atPosition.id)) {
+      match = atPosition;
+      used.add(match.id);
+    }
+    return { id: match?.id ?? createId(), content };
   });
 }
 
-/** @param {Record<string, unknown>} response @param {import('./types').Draft} draft @param {string} clientId @param {string[]} [sourceSegmentIds] @param {string} [ruleVersion] @returns {import('./types').AIArtifact} */
-export function artifactFromGateway(response, draft, clientId, sourceSegmentIds = (draft.idea_segments ?? []).map(/** @param {import('./types').IdeaSegment} segment */ (segment) => segment.id), ruleVersion = '1.0.0') {
-  const required = ['mode', 'pseudocode', 'code_snippet', 'code_mappings', 'assumptions', 'missing_information', 'risk_flags', 'added_algorithm_steps', 'source_draft_version', 'model_id', 'rule_version', 'output_kind', 'visibility', 'template_id'];
-  const entityFields = ['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id'];
-  const allowed = new Set(required);
-  if (!response || typeof response !== 'object' || Array.isArray(response) || required.some((field) => !(field in response)) || Object.keys(response).some((field) => !allowed.has(field)) || entityFields.some((field) => field in response)) {
-    throw new Error('INVALID_AI_ARTIFACT');
-  }
-  const now = new Date().toISOString();
-  const artifact = /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ ({
-    ...response, id: crypto.randomUUID(), version: 0, server_sequence: 0, created_at: now, updated_at: now,
-    deleted: false, last_modified_client_id: clientId, draft_id: draft.id,
-  }));
-  assertAIArtifact(artifact);
-  if (artifact.mode !== 'faithful_transform' || artifact.source_draft_version !== draft.version || artifact.rule_version !== ruleVersion || artifact.output_kind !== 'pseudocode' || artifact.visibility !== 'visible') {
-    throw new Error('INVALID_AI_ARTIFACT');
-  }
-  const sourceIds = new Set(sourceSegmentIds);
-  if (artifact.pseudocode.some((step) => step.source_refs.some((sourceRef) => !sourceIds.has(sourceRef)))) {
-    throw new Error('INVALID_AI_ARTIFACT');
-  }
-  return artifact;
+/** @param {number} line @param {number} column */
+export function toCursor(line, column) {
+  if (!Number.isInteger(line) || !Number.isInteger(column) || line < 1 || column < 1) throw invalidArtifact();
+  return { line, char: column - 1 };
 }
 
-/** @param {Record<string, unknown>} response @param {import('./types').Draft} draft @param {string} clientId @param {import('./types').Mode} mode @param {import('./types').ReviewKind} reviewKind @param {string} ruleVersion @returns {import('./types').ReviewResult} */
-export function reviewResultFromGateway(response, draft, clientId, mode, reviewKind, ruleVersion = '1.0.0') {
-  const required = ['mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility'];
-  const entityFields = ['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id'];
-  const allowed = new Set(required);
-  if (!response || typeof response !== 'object' || Array.isArray(response) || required.some((field) => !(field in response)) ||
-    Object.keys(response).some((field) => !allowed.has(field)) || entityFields.some((field) => field in response)) {
-    throw new Error('INVALID_REVIEW_RESULT');
-  }
-  const now = new Date().toISOString();
-  const result = /** @type {import('./types').ReviewResult} */ (/** @type {unknown} */ ({
-    ...response, id: crypto.randomUUID(), version: 0, server_sequence: 0, created_at: now, updated_at: now,
-    deleted: false, last_modified_client_id: clientId, draft_id: draft.id, freshness: 'current',
-  }));
-  assertReviewResult(result);
-  if (result.mode !== mode || result.source_draft_version !== draft.version || result.rule_version !== ruleVersion ||
-    result.review_kind !== reviewKind || result.visibility !== 'visible') throw new Error('INVALID_REVIEW_RESULT');
-  return result;
+/** @param {string} source @param {{start_line: number, start_char: number, end_line: number, end_char: number}} range */
+export function rangeToOffsets(source, range) {
+  checkRange(range);
+  const lines = source.split(/\r?\n/);
+  const starts = [0];
+  for (const match of source.matchAll(/\r?\n/g)) starts.push(match.index + match[0].length);
+  /** @param {number} line @param {number} char */
+  const offset = (line, char) => {
+    const text = lines[line - 1];
+    const start = starts[line - 1];
+    if (text === undefined || start === undefined || char > text.length) throw invalidArtifact();
+    return start + char;
+  };
+  return { from: offset(range.start_line, range.start_char), to: offset(range.end_line, range.end_char) };
 }
+
+/** @param {unknown} value @param {import('./types').AIReviewRequest} [request] @returns {import('./types').AIReviewResult} */
+export function parseReviewResult(value, request) {
+  const result = objectValue(value);
+  exactKeys(result, aiSchema.$defs.reviewResult.required);
+  checkMetadata(result, request);
+  if (result.output_kind !== 'review' || !domainSchema.$defs.reviewKind.enum.includes(String(result.review_kind)) || !Array.isArray(result.diagnostics)) throw invalidArtifact();
+  const ids = new Set();
+  for (const item of result.diagnostics) {
+    const diagnostic = objectValue(item);
+    exactKeys(diagnostic, aiSchema.$defs.reviewResult.properties.diagnostics.items.required);
+    for (const key of ['id', 'problem', 'basis', 'suggestion']) nonempty(diagnostic[key]);
+    if (ids.has(diagnostic.id) || !domainSchema.$defs.diagnosticLevel.enum.includes(String(diagnostic.level))) throw invalidArtifact();
+    ids.add(diagnostic.id);
+    if (diagnostic.range !== null) {
+      const range = checkRange(diagnostic.range);
+      if (request) rangeToOffsets(request.code, range);
+    }
+  }
+  if (request && result.review_kind !== request.review_kind) throw invalidArtifact();
+  return /** @type {import('./types').AIReviewResult} */ (/** @type {unknown} */ (result));
+}
+
+/** @param {unknown} value @param {import('./types').AICompletionRequest} [request] @returns {import('./types').AICompletionResult} */
+export function parseCompletionResult(value, request) {
+  const result = objectValue(value);
+  exactKeys(result, aiSchema.$defs.completionResult.required);
+  checkMetadata(result, request);
+  const range = checkRange(result.replaced_range);
+  nonempty(result.suggestion_text);
+  if (result.output_kind !== 'completion' || typeof result.suggestion_text !== 'string' ||
+      result.suggestion_text.length > aiSchema.$defs.completionResult.properties.suggestion_text.maxLength ||
+      validateCompletionFragment(result.suggestion_text).length || !Array.isArray(result.source_refs) || !result.source_refs.length) throw invalidArtifact();
+  for (const ref of result.source_refs) nonempty(ref);
+  if (request) {
+    const { from, to } = rangeToOffsets(request.code, range);
+    const { line, char } = request.cursor;
+    const cursor = rangeToOffsets(request.code, { start_line: line, end_line: line, start_char: char, end_char: char }).from;
+    const ids = new Set(request.idea_segments.map(segment => segment.id));
+    if (from > cursor || to < cursor || range.start_line < line - 3 || range.end_line > line + 3 ||
+        (from === 0 && to === request.code.length) || result.source_refs.some(ref => !ids.has(ref))) throw invalidArtifact();
+  }
+  return /** @type {import('./types').AICompletionResult} */ (/** @type {unknown} */ (result));
+}
+
+/** @param {Record<string, unknown>} result @param {import('./types').AIReviewRequest | import('./types').AICompletionRequest} [request] */
+function checkMetadata(result, request) {
+  for (const key of ['draft_id', 'model_id', 'rule_version']) nonempty(result[key]);
+  if (!domainSchema.$defs.aiMode.enum.includes(String(result.mode)) || !domainSchema.$defs.aiVisibility.enum.includes(String(result.visibility)) ||
+      !Number.isInteger(result.source_draft_version) || Number(result.source_draft_version) < 0) throw invalidArtifact();
+  if (request && (result.mode !== request.mode || result.draft_id !== request.draft_id || result.source_draft_version !== request.draft_version ||
+      result.rule_version !== request.rule_version || result.visibility !== request.visibility || result.output_kind !== request.output_kind)) throw invalidArtifact();
+}
+
+/** @param {unknown} value @returns {import('./types').AIRange} */
+function checkRange(value) {
+  const range = objectValue(value);
+  exactKeys(range, aiSchema.$defs.sourceRange.required);
+  for (const key of ['start_line', 'end_line', 'start_char', 'end_char']) {
+    if (!Number.isInteger(range[key]) || Number(range[key]) < (key.endsWith('line') ? 1 : 0)) throw invalidArtifact();
+  }
+  const typed = /** @type {import('./types').AIRange} */ (/** @type {unknown} */ (range));
+  if (typed.end_line < typed.start_line || (typed.end_line === typed.start_line && typed.end_char < typed.start_char)) throw invalidArtifact();
+  return typed;
+}
+
+/** @param {unknown} value @returns {Record<string, unknown>} */
+function objectValue(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalidArtifact();
+  return /** @type {Record<string, unknown>} */ (value);
+}
+
+/** @param {Record<string, unknown>} value @param {string[]} keys */
+function exactKeys(value, keys) {
+  if (Object.keys(value).length !== keys.length || keys.some(key => !Object.hasOwn(value, key))) throw invalidArtifact();
+}
+
+/** @param {unknown} value */
+function nonempty(value) {
+  if (typeof value !== 'string' || value.length === 0) throw invalidArtifact();
+}
+
+function invalidArtifact() { return new AIClientError('INVALID_AI_ARTIFACT', 'AI 产物格式、来源或范围无效，已拒绝使用', 422); }
