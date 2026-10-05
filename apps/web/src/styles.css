@@ -805,6 +805,27 @@ h2 {
   font-weight: 700;
 }
 
+.review-kind-selector {
+  display: flex;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.review-kind {
+  padding: 5px 8px;
+  border: 1px solid var(--md-outline-variant);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--md-on-surface-variant);
+  font-size: 10px;
+}
+
+.review-kind.active {
+  border-color: var(--md-primary);
+  background: var(--md-primary-container);
+  color: var(--md-on-primary-container);
+}
+
 .warning-text {
   color: var(--md-error);
 }

@@ -3,7 +3,8 @@ import { AIMode, Draft, IdeaSegment, SyncStatus } from './Models';
 export enum SyncEntityType {
   DRAFT = 'draft',
   CODE_DOCUMENT = 'code_document',
-  AI_ARTIFACT = 'ai_artifact'
+  AI_ARTIFACT = 'ai_artifact',
+  REVIEW_RESULT = 'review_result'
 }
 
 export enum SyncOperationType {

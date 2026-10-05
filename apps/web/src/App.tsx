@@ -318,7 +318,7 @@ export function App() {
 
 function makeAIContext(draft: Draft, documents: Documents, fileId: FileId, mode: Mode): AIContext {
   return { draftId: draft.id, draftVersion: draft.version, fileId, mode,
-    code: documents['main.cpp'], idea: documents['idea.md'], problemContext: draft.title || '当前草稿' };
+    code: documents['main.cpp'], idea: documents['idea.md'], idea_segments: draft.idea_segments ?? [], problemContext: draft.title || '当前草稿' };
 }
 
 function getClientId(): string {
@@ -344,5 +344,5 @@ function unresolvedConflict(state: WorkspaceState): ConflictChoice | null {
   const record: ConflictRecord | undefined = state.conflicts.find((item) => !item.resolved);
   if (!record) return null;
   const copy = state.drafts.find((draft) => draft.id === record.local_copy_id);
-  return copy ? { copy, server: record.server_entity } : null;
+  return copy && 'title' in record.server_entity ? { copy, server: record.server_entity } : null;
 }

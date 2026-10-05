@@ -51,6 +51,13 @@ export class WebAIClient {
     catch (error) { if (error instanceof AIClientError) error.isTestData = response.isTestData; throw error; }
   }
 
+  /** @param {import('./types').AIReviewRequest} request @param {{signal?: AbortSignal}} [options] */
+  async review(request, options = {}) {
+    const source = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (request));
+    const response = await this.requestReview({ ...request, output_kind: 'review', problem_context: request.problem_context ?? String(source.idea ?? ''), idea_segments: request.idea_segments ?? [] }, options);
+    return response.result;
+  }
+
   /** @param {import('./types').AICompletionRequest} request @param {{signal?: AbortSignal}} [options] */
   async requestCompletion(request, options = {}) {
     const response = await this.#request('/completions', request, options);
@@ -94,6 +101,47 @@ export class WebAIClient {
     }
     return { result: objectValue(payload), isTestData };
   }
+}
+
+/** Legacy client port retained for the persisted artifact/review tests. */
+export class LocalAIClient extends WebAIClient {
+  /** @param {import('./types').AIReviewRequest} request @param {{ signal?: AbortSignal }} [options] */
+  async review(request, options = {}) {
+    return (await this.requestReview(request, options)).result;
+  }
+
+  /** @param {Record<string, unknown>} request @param {{ signal?: AbortSignal }} [options] */
+  async generate(request, options = {}) {
+    return (await this.requestTransform(request, options)).result;
+  }
+}
+
+/** @param {import('./types').Draft} draft @param {import('./types').Documents} documents @param {import('./types').Mode} mode @param {import('./types').ReviewKind} reviewKind */
+export function buildReviewRequest(draft, documents, mode, reviewKind) {
+  return {
+    mode, draft_id: draft.id, draft_version: draft.version, language: draft.language,
+    rule_version: '1.0.0', problem_context: documents['idea.md'] || draft.title,
+    idea_segments: (draft.idea_segments?.length ? draft.idea_segments : [{ id: 'idea_segment_1', content: documents['idea.md'] || draft.title }]).map(segment => ({ id: segment.id, content: segment.content })),
+    code: documents['main.cpp'], review_kind: reviewKind, output_kind: 'review', visibility: 'visible',
+  };
+}
+
+/** @param {Record<string, unknown>} response @param {import('./types').Draft} draft @param {string} clientId @param {import('./types').Mode} mode @param {import('./types').ReviewKind} reviewKind @param {string} ruleVersion */
+export function reviewResultFromGateway(response, draft, clientId, mode, reviewKind, ruleVersion = '1.0.0') {
+  const required = ['mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility'];
+  if (!response || typeof response !== 'object' || required.some(field => !(field in response))) throw new Error('INVALID_REVIEW_RESULT');
+  response = { ...response, draft_id: response.draft_id ?? draft.id, output_kind: response.output_kind ?? 'review' };
+  const now = new Date().toISOString();
+  const result = /** @type {import('./types').ReviewResult & { output_kind: string }} */ ({
+    ...response, id: crypto.randomUUID(), version: 0, server_sequence: 0, created_at: now, updated_at: now,
+    deleted: false, last_modified_client_id: clientId, draft_id: draft.id, freshness: 'current',
+  });
+  if (result.draft_id !== draft.id || result.mode !== mode || result.source_draft_version !== draft.version ||
+      result.rule_version !== ruleVersion || result.review_kind !== reviewKind || result.output_kind !== 'review' || result.visibility !== 'visible') {
+    throw new Error('INVALID_REVIEW_RESULT');
+  }
+  const { output_kind: _outputKind, ...entity } = result;
+  return /** @type {import('./types').ReviewResult} */ (entity);
 }
 
 /**

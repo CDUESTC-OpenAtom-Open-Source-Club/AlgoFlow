@@ -151,9 +151,8 @@ function validateOperation(operation: SyncOperation): string {
   if (operation.operation_id.trim().length === 0) return 'OPERATION_ID';
   if (operation.entity_id.trim().length === 0) return 'ENTITY_ID';
   if (operation.client_id.trim().length === 0) return 'CLIENT_ID';
-  if (operation.entity_type !== SyncEntityType.DRAFT &&
-    operation.entity_type !== SyncEntityType.CODE_DOCUMENT &&
-    operation.entity_type !== SyncEntityType.AI_ARTIFACT) return 'ENTITY_TYPE';
+  if (operation.entity_type !== SyncEntityType.DRAFT && operation.entity_type !== SyncEntityType.AI_ARTIFACT &&
+    operation.entity_type !== SyncEntityType.REVIEW_RESULT) return 'ENTITY_TYPE';
   if (operation.operation_type !== SyncOperationType.UPSERT &&
     operation.operation_type !== SyncOperationType.DELETE) return 'OPERATION_TYPE';
   if (!Number.isInteger(operation.base_version) || operation.base_version < 0) return 'BASE_VERSION';

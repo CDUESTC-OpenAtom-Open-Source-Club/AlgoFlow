@@ -1,9 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { SyncStore } from '../src/sync-store.mjs';
 import { createSyncServer } from '../src/server.mjs';
-import { queueUpsert } from '../../../apps/web/src/storage.mjs';
+import { queueAIArtifact, queueUpsert } from '../../../apps/web/src/storage.mjs';
 import { LocalSyncClient, synchronizeWorkspace } from '../../../apps/web/src/sync-client.mjs';
+import { validateReviewResultEntity } from '../../../packages/contracts/validate.mjs';
+
+test('shared review entity vectors match the sync-api validator', async (t) => {
+  const source = new URL('../../../packages/contracts/vectors/review-results.json', import.meta.url);
+  const vectors = JSON.parse(await readFile(source, 'utf8'));
+  const sourceDraft = { code: 'int main() { return 0; }' };
+  for (const vector of vectors.entities) {
+    await t.test(vector.name, () => {
+      assert.equal(validateReviewResultEntity(vector.entity, sourceDraft).length === 0, vector.valid, vector.name);
+    });
+  }
+});
 
 const operation = {
   operation_id: 'op-1', entity_type: 'draft', entity_id: 'draft-1', operation_type: 'upsert',
@@ -256,6 +269,281 @@ test('a Web edit updates the same starter draft for the phone pull path', async 
   assert.equal(phoneChanges.next_cursor, '2');
 });
 
+test('rejects code_document until the entity has an implemented sync contract', () => {
+  const store = new SyncStore();
+  const result = store.apply({ ...operation, operation_id: 'code-document-op', entity_type: 'code_document', entity_id: 'code-1' });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.error_code, 'INVALID_REQUEST');
+});
+
+test('syncs an independent faithful artifact without changing the draft entity', async (context) => {
+  const server = createSyncServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+  const draft = makeDraft('draft-artifact-independent', 'main code', 'phone-local');
+  const artifact = makeArtifact('artifact-1', draft.id, 'phone-local');
+  const phone = makeWorkspace('phone-local', draft);
+  phone.ai_artifacts.push(artifact);
+  queueUpsert(phone, draft);
+  queueAIArtifact(phone, artifact);
+  const pushed = await synchronizeWorkspace(phone, client);
+  assert.equal(pushed.status, 'synced');
+  assert.equal(pushed.state.drafts[0].version, 1);
+  assert.equal(pushed.state.ai_artifacts[0].version, 1);
+  assert.equal(pushed.state.ai_artifacts[0].pseudocode[0].source_refs[0], 'idea_segment_1');
+
+  const web = makeWorkspace('web-local', makeDraft('draft-local', '', 'web-local'));
+  const pulled = await synchronizeWorkspace(web, client);
+  assert.equal(pulled.status, 'synced');
+  assert.equal(pulled.state.ai_artifacts.length, 1);
+  assert.equal(pulled.state.ai_artifacts[0].id, artifact.id);
+  assert.equal(pulled.state.drafts.find((item) => item.id === draft.id)?.id, draft.id);
+});
+
+test('rejects malformed independent AI artifacts before they enter the change stream', () => {
+  const store = new SyncStore();
+  const malformed = store.apply({
+    operation_id: 'artifact-invalid', entity_type: 'ai_artifact', entity_id: 'artifact-invalid', operation_type: 'upsert',
+    base_version: 0, client_id: 'web-local', occurred_at: '2026-09-15T00:00:00.000Z',
+    payload: { id: 'artifact-invalid', draft_id: 'draft-1', mode: 'faithful_transform', pseudocode: [], added_algorithm_steps: ['invented'] }
+  });
+  assert.equal(malformed.status, 'rejected');
+  assert.equal(malformed.error_code, 'INVALID_AI_ARTIFACT');
+  assert.equal(store.pull('0').changes.length, 0);
+});
+
+test('rejects an AI artifact mapping to an unknown pseudocode step', () => {
+  const store = new SyncStore();
+  seedDraft(store, makeDraft('draft-1', '', 'draft-owner'));
+  const artifact = makeArtifact('artifact-ghost-step', 'draft-1', 'web-local');
+  artifact.output_kind = 'code_snippet';
+  artifact.code_snippet = 'return value;';
+  artifact.code_mappings = [{ step_id: 'ghost', start_line: 1, end_line: 1 }];
+  const result = store.apply({
+    operation_id: 'artifact-ghost-step-op', entity_type: 'ai_artifact', entity_id: artifact.id, operation_type: 'upsert',
+    base_version: 0, client_id: 'web-local', occurred_at: '2026-09-15T00:00:00.000Z', payload: artifact
+  });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.error_code, 'INVALID_AI_ARTIFACT');
+  assert.equal(store.pull('0').changes.length, 1);
+});
+
+test('rejects an AI artifact referencing a source segment absent from the source draft version', () => {
+  const store = new SyncStore();
+  seedDraft(store, makeDraft('draft-source-check', '', 'draft-owner'));
+  const artifact = makeArtifact('artifact-ghost-source', 'draft-source-check', 'web-local');
+  artifact.pseudocode[0].source_refs = ['ghost'];
+  const result = store.apply({ operation_id: 'artifact-ghost-source-op', entity_type: 'ai_artifact', entity_id: artifact.id,
+    operation_type: 'upsert', base_version: 0, client_id: 'web-local', occurred_at: artifact.updated_at, payload: artifact });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.error_code, 'INVALID_AI_ARTIFACT');
+  assert.equal(store.pull('0').changes.length, 1);
+});
+
+test('rejects an unknown AI artifact delete instead of publishing an incomplete tombstone', () => {
+  const store = new SyncStore();
+  const result = store.apply({
+    operation_id: 'artifact-delete-unknown', entity_type: 'ai_artifact', entity_id: 'missing-artifact', operation_type: 'delete',
+    base_version: 0, client_id: 'web-local', occurred_at: '2026-09-15T00:00:00.000Z', payload: {}
+  });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.error_code, 'INVALID_REQUEST');
+  assert.equal(store.pull('0').changes.length, 0);
+});
+
+test('persists an independent review result without changing Draft.version', () => {
+  const store = new SyncStore();
+  const draft = makeDraft('draft-review', 'int main() {}', 'web-review');
+  assert.equal(seedDraft(store, draft).status, 'applied');
+  const review = makeReview('review-1', draft.id, 'web-review');
+  const operation = { operation_id: 'review-op-1', entity_type: 'review_result', entity_id: review.id, operation_type: 'upsert', base_version: 0, client_id: 'web-review', occurred_at: review.updated_at, payload: review };
+  const applied = store.apply(operation);
+  assert.equal(applied.status, 'applied');
+  assert.equal(applied.server_entity.version, 1);
+  assert.equal(store.pull('0').changes.filter((change) => change.entity_type === 'review_result').length, 1);
+  assert.equal(store.apply(operation).status, 'duplicate');
+  assert.equal(store.pull('0').changes.find((change) => change.entity_type === 'draft').entity.version, 1);
+});
+
+test('accepts each independent review kind', () => {
+  const store = new SyncStore();
+  const draft = makeDraft('draft-review-kinds', 'int main() {}', 'web-review');
+  assert.equal(seedDraft(store, draft).status, 'applied');
+  for (const reviewKind of ['explanation', 'risk', 'complexity']) {
+    const review = makeReview(`review-${reviewKind}`, draft.id, 'web-review');
+    review.review_kind = reviewKind;
+    const result = store.apply({ operation_id: `op-${reviewKind}`, entity_type: 'review_result', entity_id: review.id,
+      operation_type: 'upsert', base_version: 0, client_id: 'web-review', occurred_at: review.updated_at, payload: review });
+    assert.equal(result.status, 'applied', reviewKind);
+  }
+  assert.equal(store.pull('0').changes.filter((change) => change.entity_type === 'review_result').length, 3);
+  assert.equal(store.pull('0').changes.find((change) => change.entity_type === 'draft').entity.version, 1);
+});
+
+test('accepts a review against an exact historical Draft snapshot after Draft advances', () => {
+  const store = new SyncStore();
+  const draft = makeDraft('draft-review-history', 'x', 'web-review');
+  assert.equal(seedDraft(store, draft).status, 'applied');
+  const updated = { ...draft, version: 1, code: 'longer code', updated_at: '2026-09-16T00:00:00.000Z' };
+  assert.equal(store.apply({ operation_id: 'draft-review-history-v2', entity_type: 'draft', entity_id: draft.id,
+    operation_type: 'upsert', base_version: 1, client_id: 'web-review', occurred_at: updated.updated_at, payload: updated }).status, 'applied');
+
+  const review = makeReview('review-history', draft.id, 'web-review');
+  review.source_draft_version = 1;
+  review.diagnostics[0].range.end_char = 1;
+  const result = store.apply({ operation_id: 'review-history-op', entity_type: 'review_result', entity_id: review.id,
+    operation_type: 'upsert', base_version: 0, client_id: 'web-review', occurred_at: review.updated_at, payload: review });
+
+  assert.equal(result.status, 'applied');
+  const draftChanges = store.pull('0').changes
+    .filter((change) => change.entity_type === 'draft' && change.entity.id === draft.id);
+  assert.equal(draftChanges.at(-1).entity.version, 2);
+});
+
+test('rejects malformed review results and inverted diagnostic ranges', () => {
+  const store = new SyncStore();
+  const review = makeReview('review-invalid', 'draft-1', 'web-review');
+  review.diagnostics[0].range = { start_line: 4, start_char: 0, end_line: 2, end_char: 0 };
+  const result = store.apply({ operation_id: 'review-invalid-op', entity_type: 'review_result', entity_id: review.id, operation_type: 'upsert', base_version: 0, client_id: 'web-review', occurred_at: review.updated_at, payload: review });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.error_code, 'INVALID_REVIEW_RESULT');
+});
+
+test('rejects a review diagnostic outside the source Draft code range', () => {
+  const store = new SyncStore();
+  const draft = makeDraft('draft-review-range', 'x', 'web-review');
+  assert.equal(seedDraft(store, draft).status, 'applied');
+  const review = makeReview('review-range-invalid', draft.id, 'web-review');
+  review.diagnostics[0].range.end_char = 2;
+  const result = store.apply({ operation_id: 'review-range-invalid-op', entity_type: 'review_result',
+    entity_id: review.id, operation_type: 'upsert', base_version: 0, client_id: 'web-review',
+    occurred_at: review.updated_at, payload: review });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.error_code, 'INVALID_REVIEW_RESULT');
+  assert.equal(store.pull('0').changes.filter((change) => change.entity_type === 'review_result').length, 0);
+});
+
+test('retries the same AI artifact operation idempotently', () => {
+  const store = new SyncStore();
+  seedDraft(store, makeDraft('draft-1', '', 'draft-owner'));
+  const artifact = makeArtifact('artifact-duplicate', 'draft-1', 'web-local');
+  const operation = {
+    operation_id: 'artifact-duplicate-op', entity_type: 'ai_artifact', entity_id: artifact.id, operation_type: 'upsert',
+    base_version: 0, client_id: 'web-local', occurred_at: '2026-09-15T00:00:00.000Z', payload: artifact
+  };
+  assert.equal(store.apply(operation).status, 'applied');
+  assert.equal(store.apply(operation).status, 'duplicate');
+  assert.equal(store.pull('0').changes.length, 2);
+});
+
+test('keeps source snapshots immutable across Draft edits and artifact updates', () => {
+  const store = new SyncStore();
+  const draft = makeDraft('draft-history', '', 'draft-owner');
+  draft.idea_segments = [{ id: 'segment-old', content: 'Old thought', position: 0 }];
+  assert.equal(seedDraft(store, draft).status, 'applied');
+  const artifact = makeArtifact('artifact-history', draft.id, 'web-local');
+  artifact.pseudocode[0].source_refs = ['segment-old'];
+  const original = {
+    operation_id: 'artifact-history-original', entity_type: 'ai_artifact', entity_id: artifact.id,
+    operation_type: 'upsert', base_version: 0, client_id: 'web-local', occurred_at: artifact.updated_at, payload: artifact
+  };
+  assert.equal(store.apply(original).status, 'applied');
+
+  const edited = { ...draft, version: 1, idea_segments: [{ id: 'segment-new', content: 'New thought', position: 0 }], updated_at: '2026-09-16T00:00:00.000Z' };
+  assert.equal(store.apply({ operation_id: 'draft-history-edit', entity_type: 'draft', entity_id: draft.id,
+    operation_type: 'upsert', base_version: 1, client_id: 'web-local', occurred_at: edited.updated_at, payload: edited }).status, 'applied');
+
+  assert.equal(store.apply(original).status, 'duplicate');
+  const visibilityUpdate = { ...artifact, visibility: 'hidden', version: 1, updated_at: '2026-09-17T00:00:00.000Z' };
+  assert.equal(store.apply({ operation_id: 'artifact-history-visibility', entity_type: 'ai_artifact', entity_id: artifact.id,
+    operation_type: 'upsert', base_version: 1, client_id: 'web-local', occurred_at: visibilityUpdate.updated_at, payload: visibilityUpdate }).status, 'applied');
+});
+
+test('does not let caller mutations change historical Draft source refs', () => {
+  const store = new SyncStore();
+  const draft = makeDraft('draft-isolated-history', '', 'draft-owner');
+  draft.idea_segments = [{ id: 'segment-original', content: 'Thought', position: 0 }];
+  assert.equal(seedDraft(store, draft).status, 'applied');
+  draft.idea_segments[0].id = 'segment-mutated';
+  const artifact = makeArtifact('artifact-isolated-history', draft.id, 'web-local');
+  artifact.pseudocode[0].source_refs = ['segment-original'];
+  assert.equal(store.apply({ operation_id: 'artifact-isolated-history', entity_type: 'ai_artifact', entity_id: artifact.id,
+    operation_type: 'upsert', base_version: 0, client_id: 'web-local', occurred_at: artifact.updated_at, payload: artifact }).status, 'applied');
+});
+
+test('does not advance the Web cursor when a pulled AI artifact is corrupt', async () => {
+  const state = makeWorkspace('web-corrupt', makeDraft('draft-corrupt', '', 'web-corrupt'));
+  state.cursor = '4';
+  const result = await synchronizeWorkspace(state, {
+    async push() { throw new Error('not expected'); },
+    async pull() {
+      return {
+        changes: [{ cursor: '5', entity_type: 'ai_artifact', entity: { id: 'broken', version: 1 } }],
+        next_cursor: '5'
+      };
+    }
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.state.cursor, '4');
+});
+
+test('does not advance the Web cursor when artifact scalar fields or arrays are corrupt', async () => {
+  const state = makeWorkspace('web-corrupt-fields', makeDraft('draft-corrupt-fields', '', 'web-corrupt-fields'));
+  state.cursor = '4';
+  const artifact = makeArtifact('broken-fields', 'draft-1', 'remote');
+  artifact.version = 'bad';
+  artifact.created_at = 'not-a-date';
+  artifact.deleted = 'no';
+  artifact.assumptions = [7];
+  const result = await synchronizeWorkspace(state, {
+    async push() { throw new Error('not expected'); },
+    async pull() { return { changes: [{ cursor: '5', entity_type: 'ai_artifact', entity: artifact }], next_cursor: '5' }; }
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.state.cursor, '4');
+});
+
+test('validates self-authored pulled AI artifacts before skipping them', async () => {
+  const state = makeWorkspace('same-client', makeDraft('draft-self-corrupt', '', 'same-client'));
+  state.cursor = '4';
+  const artifact = makeArtifact('self-corrupt', 'draft-1', 'same-client');
+  artifact.assumptions = [7];
+  const result = await synchronizeWorkspace(state, {
+    async push() { throw new Error('not expected'); },
+    async pull() { return { changes: [{ cursor: '5', entity_type: 'ai_artifact', entity: artifact }], next_cursor: '5' }; }
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.state.cursor, '4');
+});
+
+test('does not advance the Web cursor for an unsupported pulled entity', async () => {
+  const state = makeWorkspace('web-unknown', makeDraft('draft-unknown', '', 'web-unknown'));
+  state.cursor = '4';
+  const result = await synchronizeWorkspace(state, {
+    async push() { throw new Error('not expected'); },
+    async pull() { return { changes: [{ cursor: '5', entity_type: 'code_document', entity: {} }], next_cursor: '5' }; }
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.state.cursor, '4');
+});
+
+test('does not apply a pulled artifact with a source reference absent from the local source version', async () => {
+  const draft = makeDraft('draft-source-web', '', 'web-source-web');
+  const state = makeWorkspace('web-source-web', draft);
+  state.cursor = '4';
+  const artifact = makeArtifact('web-ghost-source', draft.id, 'remote');
+  artifact.pseudocode[0].source_refs = ['ghost'];
+  const result = await synchronizeWorkspace(state, {
+    async push() { throw new Error('not expected'); },
+    async pull() { return { changes: [{ cursor: '5', entity_type: 'ai_artifact', entity: artifact }], next_cursor: '5' }; }
+  });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.state.cursor, '4');
+});
+
 function makeDraft(id, code, clientId) {
   return {
     id,
@@ -272,8 +560,15 @@ function makeDraft(id, code, clientId) {
     rewrite: '',
     ai_mode: 'faithful_transform',
     artifact_hidden: false,
+    idea_segments: [{ id: 'idea_segment_1', content: 'Sort by right endpoint', position: 0 }],
     sync_status: 'local_only'
   };
+}
+
+function seedDraft(store, draft) {
+  return store.apply({ operation_id: `seed-${draft.id}`, entity_type: 'draft', entity_id: draft.id,
+    operation_type: 'upsert', base_version: 0, client_id: draft.last_modified_client_id,
+    occurred_at: draft.updated_at, payload: draft });
 }
 
 function makeWorkspace(clientId, draft) {
@@ -282,8 +577,29 @@ function makeWorkspace(clientId, draft) {
     cursor: '0',
     online: true,
     selected_id: draft.id,
-    drafts: [draft],
+    drafts: [draft], ai_artifacts: [],
     operations: [],
     conflicts: []
+  };
+}
+
+function makeArtifact(id, draftId, clientId) {
+  const now = '2026-09-15T00:00:00.000Z';
+  return {
+    id, version: 0, server_sequence: 0, created_at: now, updated_at: now, deleted: false, last_modified_client_id: clientId,
+    draft_id: draftId, mode: 'faithful_transform',
+    pseudocode: [{ id: 'step-1', step: 'Sort by right endpoint', source_refs: ['idea_segment_1'] }],
+    code_snippet: null, code_mappings: [], assumptions: [], missing_information: ['Equal endpoints are unspecified'],
+    risk_flags: [], added_algorithm_steps: [], source_draft_version: 0, model_id: 'provider-disabled',
+    rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null,
+  };
+}
+
+function makeReview(id, draftId, clientId) {
+  const now = '2026-09-15T00:00:00.000Z';
+  return {
+    id, version: 0, server_sequence: 0, created_at: now, updated_at: now, deleted: false, last_modified_client_id: clientId,
+    draft_id: draftId, mode: 'faithful_transform', source_draft_version: 0, model_id: 'test-review-provider', rule_version: '1.0.0', review_kind: 'risk',
+    diagnostics: [{ id: 'diagnostic-1', level: 'warning', range: { start_line: 1, start_char: 0, end_line: 1, end_char: 1 }, problem: 'Potential issue', basis: 'Rule matched', suggestion: 'Review this line' }], visibility: 'visible', freshness: 'current'
   };
 }

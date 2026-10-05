@@ -22,7 +22,7 @@ export function createSyncServer(store = new SyncStore()) {
       } else {
         console.log(`[AlgoFlow] Sync push handled. request_id=${requestId} status=${result.status} version=${result.version ?? 'none'}`);
       }
-      response.statusCode = result.status === 'rejected' ? 400 : result.status === 'conflict' ? 409 : 200;
+      response.statusCode = result.status === 'rejected' ? (result.error_code === 'INVALID_AI_ARTIFACT' ? 422 : 400) : result.status === 'conflict' ? 409 : 200;
       response.end(JSON.stringify(result));
       return;
     }
