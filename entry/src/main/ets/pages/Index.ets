@@ -3,7 +3,7 @@ import { AIArtifact, AIVisibility, AIMode, DiagnosticLevel, Draft, IdeaSegment, 
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
 import { saveCardSnapshot } from '../platform/CardSnapshot';
-import { util } from '@kit.ArkTS';
+import { ConflictRecord, SyncEntityType } from '../domain/SyncModels';
 
 enum WorkspaceTool {
   NONE = 'none', FILES = 'files', IDEA = 'idea', SNIPPET = 'snippet', AI = 'ai',
@@ -101,6 +101,7 @@ struct Index {
   @State artifacts: AIArtifact[] = [];
   @State reviews: ReviewResult[] = [];
   @State reviewKind: ReviewKind = ReviewKind.RISK;
+  @State selectedReviewId: string = '';
   @State activeFile: EditorFile = EditorFile.MAIN;
   @State activeTool: WorkspaceTool = WorkspaceTool.NONE;
   @State drawerOpen: boolean = false;
@@ -163,6 +164,7 @@ struct Index {
       .sort((left: AIArtifact, right: AIArtifact) => right.serverSequence - left.serverSequence || right.version - left.version);
     this.reviews = this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === draft.id && review.mode === draft.aiMode)
       .sort((left: ReviewResult, right: ReviewResult) => right.serverSequence - left.serverSequence || right.version - left.version);
+    this.selectedReviewId = '';
     this.artifactHidden = this.artifacts.length > 0 && this.artifacts[0].visibility === AIVisibility.HIDDEN;
     saveCardSnapshot(getContext(this), draft);
     this.saved = true;
@@ -548,15 +550,30 @@ struct Index {
 
   private chooseReviewKind(kind: ReviewKind): void {
     this.reviewKind = kind;
+    this.selectedReviewId = '';
+  }
+
+  private reviewHistory(): ReviewResult[] {
+    return this.reviews.filter((review: ReviewResult) => review.draftId === this.selectedId && review.mode === this.mode &&
+      review.reviewKind === this.reviewKind && !review.deleted);
+  }
+
+  private chooseReviewVersion(id: string): void {
+    this.selectedReviewId = id;
   }
 
   private selectedReview(): ReviewResult | undefined {
-    return this.reviews.find((review: ReviewResult) => review.draftId === this.selectedId && review.mode === this.mode &&
-      review.reviewKind === this.reviewKind && !review.deleted);
+    const history = this.reviewHistory();
+    return history.find((review: ReviewResult) => review.id === this.selectedReviewId) ?? history[0];
   }
 
   private selectedReviewDiagnostics(): ReviewDiagnostic[] {
     return this.selectedReview()?.diagnostics ?? [];
+  }
+
+  private selectedReviewHasSource(): boolean {
+    const review = this.selectedReview();
+    return review !== undefined && this.viewModel.hasReviewSource(review.id);
   }
 
   private jumpToDiagnostic(diagnostic: ReviewDiagnostic): void {
@@ -570,9 +587,8 @@ struct Index {
         right.serverSequence - left.serverSequence || right.version - left.version || right.updatedAt.localeCompare(left.updatedAt));
   }
 
-  private saveReview(): void {
+  private async saveReview(): Promise<void> {
     if (!this.isCppFile()) return;
-    this.saveDraft();
     const draft = this.viewModel.getDraft(this.selectedId);
     if (draft === undefined) return;
     if (draft.version === 0 && draft.idea.length === 0 && draft.code.length === 0 && draft.shortCode.length === 0 &&
@@ -580,42 +596,52 @@ struct Index {
       this.reviewMessage = '请先输入并保存思路或代码，再创建可同步的审查结果。';
       return;
     }
-    const review = new ReviewResult(util.generateRandomUUID(), draft.id);
-    review.mode = this.mode;
-    review.sourceDraftVersion = draft.version;
-    review.modelId = 'local-review-rules';
-    review.ruleVersion = '1.0.0';
-    review.reviewKind = this.reviewKind;
-    review.visibility = AIVisibility.VISIBLE;
-    review.diagnostics = this.reviewIssues.map((issue: ReviewIssue, index: number) => {
-      const diagnostic = new ReviewDiagnostic();
-      diagnostic.id = `local-${this.reviewKind}-${index + 1}`;
-      diagnostic.level = this.parseDiagnosticLevel(issue.severity);
-      diagnostic.range = new SourceRange();
-      diagnostic.range.start_line = Math.max(1, issue.line);
-      diagnostic.range.end_line = Math.max(1, issue.line);
-      diagnostic.problem = issue.message;
-      diagnostic.basis = '本地规则检查命中对应代码行。';
-      diagnostic.suggestion = '请结合当前思路确认是否需要调整。';
-      return diagnostic;
-    });
-    this.viewModel.saveReview(review);
-    this.refreshReviews();
-    this.reviewMessage = '审查结果已独立保存，可通过同步发送到 Web。';
+    if (this.aiBaseUrl.trim().length === 0) {
+      this.reviewMessage = '请先填写 AI Gateway 局域网地址。';
+      return;
+    }
+    if (this.aiGenerating) return;
+    this.aiGenerating = true;
+    this.reviewMessage = '正在请求 AI Gateway 审查...';
+    try {
+      const review = await this.viewModel.generateReview(this.selectedId, this.aiBaseUrl, this.mode, this.reviewKind);
+      this.refreshReviews();
+      this.selectedReviewId = review.id;
+      this.reviewMessage = '审查结果已独立保存，可通过同步发送到 Web。';
+    } catch (error) {
+      this.reviewMessage = error instanceof Error ? error.message : 'AI 审查请求失败';
+    } finally {
+      this.aiGenerating = false;
+    }
   }
 
-  private toggleReview(): void {
+  private async toggleReview(): Promise<void> {
     const review = this.selectedReview();
     if (review === undefined) return;
-    this.viewModel.toggleReview(review.id);
-    this.refreshReviews();
+    try {
+      await this.viewModel.toggleReview(review.id);
+      this.refreshReviews();
+      this.reviewMessage = '审查结果显示状态已保存。';
+    } catch (error) {
+      this.reviewMessage = error instanceof Error ? error.message : '审查结果显示状态保存失败';
+    }
   }
 
-  private parseDiagnosticLevel(value: string): DiagnosticLevel {
-    if (value === 'error') return DiagnosticLevel.ERROR;
-    if (value === 'warning') return DiagnosticLevel.WARNING;
-    if (value === 'hint') return DiagnosticLevel.HINT;
-    return DiagnosticLevel.INFO;
+  private reviewConflict(): ConflictRecord | undefined {
+    return this.viewModel.listConflicts().find((record: ConflictRecord) =>
+      record.entity_type === SyncEntityType.REVIEW_RESULT);
+  }
+
+  private async resolveReviewConflict(resolution: 'keep_local' | 'use_server'): Promise<void> {
+    const conflict = this.reviewConflict();
+    if (conflict === undefined) return;
+    try {
+      await this.viewModel.resolveReviewConflict(conflict.id, resolution);
+      this.refreshReviews();
+      this.reviewMessage = resolution === 'keep_local' ? '已保留本地审查副本。' : '已采用服务器审查结果。';
+    } catch (error) {
+      this.reviewMessage = error instanceof Error ? error.message : '审查冲突处理失败';
+    }
   }
 
   private reviewKindLabel(kind: ReviewKind): string {
@@ -1083,8 +1109,37 @@ struct Index {
             .backgroundColor(this.reviewKind === ReviewKind.COMPLEXITY ? '#30D158' : '#1E3A27').borderRadius(4)
             .onClick(() => this.chooseReviewKind(ReviewKind.COMPLEXITY))
         }.width('100%').margin({ top: 7, bottom: 8 })
+        if (this.reviewHistory().length > 1) {
+          Scroll() {
+            Row({ space: 5 }) {
+              ForEach(this.reviewHistory(), (review: ReviewResult) => {
+                Button(`源 v${review.sourceDraftVersion} · ${review.updatedAt.substring(0, 10)}`)
+                  .height(27).fontSize(9).fontColor(this.selectedReview()?.id === review.id ? '#07110A' : '#B8B8BD')
+                  .backgroundColor(this.selectedReview()?.id === review.id ? '#30D158' : '#29292C').borderRadius(4)
+                  .onClick(() => this.chooseReviewVersion(review.id))
+              }, (review: ReviewResult) => review.id)
+            }
+          }.width('100%').height(32).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+            .margin({ bottom: 6 })
+        }
         if (this.selectedReview() === undefined) {
           Text('当前类型暂无已保存审查结果。').fontSize(10).fontColor('#8E8E93')
+        } else if (!this.selectedReviewHasSource()) {
+          Text('该历史结果的源代码快照不可用，仅供查看；请重新审查当前版本以同步。')
+            .width('100%').fontSize(9).lineHeight(14).fontColor('#FFB340')
+          if (this.selectedReview()?.visibility === AIVisibility.HIDDEN) {
+            Text('审查结果已隐藏，记录仍保留；当前历史记录仅供查看。').fontSize(10).fontColor('#8E8E93')
+          } else {
+            ForEach(this.selectedReviewDiagnostics(), (diagnostic: ReviewDiagnostic) => {
+              Column({ space: 3 }) {
+                Text(`${this.diagnosticLevelLabel(diagnostic.level)} · ${this.reviewRangeLabel(diagnostic.range)}`)
+                  .width('100%').fontSize(10).fontColor('#B8B8BD')
+                Text(diagnostic.problem).width('100%').fontSize(10).lineHeight(15).fontColor('#ECECED')
+                Text(`依据：${diagnostic.basis}`).width('100%').fontSize(9).lineHeight(14).fontColor('#8E8E93')
+                Text(`建议：${diagnostic.suggestion}`).width('100%').fontSize(9).lineHeight(14).fontColor('#B8DDBF')
+              }.width('100%').padding({ bottom: 8 })
+            }, (diagnostic: ReviewDiagnostic) => diagnostic.id)
+          }
         } else if (this.selectedReview()?.visibility === AIVisibility.HIDDEN) {
           Text('审查结果已隐藏，记录仍保留并参与同步。').fontSize(10).fontColor('#8E8E93')
         } else if (this.selectedReviewDiagnostics().length === 0) {
@@ -1105,14 +1160,15 @@ struct Index {
           }
         }.width('100%').height(145).scrollBar(BarState.Auto)
         }
-        Button('保存当前审查结果').width('100%').height(34).fontSize(10).fontColor('#07110A')
+        Button(this.aiGenerating ? 'AI 审查请求中' : '请求 AI 审查').width('100%').height(34).fontSize(10)
+          .enabled(!this.aiGenerating).fontColor('#07110A')
           .backgroundColor('#30D158').borderRadius(4).margin({ top: 8 }).onClick(() => this.saveReview())
         if (this.reviewMessage.length > 0) {
           Text(this.reviewMessage).width('100%').fontSize(9).lineHeight(14).fontColor('#8E8E93').margin({ top: 5 })
         }
         if (this.selectedReview() !== undefined) {
           Button(this.selectedReview()?.visibility === AIVisibility.HIDDEN ? '显示审查结果' : '隐藏审查结果').width('100%').height(32).fontSize(10)
-            .fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).margin({ top: 6 }).onClick(() => this.toggleReview())
+            .enabled(this.selectedReviewHasSource()).fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).margin({ top: 6 }).onClick(() => this.toggleReview())
         }
         Text(`本地基础检查：${this.reviewIssues.length === 0 ? '通过' : `${this.reviewIssues.length} 项提示`}`).fontSize(9).fontColor('#8E8E93').margin({ top: 8 })
         if (this.reviewIssues.length > 0) {
@@ -1161,6 +1217,15 @@ struct Index {
         Text(`v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`).fontSize(10).fontColor('#8E8E93')
       }.width('100%')
       Text(`待处理冲突：${this.viewModel.listConflicts().length}`).fontSize(10).fontColor('#FFB340').margin({ top: 6 })
+      if (this.reviewConflict() !== undefined) {
+        Text('审查结果存在本地/服务器冲突。').fontSize(10).lineHeight(15).fontColor('#FFB340').margin({ top: 5 })
+        Row({ space: 6 }) {
+          Button('保留本地').layoutWeight(1).height(32).fontSize(10).fontColor('#9BE7A9')
+            .backgroundColor('#1E3A27').borderRadius(4).onClick(() => this.resolveReviewConflict('keep_local'))
+          Button('采用服务器').layoutWeight(1).height(32).fontSize(10).fontColor('#FFB340')
+            .backgroundColor('#3A2B17').borderRadius(4).onClick(() => this.resolveReviewConflict('use_server'))
+        }.width('100%').margin({ top: 5 })
+      }
       Button() {
         Row({ space: 5 }) {
           this.Icon(WorkspaceIcon.DOCUMENT, 14)

@@ -114,6 +114,12 @@ export interface ReviewResult {
   visibility: 'visible' | 'hidden';
 }
 
+export interface DraftVersionSnapshot {
+  draft_id: string;
+  version: number;
+  code: string;
+}
+
 export interface SyncOperation {
   operation_id: string;
   entity_type: 'draft' | 'ai_artifact' | 'review_result';
@@ -131,6 +137,7 @@ export interface WorkspaceState {
   online: boolean;
   selected_id: string;
   drafts: Draft[];
+  draft_history?: DraftVersionSnapshot[];
   ai_artifacts: AIArtifact[];
   review_results: ReviewResult[];
   operations: SyncOperation[];

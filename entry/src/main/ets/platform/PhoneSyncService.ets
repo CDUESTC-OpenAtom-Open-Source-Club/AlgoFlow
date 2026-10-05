@@ -1,6 +1,6 @@
 import { SyncRepository } from '../domain/SyncRepository';
 import { Draft, SyncStatus } from '../domain/Models';
-import { ConflictRecord, DraftPayload, PullChange, ReviewResultPayload, SyncEntityType, SyncResultStatus, payloadToDraft, payloadToReview } from '../domain/SyncModels';
+import { ConflictRecord, DraftPayload, PullChange, PullResult, PushResult, ReviewResultPayload, SyncEntityType, SyncOperation, SyncResultStatus, payloadToDraft, payloadToReview, reviewSourceMatchesDraft } from '../domain/SyncModels';
 import { AIArtifactPayload, payloadToArtifact } from '../domain/AIArtifactCodec';
 import { HttpSyncClient } from './HttpSyncClient';
 import { util } from '@kit.ArkTS';
@@ -28,9 +28,11 @@ export class SyncRunResult {
 
 export class PhoneSyncService {
   private repository: SyncRepository;
+  private transport?: SyncTransport;
 
-  constructor(repository: SyncRepository) {
+  constructor(repository: SyncRepository, transport?: SyncTransport) {
     this.repository = repository;
+    this.transport = transport;
   }
 
   async synchronize(): Promise<SyncRunResult> {
@@ -40,10 +42,13 @@ export class PhoneSyncService {
     for (const operation of pending) {
       if (operation.entity_type === SyncEntityType.DRAFT) this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.SYNCING);
     }
-    const client = new HttpSyncClient(this.repository.getBaseUrl());
+    const client = this.transport ?? new HttpSyncClient(this.repository.getBaseUrl());
     let hadConflict = false;
     for (const operation of pending) {
       try {
+        if (operation.entity_type === SyncEntityType.REVIEW_RESULT) {
+          this.assertReviewPayload(operation.payload as ReviewResultPayload);
+        }
         const result = await client.push(operation);
         hilog.info(DOMAIN, TAG,
           '[AlgoFlow] Sync operation result. entity_id=%{public}s server_version=%{public}s status=%{public}s',
@@ -51,6 +56,7 @@ export class PhoneSyncService {
         if (result.status === SyncResultStatus.CONFLICT) {
           if (operation.entity_type === SyncEntityType.REVIEW_RESULT) {
             if (result.server_entity === undefined || result.server_entity === null) return new SyncRunResult(SyncRunStatus.FAILED, '服务器未返回审查结果冲突版本');
+            this.assertReviewPayload(result.server_entity as ReviewResultPayload);
             this.recordReviewConflict(operation.payload as ReviewResultPayload, result.server_entity as ReviewResultPayload);
             this.repository.removeOperation(operation.operation_id); hadConflict = true; continue;
           }
@@ -80,6 +86,7 @@ export class PhoneSyncService {
         if (operation.entity_type === SyncEntityType.AI_ARTIFACT) {
           this.repository.applyServerArtifact(serverPayload as AIArtifactPayload);
         } else if (operation.entity_type === SyncEntityType.REVIEW_RESULT) {
+          this.assertReviewPayload(serverPayload as ReviewResultPayload);
           this.repository.applyServerReview(serverPayload as ReviewResultPayload);
         } else {
           this.repository.applyServerDraft(payloadToDraft(serverPayload as DraftPayload));
@@ -98,7 +105,7 @@ export class PhoneSyncService {
     try {
       const pull = await client.pull(this.repository.getCursor());
       this.applyPulledChanges(pull.changes);
-      this.repository.setCursor(pull.next_cursor);
+      await this.repository.commitCursor(pull.next_cursor);
     } catch (error) {
       this.markPendingFailed();
       const message = error instanceof Error ? error.message : '拉取变更失败';
@@ -143,7 +150,7 @@ export class PhoneSyncService {
         continue;
       }
       if (change.entity_type === SyncEntityType.REVIEW_RESULT) {
-        if (payloadToReview(change.entity as ReviewResultPayload) === undefined) throw new Error('INVALID_REVIEW_RESULT');
+        this.assertReviewPayload(change.entity as ReviewResultPayload);
         if (change.entity.last_modified_client_id === this.repository.getClientId() || this.repository.hasPendingOperation(SyncEntityType.REVIEW_RESULT, change.entity.id)) { skipped += 1; continue; }
         const local = this.repository.getReview(change.entity.id);
         if (local !== undefined && change.entity.version < local.version) { skipped += 1; continue; }
@@ -217,15 +224,27 @@ export class PhoneSyncService {
   }
 
   private recordReviewConflict(localPayload: ReviewResultPayload, serverPayload: ReviewResultPayload): void {
-    const local = payloadToReview(localPayload); const server = payloadToReview(serverPayload);
-    if (local === undefined || server === undefined) throw new Error('INVALID_REVIEW_RESULT');
-    const copy = payloadToReview(localPayload); if (copy === undefined) throw new Error('INVALID_REVIEW_RESULT');
-    copy.id = `${local.id}-conflict-${util.generateRandomUUID()}`; copy.version = 0; copy.serverSequence = 0;
+    const copy = payloadToReview(localPayload);
+    if (copy === undefined) throw new Error('INVALID_REVIEW_RESULT');
+    copy.id = `${localPayload.id}-conflict-${util.generateRandomUUID()}`; copy.version = 0; copy.serverSequence = 0;
     copy.createdAt = new Date().toISOString(); copy.updatedAt = copy.createdAt; copy.lastModifiedClientId = this.repository.getClientId();
     const record = new ConflictRecord(); record.id = util.generateRandomUUID(); record.entity_type = SyncEntityType.REVIEW_RESULT;
-    record.entity_id = local.id; record.local_copy_id = copy.id; record.server_entity = serverPayload; record.created_at = new Date().toISOString();
+    record.entity_id = localPayload.id; record.local_copy_id = copy.id; record.server_entity = serverPayload; record.created_at = new Date().toISOString();
     this.repository.applyServerReview(serverPayload); this.repository.saveConflictReview(copy, record);
   }
+
+  private assertReviewPayload(payload: ReviewResultPayload): void {
+    if (payloadToReview(payload) === undefined) throw new Error('INVALID_REVIEW_RESULT');
+    if (!reviewSourceMatchesDraft(payload, this.repository.getDraft(payload.draft_id),
+      this.repository.getDraftSourceCode(payload.draft_id, payload.source_draft_version))) {
+      throw new Error('REVIEW_SOURCE_NOT_FOUND');
+    }
+  }
+}
+
+export interface SyncTransport {
+  push(operation: SyncOperation): Promise<PushResult>;
+  pull(cursor: string): Promise<PullResult>;
 }
 
 function safeLogValue(value: string): string {

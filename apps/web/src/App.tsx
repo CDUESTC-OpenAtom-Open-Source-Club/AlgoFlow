@@ -5,11 +5,12 @@ import { InspectorPanel } from './components/InspectorPanel';
 import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { initialDocuments } from './data';
-import { BrowserWorkspaceRepository, createLocalReviewResult, queueAIArtifact, queueReviewResult, queueUpsert } from './storage.mjs';
-import { LocalSyncClient, synchronizeWorkspace } from './sync-client.mjs';
+import { BrowserWorkspaceRepository, hasReviewSource, queueAIArtifact, queueUpsert } from './storage.mjs';
+import { LocalSyncClient, resolveAIResultConflict, synchronizeWorkspace } from './sync-client.mjs';
 import type { AIArtifact, ConflictRecord, Documents, Draft, FileId, Mode, Panel, ReviewKind, ReviewResult, SyncStatus, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
 import { LocalAIClient, artifactFromGateway, buildAIRequest, reconcileIdeaSegments } from './ai-client.mjs';
+import { createReviewResult, toggleReviewVisibility as toggleReviewVisibilityUseCase } from './review-use-case.mjs';
 
 interface ConflictChoice {
   entity_type: 'draft' | 'ai_artifact' | 'review_result';
@@ -45,21 +46,26 @@ export function App() {
   const [aiMessage, setAIMessage] = useState('');
   const [aiGenerating, setAIGenerating] = useState(false);
   const [reviewKind, setReviewKind] = useState<ReviewKind>('risk');
+  const [selectedReviewId, setSelectedReviewId] = useState('');
   const editorRevisionRef = useRef(0);
   const currentArtifact = useMemo(() => currentDraft ? latestArtifact(workspace.ai_artifacts, currentDraft.id, mode) : undefined,
     [workspace.ai_artifacts, currentDraft, mode]);
-  const currentReview = useMemo(() => currentDraft ? latestReview(workspace.review_results, currentDraft.id, mode, reviewKind) : undefined,
-    [workspace.review_results, currentDraft, mode, reviewKind]);
+  const reviewHistory = useMemo(() => currentDraft
+    ? listReviewHistory(workspace.review_results, currentDraft.id, mode, reviewKind)
+    : [], [workspace.review_results, currentDraft, mode, reviewKind]);
+  const currentReview = useMemo(() => reviewHistory.find((review) => review.id === selectedReviewId) ?? reviewHistory[0],
+    [reviewHistory, selectedReviewId]);
+  const currentReviewSourceAvailable = currentReview ? hasReviewSource(workspace, currentReview) : false;
   const handleCursorChange = useCallback((line: number, column: number) => {
     setCursorPosition({ line, column });
   }, []);
 
-  const flushQueue = useCallback(async () => {
+  const flushQueue = useCallback(async (): Promise<SyncStatus> => {
     const state = repository.load();
     if (!navigator.onLine) {
       setSyncState('local_only');
       setWorkspace(state);
-      return;
+      return 'local_only';
     }
     setSyncState('syncing');
     const result = await synchronizeWorkspace(state, syncClient);
@@ -70,6 +76,7 @@ export function App() {
     setSyncState(result.status);
     const pendingConflict = unresolvedConflict(result.state);
     if (pendingConflict) setConflict(pendingConflict);
+    return result.status;
   }, [clientId, repository]);
 
   useEffect(() => {
@@ -111,7 +118,7 @@ export function App() {
     setWorkspace(next);
     setSaved(true);
     setSyncState(navigator.onLine ? 'syncing' : 'local_only');
-    return navigator.onLine ? flushQueue() : Promise.resolve();
+    return navigator.onLine ? flushQueue().then(() => undefined) : Promise.resolve();
   }
 
   function syncNow() {
@@ -137,39 +144,63 @@ export function App() {
     if (navigator.onLine) void flushQueue();
   }
 
-  function toggleReviewVisibility() {
+  async function toggleReviewVisibility() {
     if (!currentReview) return;
-    const state = repository.load();
-    queueReviewResult(state, { ...currentReview, visibility: currentReview.visibility === 'hidden' ? 'visible' : 'hidden', updated_at: new Date().toISOString(), last_modified_client_id: clientId });
-    repository.save(state);
-    setWorkspace(state);
-    setSyncState(navigator.onLine ? 'syncing' : 'local_only');
-    if (navigator.onLine) void flushQueue();
+    try {
+      const result = await toggleReviewVisibilityUseCase({
+        repository,
+        reviewId: currentReview.id,
+        clientId,
+        isOnline: () => navigator.onLine,
+        synchronize: flushQueue,
+      });
+      setWorkspace(result.state);
+      setSyncState(result.syncStatus);
+    } catch (error) {
+      setAIMessage(error instanceof Error ? error.message : '审查结果显示状态更新失败');
+    }
+  }
+
+  function chooseReviewKind(kind: ReviewKind) {
+    setReviewKind(kind);
+    setSelectedReviewId('');
   }
 
   async function saveLocalReview() {
     if (!currentDraft) return;
-    const draftNeedsSave = !saved || currentDraft.code !== documents['main.cpp'] || currentDraft.idea !== documents['idea.md'] ||
-      (currentDraft.cases ?? '') !== documents['cases.txt'] || currentDraft.ai_mode !== mode;
-    if (draftNeedsSave) await saveWorkspace();
-    const state = repository.load();
-    const sourceDraft = state.drafts.find((draft) => draft.id === currentDraft.id);
-    if (!sourceDraft || sourceDraft.code !== documents['main.cpp'] || sourceDraft.idea !== documents['idea.md'] ||
-      (sourceDraft.cases ?? '') !== documents['cases.txt'] || sourceDraft.ai_mode !== mode) {
-      setAIMessage('草稿保存存在冲突，请先处理冲突后再保存审查结果。');
-      return;
+    if (aiGenerating) return;
+    setAIGenerating(true);
+    setAIMessage('正在请求 AI Gateway 审查...');
+    try {
+      const result = await createReviewResult({
+        repository,
+        aiClient,
+        draftId: currentDraft.id,
+        documents,
+        mode,
+        reviewKind,
+        clientId,
+        isOnline: () => navigator.onLine,
+        synchronize: flushQueue,
+        getEditorRevision: () => editorRevisionRef.current,
+      });
+      setWorkspace(result.state);
+      setSyncState(result.syncStatus);
+      const latest = listReviewHistory(result.state.review_results, currentDraft.id, mode, reviewKind)[0];
+      if (latest) setSelectedReviewId(latest.id);
+      setAIMessage(result.syncStatus === 'failed'
+        ? '审查结果已本地保存；同步失败，可稍后重试。'
+        : result.syncStatus === 'conflict'
+          ? '审查结果已保存，请处理同步冲突。'
+          : '审查结果已独立保存，可同步到手机端。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'AI 审查请求失败';
+      setAIMessage(message === 'REVIEW_DRAFT_NOT_SYNCED' || message === 'DRAFT_NEEDS_SAVE'
+        ? '请先保存并同步当前草稿，再请求审查结果。'
+        : message);
+    } finally {
+      setAIGenerating(false);
     }
-    const result = createLocalReviewResult(sourceDraft, clientId, mode, reviewKind, reviewCpp(documents['main.cpp']).map((issue, index) => ({
-        id: `local-${index + 1}`, level: issue.severity === 'error' ? 'error' : issue.severity === 'warning' ? 'warning' : 'info',
-        range: { start_line: issue.line, start_char: 0, end_line: issue.line, end_char: 1 }, problem: issue.message,
-        basis: '本地规则检查命中对应代码行。', suggestion: '请结合当前思路确认是否需要调整。'
-      })));
-    queueReviewResult(state, result);
-    repository.save(state);
-    setWorkspace(state);
-    setSyncState(navigator.onLine ? 'syncing' : 'local_only');
-    setAIMessage('审查结果已独立保存。');
-    if (navigator.onLine) void flushQueue();
   }
 
   async function generateArtifact() {
@@ -219,79 +250,42 @@ export function App() {
     setSyncState(draft.sync_status);
   }
 
-  function keepConflictCopy() {
+  function resolveConflict(resolution: 'keep_local' | 'use_server') {
     if (!conflict) return;
     const state = repository.load();
-    if (conflict.entity_type === 'ai_artifact') {
-      const copy: AIArtifact = { ...(conflict.copy as AIArtifact), last_modified_client_id: clientId, visibility: 'visible' };
-      const next = { ...state, ai_artifacts: state.ai_artifacts.map((item) => item.id === copy.id ? copy : item), conflicts: state.conflicts.map((record) => record.local_copy_id === copy.id ? { ...record, resolved: true } : record) };
-      queueAIArtifact(next, copy);
+    if (conflict.entity_type !== 'draft') {
+      const record = state.conflicts.find((item) => item.local_copy_id === conflict.copy.id && !item.resolved);
+      if (!record) return;
+      const next = resolveAIResultConflict(state, record, resolution, clientId);
       repository.save(next);
       setWorkspace(next);
+      setConflict(null);
+      setSyncState(resolution === 'use_server' ? 'synced' : navigator.onLine ? 'syncing' : 'local_only');
+      if (resolution === 'keep_local' && navigator.onLine) void flushQueue();
+      return;
+    }
+    if (resolution === 'keep_local') {
+      const copy: Draft = { ...(conflict.copy as Draft), sync_status: navigator.onLine ? 'syncing' : 'local_only' };
+      const next = replaceDraft({ ...state, selected_id: copy.id }, copy);
+      next.conflicts = state.conflicts.map((record) => record.local_copy_id === copy.id ? { ...record, resolved: true } : record);
+      queueUpsert(next, copy);
+      repository.save(next);
+      setWorkspace(next);
+      setDocuments(draftToDocuments(copy));
       setConflict(null);
       setSyncState(navigator.onLine ? 'syncing' : 'local_only');
       if (navigator.onLine) void flushQueue();
       return;
     }
-    if (conflict.entity_type === 'review_result') {
-      const copy: ReviewResult = { ...(conflict.copy as ReviewResult), last_modified_client_id: clientId, visibility: 'visible' };
-      const next = { ...state, review_results: state.review_results.map((item) => item.id === copy.id ? copy : item), conflicts: state.conflicts.map((record) => record.local_copy_id === copy.id ? { ...record, resolved: true } : record) };
-      queueReviewResult(next, copy);
-      repository.save(next);
-      setWorkspace(next);
-      setConflict(null);
-      setSyncState(navigator.onLine ? 'syncing' : 'local_only');
-      if (navigator.onLine) void flushQueue();
-      return;
-    }
-    const copy: Draft = {
-      ...(conflict.copy as Draft),
-      sync_status: navigator.onLine ? 'syncing' : 'local_only',
-    };
-    const next = replaceDraft({ ...state, selected_id: copy.id }, copy);
-    next.conflicts = state.conflicts.map((record) => record.local_copy_id === copy.id ? { ...record, resolved: true } : record);
-    queueUpsert(next, copy);
-    repository.save(next);
-    setWorkspace(next);
-    setDocuments(draftToDocuments(copy));
-    setConflict(null);
-    setSyncState(navigator.onLine ? 'syncing' : 'local_only');
-    if (navigator.onLine) void flushQueue();
-  }
-
-  function useServerVersion() {
-    if (!conflict) return;
-    const state = repository.load();
-    if (conflict.entity_type === 'ai_artifact') {
-      const server = conflict.server as AIArtifact;
-      const next = { ...state, ai_artifacts: state.ai_artifacts.filter((artifact) => artifact.id !== conflict.copy.id).map((artifact) => artifact.id === server.id ? server : artifact), conflicts: state.conflicts.map((record) => record.local_copy_id === conflict.copy.id ? { ...record, resolved: true } : record) };
-      repository.save(next);
-      setWorkspace(next);
-      setConflict(null);
-      setSyncState('synced');
-      return;
-    }
-    if (conflict.entity_type === 'review_result') {
-      const server = conflict.server as ReviewResult;
-      const next = {
-        ...state,
-        review_results: state.review_results.filter((result) => result.id !== conflict.copy.id).map((result) => result.id === server.id ? server : result),
-        conflicts: state.conflicts.map((record) => record.local_copy_id === conflict.copy.id ? { ...record, resolved: true } : record),
-      };
-      repository.save(next);
-      setWorkspace(next);
-      setConflict(null);
-      setSyncState('synced');
-      return;
-    }
+    const server = conflict.server as Draft;
     let next = replaceDraft(
-      { ...state, selected_id: conflict.server.id, drafts: state.drafts.filter((draft) => draft.id !== conflict.copy.id) },
-      { ...(conflict.server as Draft), sync_status: 'synced' },
+      { ...state, selected_id: server.id, drafts: state.drafts.filter((draft) => draft.id !== conflict.copy.id) },
+      { ...server, sync_status: 'synced' },
     );
     next.conflicts = state.conflicts.map((record) => record.local_copy_id === conflict.copy.id ? { ...record, resolved: true } : record);
     repository.save(next);
     setWorkspace(next);
-    setDocuments(draftToDocuments(conflict.server as Draft));
+    setDocuments(draftToDocuments(server));
     setConflict(null);
     setSaved(true);
     setSyncState('synced');
@@ -307,11 +301,11 @@ export function App() {
         <div className="sync-conflict-banner" role="alert">
           <div>
             <strong>检测到并发修改</strong>
-            <span>{conflict.entity_type === 'ai_artifact' ? '服务器 AI 结果和本地副本都已保留，请选择继续方式。' : conflict.entity_type === 'review_result' ? '服务器审查结果和本地副本都已保留，请选择继续方式。' : '服务器版本和本地编辑都已保留，请选择继续方式。'}</span>
+            <span>{conflictMessage(conflict.entity_type)}</span>
           </div>
           <div className="conflict-actions">
-            <button type="button" onClick={keepConflictCopy}>保留本地冲突副本</button>
-            <button type="button" onClick={useServerVersion}>采用服务器版本</button>
+            <button type="button" onClick={() => resolveConflict('keep_local')}>保留本地冲突副本</button>
+            <button type="button" onClick={() => resolveConflict('use_server')}>采用服务器版本</button>
           </div>
         </div>
       )}
@@ -356,8 +350,12 @@ export function App() {
           artifact={currentArtifact}
           onToggleArtifact={toggleArtifactVisibility}
           review={currentReview}
+          reviewSourceAvailable={currentReviewSourceAvailable}
+          reviewHistory={reviewHistory}
+          onReviewSelect={setSelectedReviewId}
           reviewKind={reviewKind}
-          onReviewKindChange={setReviewKind}
+          reviewBusy={aiGenerating}
+          onReviewKindChange={chooseReviewKind}
           onSaveReview={saveLocalReview}
           onToggleReview={toggleReviewVisibility}
         />
@@ -405,7 +403,13 @@ function latestArtifact(artifacts: AIArtifact[], draftId: string, mode: Mode): A
     .sort((left, right) => right.server_sequence - left.server_sequence || right.version - left.version || right.updated_at.localeCompare(left.updated_at))[0];
 }
 
-function latestReview(results: ReviewResult[], draftId: string, mode: Mode, kind: ReviewResult['review_kind']): ReviewResult | undefined {
+function conflictMessage(entityType: ConflictChoice['entity_type']): string {
+  if (entityType === 'ai_artifact') return '服务器 AI 结果和本地副本都已保留，请选择继续方式。';
+  if (entityType === 'review_result') return '服务器审查结果和本地副本都已保留，请选择继续方式。';
+  return '服务器版本和本地编辑都已保留，请选择继续方式。';
+}
+
+function listReviewHistory(results: ReviewResult[], draftId: string, mode: Mode, kind: ReviewResult['review_kind']): ReviewResult[] {
   return results.filter((result) => result.draft_id === draftId && result.mode === mode && result.review_kind === kind && !result.deleted)
-    .sort((left, right) => right.server_sequence - left.server_sequence || right.version - left.version || right.updated_at.localeCompare(left.updated_at))[0];
+    .sort((left, right) => right.server_sequence - left.server_sequence || right.version - left.version || right.updated_at.localeCompare(left.updated_at));
 }

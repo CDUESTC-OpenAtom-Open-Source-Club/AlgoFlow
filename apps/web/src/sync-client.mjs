@@ -1,5 +1,7 @@
 const API_BASE = import.meta.env?.VITE_SYNC_API_BASE ?? 'http://127.0.0.1:8787';
-import { createAIArtifactConflictCopy, createReviewResultConflictCopy, queueAIArtifact } from './storage.mjs';
+import { assertReviewResult, createAIArtifactConflictCopy, createReviewResultConflictCopy, queueAIArtifact, queueReviewResult, recordDraftSnapshot } from './storage.mjs';
+
+export { assertReviewResult } from './storage.mjs';
 
 export class LocalSyncClient {
   /** @param {string} [apiBase] */
@@ -36,7 +38,8 @@ export class LocalSyncClient {
  * @returns {Promise<import('./types').SyncRunResult>}
  */
 export async function synchronizeWorkspace(state, client, createId = () => crypto.randomUUID()) {
-  let next = { ...state, drafts: [...state.drafts], ai_artifacts: [...(state.ai_artifacts ?? [])], review_results: [...(state.review_results ?? [])], operations: [...state.operations], conflicts: [...state.conflicts], online: true };
+  /** @type {import('./types').WorkspaceState} */
+  let next = { ...state, drafts: [...state.drafts], draft_history: [...(state.draft_history ?? [])], ai_artifacts: [...(state.ai_artifacts ?? [])], review_results: [...(state.review_results ?? [])], operations: [...state.operations], conflicts: [...state.conflicts], online: true };
   let hadConflict = false;
   let hadFailure = false;
 
@@ -45,14 +48,14 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
       if (operation.entity_type === 'ai_artifact') {
         assertAIArtifact(operation.payload, sourceIdsForArtifact(next, /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (operation.payload))));
       }
-      if (operation.entity_type === 'review_result') assertReviewResult(operation.payload);
+      if (operation.entity_type === 'review_result') assertReviewResult(operation.payload, next);
       const result = await client.push(operation);
       if (result.status === 'conflict') {
         if (operation.entity_type === 'review_result') {
           if (!result.server_entity) { hadFailure = true; continue; }
           const local = operation.payload;
           const server = result.server_entity;
-          assertReviewResult(server);
+          assertReviewResult(server, next);
           const copy = createReviewResultConflictCopy(/** @type {import('./types').ReviewResult} */ (/** @type {unknown} */ (local)), next.client_id, createId());
           next = replaceReviewResult(next, /** @type {import('./types').ReviewResult} */ (/** @type {unknown} */ (server)));
           next = replaceReviewResult(next, copy);
@@ -81,6 +84,7 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
         }
         const local = /** @type {import('./types').Draft} */ (/** @type {unknown} */ (operation.payload));
         const copy = createConflictCopy(local, next.client_id, createId());
+        recordDraftSnapshot(next, /** @type {import('./types').Draft} */ (result.server_entity));
         next = replaceDraft(next, { .../** @type {import('./types').Draft} */ (result.server_entity), sync_status: 'synced' });
         next = replaceDraft(next, copy);
         next.operations = next.operations.filter((item) => item.operation_id !== operation.operation_id);
@@ -104,10 +108,11 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
           next = replaceAIArtifact(next, /** @type {import('./types').AIArtifact} */ (entity));
         } else {
           if (operation.entity_type === 'review_result') {
-            assertReviewResult(entity);
+            assertReviewResult(entity, next);
             next = replaceReviewResult(next, /** @type {import('./types').ReviewResult} */ (/** @type {unknown} */ (entity)));
           } else {
-          next = replaceDraft(next, { .../** @type {import('./types').Draft} */ (entity), sync_status: 'synced' });
+            recordDraftSnapshot(next, /** @type {import('./types').Draft} */ (entity));
+            next = replaceDraft(next, { .../** @type {import('./types').Draft} */ (entity), sync_status: 'synced' });
           }
         }
         next.operations = next.operations.filter((item) => item.operation_id !== operation.operation_id);
@@ -140,6 +145,53 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
   return { state: next, status: next.operations.length ? 'local_only' : 'synced' };
 }
 
+/**
+ * @param {import('./types').WorkspaceState} state
+ * @param {import('./types').ConflictRecord} conflict
+ * @param {'keep_local' | 'use_server'} resolution
+ * @param {string} clientId
+ * @returns {import('./types').WorkspaceState}
+ */
+export function resolveAIResultConflict(state, conflict, resolution, clientId) {
+  const resolvedConflicts = state.conflicts.map((record) => record.local_copy_id === conflict.local_copy_id
+    ? { ...record, resolved: true } : record);
+  let next = { ...state, conflicts: resolvedConflicts };
+
+  if (conflict.entity_type === 'review_result') {
+    const copy = state.review_results.find((result) => result.id === conflict.local_copy_id);
+    const server = /** @type {import('./types').ReviewResult} */ (/** @type {unknown} */ (conflict.server_entity));
+    if (!copy) throw new Error('REVIEW_CONFLICT_COPY_NOT_FOUND');
+    assertReviewResult(server);
+    if (resolution === 'keep_local') {
+      const retained = /** @type {import('./types').ReviewResult} */ ({ ...copy, last_modified_client_id: clientId, visibility: 'visible' });
+      next = { ...next, review_results: next.review_results.map((result) => result.id === retained.id ? retained : result) };
+      queueReviewResult(next, retained);
+      return next;
+    }
+    const reviews = next.review_results.filter((result) => result.id !== copy.id)
+      .map((result) => result.id === server.id ? server : result);
+    return { ...next, review_results: reviews.some((result) => result.id === server.id) ? reviews : [...reviews, server] };
+  }
+
+  if (conflict.entity_type === 'ai_artifact') {
+    const copy = state.ai_artifacts.find((artifact) => artifact.id === conflict.local_copy_id);
+    const server = /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (conflict.server_entity));
+    if (!copy) throw new Error('AI_ARTIFACT_CONFLICT_COPY_NOT_FOUND');
+    assertAIArtifact(server, sourceIdsForArtifact(state, server));
+    if (resolution === 'keep_local') {
+      const retained = /** @type {import('./types').AIArtifact} */ ({ ...copy, last_modified_client_id: clientId, visibility: 'visible' });
+      next = { ...next, ai_artifacts: next.ai_artifacts.map((artifact) => artifact.id === retained.id ? retained : artifact) };
+      queueAIArtifact(next, retained);
+      return next;
+    }
+    const artifacts = next.ai_artifacts.filter((artifact) => artifact.id !== copy.id)
+      .map((artifact) => artifact.id === server.id ? server : artifact);
+    return { ...next, ai_artifacts: artifacts.some((artifact) => artifact.id === server.id) ? artifacts : [...artifacts, server] };
+  }
+
+  throw new Error('INVALID_AI_RESULT_CONFLICT');
+}
+
 /** @param {import('./types').WorkspaceState} state @param {import('./types').Draft} draft */
 function replaceDraft(state, draft) {
   const found = state.drafts.some((item) => item.id === draft.id);
@@ -166,7 +218,7 @@ function applyPulledChanges(state, changes, clientId) {
       continue;
     }
     if (change.entity_type === 'review_result') {
-      assertReviewResult(change.entity);
+      assertReviewResult(change.entity, next);
       if (change.entity.last_modified_client_id === clientId) continue;
       const local = next.review_results.find((item) => item.id === change.entity.id);
       const pending = next.operations.some((operation) => operation.entity_type === 'review_result' && operation.entity_id === change.entity.id);
@@ -174,6 +226,7 @@ function applyPulledChanges(state, changes, clientId) {
       continue;
     }
     if (change.entity_type !== 'draft') throw new Error('UNSUPPORTED_SYNC_ENTITY');
+    recordDraftSnapshot(next, /** @type {import('./types').Draft} */ (/** @type {unknown} */ (change.entity)));
     if (change.entity.last_modified_client_id === clientId) continue;
     const hasPendingOperation = next.operations.some((operation) => operation.entity_type === 'draft' && operation.entity_id === change.entity.id);
     const local = next.drafts.find((draft) => draft.id === change.entity.id);
@@ -194,64 +247,6 @@ function replaceAIArtifact(state, artifact) {
 function replaceReviewResult(state, result) {
   const found = state.review_results.some((item) => item.id === result.id);
   return { ...state, review_results: found ? state.review_results.map((item) => item.id === result.id ? result : item) : [...state.review_results, result] };
-}
-
-/** @param {unknown} value */
-export function assertReviewResult(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_REVIEW_RESULT');
-  /** @type {Record<string, unknown>} */
-  const result = /** @type {Record<string, unknown>} */ (value);
-  const required = ['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', 'mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility'];
-  if (required.some((field) => !(field in result)) || Object.keys(result).some((field) => !required.includes(field))) throw new Error('INVALID_REVIEW_RESULT');
-  if (typeof result.id !== 'string' || result.id.trim().length === 0 ||
-    typeof result.version !== 'number' || !Number.isInteger(result.version) || result.version < 0 ||
-    typeof result.server_sequence !== 'number' || !Number.isInteger(result.server_sequence) || result.server_sequence < 0 ||
-    !isUtcTimestamp(result.created_at) || !isUtcTimestamp(result.updated_at) ||
-    typeof result.deleted !== 'boolean' || typeof result.last_modified_client_id !== 'string' || result.last_modified_client_id.trim().length === 0 ||
-    typeof result.draft_id !== 'string' || result.draft_id.trim().length === 0 ||
-    typeof result.mode !== 'string' || !['faithful_transform', 'feasibility_analysis', 'progressive_hint', 'full_solution'].includes(result.mode) ||
-    typeof result.source_draft_version !== 'number' || !Number.isInteger(result.source_draft_version) || result.source_draft_version < 0 ||
-    typeof result.model_id !== 'string' || result.model_id.trim().length === 0 ||
-    typeof result.rule_version !== 'string' || result.rule_version.trim().length === 0 ||
-    typeof result.review_kind !== 'string' || !['explanation', 'risk', 'complexity'].includes(result.review_kind) ||
-    typeof result.visibility !== 'string' || !['visible', 'hidden'].includes(result.visibility) || !Array.isArray(result.diagnostics)) throw new Error('INVALID_REVIEW_RESULT');
-  const diagnostics = /** @type {unknown[]} */ (result.diagnostics);
-  const ids = new Set();
-  for (const diagnosticValue of diagnostics) {
-    if (!diagnosticValue || typeof diagnosticValue !== 'object' || Array.isArray(diagnosticValue)) throw new Error('INVALID_REVIEW_RESULT');
-    const diagnostic = /** @type {Record<string, unknown>} */ (diagnosticValue);
-    if (
-      Object.keys(diagnostic).some((field) => !['id', 'level', 'range', 'problem', 'basis', 'suggestion'].includes(field)) ||
-      typeof diagnostic.id !== 'string' || diagnostic.id.trim().length === 0 || ids.has(diagnostic.id) ||
-      typeof diagnostic.level !== 'string' || !['error', 'warning', 'info', 'hint'].includes(diagnostic.level) ||
-      typeof diagnostic.problem !== 'string' || diagnostic.problem.trim().length === 0 ||
-      typeof diagnostic.basis !== 'string' || diagnostic.basis.trim().length === 0 ||
-      typeof diagnostic.suggestion !== 'string' || diagnostic.suggestion.trim().length === 0 ||
-      !isValidSourceRange(diagnostic.range)) throw new Error('INVALID_REVIEW_RESULT');
-    ids.add(diagnostic.id);
-  }
-}
-
-/** @param {unknown} value */
-function isUtcTimestamp(value) {
-  return typeof value === 'string' && value.length > 0 && value.endsWith('Z') && !Number.isNaN(Date.parse(value));
-}
-
-/** @param {unknown} value */
-function isValidSourceRange(value) {
-  if (value === null) return true;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const range = /** @type {Record<string, unknown>} */ (value);
-  if (Object.keys(range).some((field) => !['start_line', 'start_char', 'end_line', 'end_char'].includes(field))) return false;
-  const startLine = range.start_line;
-  const startChar = range.start_char;
-  const endLine = range.end_line;
-  const endChar = range.end_char;
-  if (typeof startLine !== 'number' || !Number.isInteger(startLine) || startLine < 1 ||
-    typeof startChar !== 'number' || !Number.isInteger(startChar) || startChar < 0 ||
-    typeof endLine !== 'number' || !Number.isInteger(endLine) || endLine < 1 ||
-    typeof endChar !== 'number' || !Number.isInteger(endChar) || endChar < 0) return false;
-  return endLine > startLine || (endLine === startLine && endChar >= startChar);
 }
 
 /** @param {import('./types').WorkspaceState} state @param {import('./types').AIArtifact} artifact */

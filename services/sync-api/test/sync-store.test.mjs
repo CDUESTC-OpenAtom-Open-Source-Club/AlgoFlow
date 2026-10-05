@@ -370,6 +370,26 @@ test('accepts each independent review kind', () => {
   assert.equal(store.pull('0').changes.find((change) => change.entity_type === 'draft').entity.version, 1);
 });
 
+test('accepts a review against an exact historical Draft snapshot after Draft advances', () => {
+  const store = new SyncStore();
+  const draft = makeDraft('draft-review-history', 'x', 'web-review');
+  assert.equal(seedDraft(store, draft).status, 'applied');
+  const updated = { ...draft, version: 1, code: 'longer code', updated_at: '2026-09-16T00:00:00.000Z' };
+  assert.equal(store.apply({ operation_id: 'draft-review-history-v2', entity_type: 'draft', entity_id: draft.id,
+    operation_type: 'upsert', base_version: 1, client_id: 'web-review', occurred_at: updated.updated_at, payload: updated }).status, 'applied');
+
+  const review = makeReview('review-history', draft.id, 'web-review');
+  review.source_draft_version = 1;
+  review.diagnostics[0].range.end_char = 1;
+  const result = store.apply({ operation_id: 'review-history-op', entity_type: 'review_result', entity_id: review.id,
+    operation_type: 'upsert', base_version: 0, client_id: 'web-review', occurred_at: review.updated_at, payload: review });
+
+  assert.equal(result.status, 'applied');
+  const draftChanges = store.pull('0').changes
+    .filter((change) => change.entity_type === 'draft' && change.entity.id === draft.id);
+  assert.equal(draftChanges.at(-1).entity.version, 2);
+});
+
 test('rejects malformed review results and inverted diagnostic ranges', () => {
   const store = new SyncStore();
   const review = makeReview('review-invalid', 'draft-1', 'web-review');
@@ -377,6 +397,20 @@ test('rejects malformed review results and inverted diagnostic ranges', () => {
   const result = store.apply({ operation_id: 'review-invalid-op', entity_type: 'review_result', entity_id: review.id, operation_type: 'upsert', base_version: 0, client_id: 'web-review', occurred_at: review.updated_at, payload: review });
   assert.equal(result.status, 'rejected');
   assert.equal(result.error_code, 'INVALID_REVIEW_RESULT');
+});
+
+test('rejects a review diagnostic outside the source Draft code range', () => {
+  const store = new SyncStore();
+  const draft = makeDraft('draft-review-range', 'x', 'web-review');
+  assert.equal(seedDraft(store, draft).status, 'applied');
+  const review = makeReview('review-range-invalid', draft.id, 'web-review');
+  review.diagnostics[0].range.end_char = 2;
+  const result = store.apply({ operation_id: 'review-range-invalid-op', entity_type: 'review_result',
+    entity_id: review.id, operation_type: 'upsert', base_version: 0, client_id: 'web-review',
+    occurred_at: review.updated_at, payload: review });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.error_code, 'INVALID_REVIEW_RESULT');
+  assert.equal(store.pull('0').changes.filter((change) => change.entity_type === 'review_result').length, 0);
 });
 
 test('retries the same AI artifact operation idempotently', () => {

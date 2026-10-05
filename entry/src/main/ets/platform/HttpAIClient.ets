@@ -1,6 +1,7 @@
 import http from '@ohos.net.http';
 import { AIGatewayArtifactPayload } from '../domain/AIArtifactCodec';
-import { AIMode, AIOutputKind, AIVisibility } from '../domain/Models';
+import { AIGatewayReviewPayload } from '../domain/SyncModels';
+import { AIMode, AIOutputKind, AIVisibility, ReviewKind } from '../domain/Models';
 
 const DEFAULT_AI_BASE_URL = 'http://127.0.0.1:8788';
 
@@ -24,6 +25,18 @@ export class AIRequestIdeaSegment {
     this.id = id;
     this.content = content;
   }
+}
+
+export class ReviewRequestInput {
+  mode: string = AIMode.FAITHFUL_TRANSFORM;
+  draft_id: string = '';
+  draft_version: number = 0;
+  language: string = 'cpp';
+  rule_version: string = '1.0.0';
+  code: string = '';
+  idea: string = '';
+  review_kind: string = ReviewKind.RISK;
+  visibility: string = AIVisibility.VISIBLE;
 }
 
 class AIErrorResponse {
@@ -59,6 +72,45 @@ export class HttpAIClient {
       let parsed: AIGatewayArtifactPayload;
       try {
         parsed = JSON.parse(body) as AIGatewayArtifactPayload;
+      } catch (error) {
+        throw new Error('AI_INVALID_RESPONSE');
+      }
+      if (response.responseCode < 200 || response.responseCode >= 300) {
+        let errorResponse: AIErrorResponse;
+        try {
+          errorResponse = JSON.parse(body) as AIErrorResponse;
+        } catch (error) {
+          throw new Error('AI_REQUEST_FAILED');
+        }
+        throw new Error(errorResponse.code.length > 0 ? errorResponse.code : 'AI_REQUEST_FAILED');
+      }
+      return parsed;
+    } finally {
+      client.destroy();
+    }
+  }
+
+  async review(request: ReviewRequestInput): Promise<AIGatewayReviewPayload> {
+    if (this.baseUrl.length === 0) throw new Error('AI_BASE_URL_REQUIRED');
+    const client = http.createHttp();
+    try {
+      let response: http.HttpResponse;
+      try {
+        response = await client.request(`${this.baseUrl}/reviews`, {
+          method: http.RequestMethod.POST,
+          header: { 'Content-Type': 'application/json' },
+          extraData: JSON.stringify(request),
+          expectDataType: http.HttpDataType.STRING,
+          connectTimeout: 5000,
+          readTimeout: 30000
+        });
+      } catch (error) {
+        throw new Error('AI_NETWORK_ERROR');
+      }
+      const body = typeof response.result === 'string' ? response.result : JSON.stringify(response.result);
+      let parsed: AIGatewayReviewPayload;
+      try {
+        parsed = JSON.parse(body) as AIGatewayReviewPayload;
       } catch (error) {
         throw new Error('AI_INVALID_RESPONSE');
       }

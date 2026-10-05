@@ -1,4 +1,5 @@
 import { assertAIArtifact } from './sync-client.mjs';
+import { assertReviewResult } from './storage.mjs';
 
 const DEFAULT_AI_BASE = import.meta.env?.VITE_AI_GATEWAY_BASE ?? 'http://127.0.0.1:8788';
 
@@ -17,6 +18,16 @@ export class LocalAIClient {
     if (!response.ok) throw new Error(result.code ?? 'AI_REQUEST_FAILED');
     return result;
   }
+
+  /** @param {Record<string, unknown>} request */
+  async review(request) {
+    const response = await fetch(`${this.baseUrl}/reviews`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.code ?? 'AI_REVIEW_FAILED');
+    return result;
+  }
 }
 
 /** @param {import('./types').Draft} draft @param {import('./types').Documents} documents @param {import('./types').Mode} mode */
@@ -28,6 +39,14 @@ export function buildAIRequest(draft, documents, mode) {
     mode, draft_id: draft.id, draft_version: draft.version, language: draft.language,
     rule_version: '1.0.0', problem_context: documents['idea.md'] || draft.title,
     idea_segments: ideaSegments, output_kind: 'pseudocode', visibility: 'visible',
+  };
+}
+
+/** @param {import('./types').Draft} draft @param {import('./types').Documents} documents @param {import('./types').Mode} mode @param {import('./types').ReviewKind} reviewKind */
+export function buildReviewRequest(draft, documents, mode, reviewKind) {
+  return {
+    mode, draft_id: draft.id, draft_version: draft.version, language: draft.language,
+    rule_version: '1.0.0', code: documents['main.cpp'], idea: documents['idea.md'], review_kind: reviewKind, visibility: 'visible',
   };
 }
 
@@ -82,4 +101,24 @@ export function artifactFromGateway(response, draft, clientId, sourceSegmentIds 
     throw new Error('INVALID_AI_ARTIFACT');
   }
   return artifact;
+}
+
+/** @param {Record<string, unknown>} response @param {import('./types').Draft} draft @param {string} clientId @param {import('./types').Mode} mode @param {import('./types').ReviewKind} reviewKind @param {string} ruleVersion @returns {import('./types').ReviewResult} */
+export function reviewResultFromGateway(response, draft, clientId, mode, reviewKind, ruleVersion = '1.0.0') {
+  const required = ['mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility'];
+  const entityFields = ['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id'];
+  const allowed = new Set(required);
+  if (!response || typeof response !== 'object' || Array.isArray(response) || required.some((field) => !(field in response)) ||
+    Object.keys(response).some((field) => !allowed.has(field)) || entityFields.some((field) => field in response)) {
+    throw new Error('INVALID_REVIEW_RESULT');
+  }
+  const now = new Date().toISOString();
+  const result = /** @type {import('./types').ReviewResult} */ (/** @type {unknown} */ ({
+    ...response, id: crypto.randomUUID(), version: 0, server_sequence: 0, created_at: now, updated_at: now,
+    deleted: false, last_modified_client_id: clientId, draft_id: draft.id,
+  }));
+  assertReviewResult(result);
+  if (result.mode !== mode || result.source_draft_version !== draft.version || result.rule_version !== ruleVersion ||
+    result.review_kind !== reviewKind || result.visibility !== 'visible') throw new Error('INVALID_REVIEW_RESULT');
+  return result;
 }

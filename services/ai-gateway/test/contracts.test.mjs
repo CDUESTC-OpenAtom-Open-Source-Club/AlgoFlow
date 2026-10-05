@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { createAIGateway } from '../src/server.mjs';
-import { AI_MODES, validateAIArtifact, validateAIRequest } from '../src/contracts.mjs';
+import { AI_MODES, validateAIArtifact, validateAIRequest, validateReviewRequest, validateReviewResponse } from '../src/contracts.mjs';
 
 const validRequest = {
   mode: 'faithful_transform',
@@ -40,6 +40,31 @@ const validArtifact = {
   template_id: null
 };
 
+const validReviewRequest = {
+  mode: 'faithful_transform',
+  draft_id: 'draft-1',
+  draft_version: 3,
+  language: 'cpp',
+  rule_version: '1.0.0',
+  code: 'int main() { return 0; }',
+  idea: 'Check the entry point.',
+  review_kind: 'risk',
+  visibility: 'visible'
+};
+
+const validReviewResponse = {
+  mode: 'faithful_transform',
+  source_draft_version: 3,
+  model_id: 'provider-review',
+  rule_version: '1.0.0',
+  review_kind: 'risk',
+  diagnostics: [{
+    id: 'diagnostic-1', level: 'warning', range: { start_line: 1, start_char: 0, end_line: 1, end_char: 3 },
+    problem: 'Potential risk', basis: 'Provider review', suggestion: 'Check the entry point.'
+  }],
+  visibility: 'visible'
+};
+
 test('AI request vectors match expected validity', async (t) => {
   const source = new URL('../../../packages/contracts/vectors/ai-requests.json', import.meta.url);
   const vectors = JSON.parse(await readFile(source, 'utf8'));
@@ -69,13 +94,30 @@ test('AI gateway mode values stay identical to the JSON Schema source of truth',
 test('review result range reference resolves to its shared schema definition', async () => {
   const source = new URL('../../../packages/contracts/schemas/domain.schema.json', import.meta.url);
   const schema = JSON.parse(await readFile(source, 'utf8'));
-  const rangeSchema = schema.$defs.reviewResult.properties.diagnostics.items.properties.range.oneOf[0];
+  const diagnosticSchema = schema.$defs.reviewResult.properties.diagnostics.items;
+  assert.equal(diagnosticSchema.$ref, '#/$defs/reviewDiagnostic');
+  const rangeSchema = schema.$defs.reviewDiagnostic.properties.range.oneOf[0];
   assert.equal(rangeSchema.$ref, '#/$defs/sourceRange');
   assert.deepEqual(schema.$defs.sourceRange.required, ['start_line', 'start_char', 'end_line', 'end_char']);
 });
 
 test('accepts an AI request with explicit mode, versions, and stable idea segment ids', () => {
   assert.deepEqual(validateAIRequest(validRequest), []);
+});
+
+test('accepts all independent review kinds in the review contract', () => {
+  assert.deepEqual(validateReviewRequest(validReviewRequest), []);
+  for (const reviewKind of ['explanation', 'risk', 'complexity']) {
+    assert.deepEqual(validateReviewRequest({ ...validReviewRequest, review_kind: reviewKind }), []);
+    assert.deepEqual(validateReviewResponse({ ...validReviewResponse, review_kind: reviewKind }), []);
+  }
+});
+
+test('rejects a review response with a mismatched diagnostic range', () => {
+  assert.notDeepEqual(validateReviewResponse({
+    ...validReviewResponse,
+    diagnostics: [{ ...validReviewResponse.diagnostics[0], range: { start_line: 3, start_char: 0, end_line: 2, end_char: 0 } }]
+  }), []);
 });
 
 for (const field of ['mode', 'draft_id', 'draft_version', 'language', 'rule_version', 'problem_context', 'output_kind', 'visibility']) {
@@ -234,6 +276,33 @@ test('AI gateway delegates configured generation through the AIProvider port', a
   assert.equal(response.statusCode, 200);
   assert.deepEqual(generationInput, { request: validRequest, templates });
   assert.deepEqual(response.body, validArtifact);
+});
+
+test('AI gateway delegates independent reviews through the AIProvider review port', async (t) => {
+  let reviewInput = null;
+  const aiProvider = {
+    async review(input) {
+      reviewInput = input;
+      return validReviewResponse;
+    }
+  };
+  const server = createAIGateway({ aiProvider });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  const response = await requestJson(server.address().port, 'POST', '/reviews', validReviewRequest);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(reviewInput, { request: validReviewRequest, templates: [] });
+  assert.deepEqual(response.body, validReviewResponse);
+});
+
+test('AI gateway rejects a provider review with mismatched source metadata', async (t) => {
+  const server = createAIGateway({ aiProvider: { async review() { return { ...validReviewResponse, source_draft_version: 2 }; } } });
+  t.after(() => server.close());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const response = await requestJson(server.address().port, 'POST', '/reviews', validReviewRequest);
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.body.code, 'INVALID_AI_REVIEW');
 });
 
 test('AI gateway maps provider exceptions to AI_PROVIDER_ERROR', async (t) => {

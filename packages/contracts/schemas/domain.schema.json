@@ -27,6 +27,19 @@
       "type": "string",
       "enum": ["error", "warning", "info", "hint"]
     },
+    "reviewDiagnostic": {
+      "type": "object",
+      "required": ["id", "level", "range", "problem", "basis", "suggestion"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "level": { "$ref": "#/$defs/diagnosticLevel" },
+        "range": { "oneOf": [{ "$ref": "#/$defs/sourceRange" }, { "type": "null" }] },
+        "problem": { "type": "string", "minLength": 1 },
+        "basis": { "type": "string", "minLength": 1 },
+        "suggestion": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
     "sourceRange": {
       "type": "object",
       "description": "The end position must not precede the start position; cross-field ordering is enforced by the runtime contract validators.",
@@ -129,22 +142,7 @@
         "model_id": { "type": "string", "minLength": 1 },
         "rule_version": { "type": "string", "minLength": 1 },
         "review_kind": { "$ref": "#/$defs/reviewKind" },
-        "diagnostics": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["id", "level", "range", "problem", "basis", "suggestion"],
-            "properties": {
-              "id": { "type": "string", "minLength": 1 },
-              "level": { "$ref": "#/$defs/diagnosticLevel" },
-              "range": { "oneOf": [{ "$ref": "#/$defs/sourceRange" }, { "type": "null" }] },
-              "problem": { "type": "string", "minLength": 1 },
-              "basis": { "type": "string", "minLength": 1 },
-              "suggestion": { "type": "string", "minLength": 1 }
-            },
-            "additionalProperties": false
-          }
-        },
+        "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/reviewDiagnostic" } },
         "visibility": { "$ref": "#/$defs/aiVisibility" }
       },
       "additionalProperties": false

@@ -11,7 +11,7 @@ const reviewKinds = new Set(domain.$defs.reviewKind.enum);
 const diagnosticLevels = new Set(domain.$defs.diagnosticLevel.enum);
 const reviewEntityFields = new Set(['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', 'mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility']);
 
-export function validateReviewResultEntity(entity) {
+export function validateReviewResultEntity(entity, sourceDraft = undefined) {
   const errors = [];
   if (!isObject(entity)) return ['review_result payload must be an object'];
   for (const key of Object.keys(entity)) if (!reviewEntityFields.has(key)) errors.push(`${key} is not allowed`);
@@ -43,6 +43,9 @@ export function validateReviewResultEntity(entity) {
       else if (item.range && (item.range.end_line < item.range.start_line ||
         (item.range.end_line === item.range.start_line && item.range.end_char < item.range.start_char))) {
         errors.push(`diagnostics[${index}].range is inverted`);
+      }
+      if (item.range && sourceDraft && !isRangeWithinCode(item.range, sourceDraft.code)) {
+        errors.push(`diagnostics[${index}].range is outside the source code`);
       }
       if (Object.keys(item).some((key) => !['id', 'level', 'range', 'problem', 'basis', 'suggestion'].includes(key))) {
         errors.push(`diagnostics[${index}] contains unsupported fields`);
@@ -122,4 +125,11 @@ function isSourceRange(value) {
     Number.isInteger(value.start_char) && value.start_char >= 0 && Number.isInteger(value.end_line) &&
     value.end_line >= 1 && Number.isInteger(value.end_char) && value.end_char >= 0 &&
     Object.keys(value).every((key) => ['start_line', 'start_char', 'end_line', 'end_char'].includes(key));
+}
+
+function isRangeWithinCode(range, code) {
+  if (typeof code !== 'string') return false;
+  const lines = code.split('\n');
+  return range.start_line <= lines.length && range.end_line <= lines.length &&
+    range.start_char <= lines[range.start_line - 1].length && range.end_char <= lines[range.end_line - 1].length;
 }

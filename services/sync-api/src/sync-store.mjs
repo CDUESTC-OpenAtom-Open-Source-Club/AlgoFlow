@@ -22,8 +22,12 @@ export class SyncStore {
         return { operation_id: operation.operation_id, status: 'rejected', error_code: 'INVALID_AI_ARTIFACT' };
       }
     }
-    if (operation.entity_type === 'review_result' && operation.operation_type === 'upsert' && validateReviewResultEntity(operation.payload).length > 0) {
-      return { operation_id: operation.operation_id, status: 'rejected', error_code: 'INVALID_REVIEW_RESULT' };
+    if (operation.entity_type === 'review_result' && operation.operation_type === 'upsert') {
+      const sourceDraft = this.#draftHistory.get(operation.payload.draft_id)?.get(operation.payload.source_draft_version);
+      if (!sourceDraft ||
+        validateReviewResultEntity(operation.payload, sourceDraft).length > 0) {
+        return { operation_id: operation.operation_id, status: 'rejected', error_code: 'INVALID_REVIEW_RESULT' };
+      }
     }
     const key = `${operation.entity_type}:${operation.entity_id}`;
     const current = this.#entities.get(key);
@@ -37,7 +41,7 @@ export class SyncStore {
       return result;
     }
     const version = currentVersion + 1;
-    if (['ai_artifact', 'review_result'].includes(operation.entity_type) && operation.operation_type === 'upsert' &&
+    if (operation.entity_type === 'ai_artifact' && operation.operation_type === 'upsert' &&
       !this.#draftHistory.get(operation.payload.draft_id)?.has(operation.payload.source_draft_version)) {
       return { operation_id: operation.operation_id, status: 'rejected', error_code: operation.entity_type === 'review_result' ? 'INVALID_REVIEW_RESULT' : 'INVALID_AI_ARTIFACT' };
     }

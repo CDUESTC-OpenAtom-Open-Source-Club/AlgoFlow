@@ -22,6 +22,16 @@ export class ReviewResultPayload {
   model_id: string = ''; rule_version: string = ''; review_kind: string = 'risk'; diagnostics: ReviewDiagnosticPayload[] = []; visibility: string = 'visible';
 }
 
+export class AIGatewayReviewPayload {
+  mode: string = AIMode.FAITHFUL_TRANSFORM;
+  source_draft_version: number = 0;
+  model_id: string = '';
+  rule_version: string = '';
+  review_kind: string = ReviewKind.RISK;
+  diagnostics: ReviewDiagnosticPayload[] = [];
+  visibility: string = AIVisibility.VISIBLE;
+}
+
 export enum SyncEntityType {
   DRAFT = 'draft',
   AI_ARTIFACT = 'ai_artifact', REVIEW_RESULT = 'review_result'
@@ -169,8 +179,48 @@ export function reviewToPayload(review: ReviewResult): ReviewResultPayload {
   return payload;
 }
 
+export function gatewayPayloadToReview(payload: AIGatewayReviewPayload, id: string, draftId: string,
+  draftVersion: number, clientId: string): ReviewResult | undefined {
+  if (payload === undefined || payload === null) return undefined;
+  const entity = new ReviewResultPayload();
+  entity.id = id;
+  entity.version = 0;
+  entity.server_sequence = 0;
+  entity.created_at = new Date().toISOString();
+  entity.updated_at = entity.created_at;
+  entity.deleted = false;
+  entity.last_modified_client_id = clientId;
+  entity.draft_id = draftId;
+  entity.mode = payload.mode;
+  entity.source_draft_version = draftVersion;
+  entity.model_id = payload.model_id;
+  entity.rule_version = payload.rule_version;
+  entity.review_kind = payload.review_kind;
+  entity.diagnostics = payload.diagnostics;
+  entity.visibility = payload.visibility;
+  return payloadToReview(entity);
+}
+
+export function reviewSourceMatchesDraft(payload: ReviewResultPayload, draft: Draft | undefined, sourceCode?: string): boolean {
+  if (draft === undefined || draft.deleted || draft.id !== payload.draft_id ||
+    draft.version < payload.source_draft_version) return false;
+  const code = payload.source_draft_version === draft.version ? draft.code : sourceCode;
+  if (code === undefined) return false;
+  const lines = code.split('\n');
+  for (const diagnostic of payload.diagnostics) {
+    if (diagnostic.range === null) continue;
+    const range = diagnostic.range;
+    if (range.start_line > lines.length || range.end_line > lines.length ||
+      range.start_char > lines[range.start_line - 1].length || range.end_char > lines[range.end_line - 1].length) return false;
+  }
+  return true;
+}
+
 export function payloadToReview(payload: ReviewResultPayload): ReviewResult | undefined {
+  const allowedPayloadFields = ['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id',
+    'draft_id', 'mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility'];
   if (payload === undefined || payload === null || typeof payload.id !== 'string' || payload.id.length === 0 ||
+    Object.keys(payload).some((key: string) => !allowedPayloadFields.includes(key)) ||
     typeof payload.draft_id !== 'string' || payload.draft_id.length === 0 || !Number.isInteger(payload.version) || payload.version < 0 ||
     !Number.isInteger(payload.server_sequence) || payload.server_sequence < 0 || !isUtcTimestamp(payload.created_at) ||
     !isUtcTimestamp(payload.updated_at) || typeof payload.last_modified_client_id !== 'string' || payload.last_modified_client_id.trim().length === 0 ||

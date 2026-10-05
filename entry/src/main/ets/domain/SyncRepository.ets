@@ -5,7 +5,7 @@ import { ConflictRecord, ReviewResultPayload, SyncOperation } from './SyncModels
 export interface SyncRepository {
   getClientId(): string;
   getCursor(): string;
-  setCursor(cursor: string): void;
+  commitCursor(cursor: string): Promise<void>;
   getBaseUrl(): string;
   setBaseUrl(baseUrl: string): void;
   listPendingOperations(): SyncOperation[];
@@ -17,6 +17,8 @@ export interface SyncRepository {
   saveConflictReview(review: ReviewResult, record: ConflictRecord): void;
   listConflicts(): ConflictRecord[];
   setDraftSyncStatus(id: string, status: SyncStatus): void;
+  getDraft(id: string): Draft | undefined;
+  getDraftSourceCode(draftId: string, version: number): string | undefined;
   listArtifacts(): AIArtifact[];
   getArtifact(id: string): AIArtifact | undefined;
   saveArtifact(artifact: AIArtifact): void;
@@ -25,4 +27,5 @@ export interface SyncRepository {
   getReview(id: string): ReviewResult | undefined;
   saveReview(review: ReviewResult): void;
   applyServerReview(payload: ReviewResultPayload): void;
+  resolveReviewConflict(conflictId: string, resolution: string): void;
 }

@@ -106,6 +106,36 @@
         }
       ],
       "additionalProperties": false
+    },
+    "reviewRequest": {
+      "type": "object",
+      "required": ["mode", "draft_id", "draft_version", "language", "rule_version", "code", "idea", "review_kind", "visibility"],
+      "properties": {
+        "mode": { "$ref": "domain.schema.json#/$defs/aiMode" },
+        "draft_id": { "type": "string", "minLength": 1 },
+        "draft_version": { "type": "integer", "minimum": 0 },
+        "language": { "type": "string", "enum": ["cpp"] },
+        "rule_version": { "type": "string", "minLength": 1 },
+        "code": { "type": "string", "maxLength": 20000 },
+        "idea": { "type": "string", "maxLength": 20000 },
+        "review_kind": { "$ref": "domain.schema.json#/$defs/reviewKind" },
+        "visibility": { "$ref": "domain.schema.json#/$defs/aiVisibility" }
+      },
+      "additionalProperties": false
+    },
+    "reviewResponse": {
+      "type": "object",
+      "required": ["mode", "source_draft_version", "model_id", "rule_version", "review_kind", "diagnostics", "visibility"],
+      "properties": {
+        "mode": { "$ref": "domain.schema.json#/$defs/aiMode" },
+        "source_draft_version": { "type": "integer", "minimum": 0 },
+        "model_id": { "type": "string", "minLength": 1 },
+        "rule_version": { "type": "string", "minLength": 1 },
+        "review_kind": { "$ref": "domain.schema.json#/$defs/reviewKind" },
+        "diagnostics": { "type": "array", "items": { "$ref": "domain.schema.json#/$defs/reviewDiagnostic" } },
+        "visibility": { "$ref": "domain.schema.json#/$defs/aiVisibility" }
+      },
+      "additionalProperties": false
     }
   }
 }

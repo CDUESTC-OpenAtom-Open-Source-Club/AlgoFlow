@@ -22,6 +22,10 @@ export function validateAIRequest(request) {
   return errors;
 }
 
+export function validateReviewRequest(request) {
+  return validateSchema(request, schemas.ai.$defs.reviewRequest, 'review_request');
+}
+
 export function validateAIArtifact(artifact) {
   const errors = validateSchema(artifact, schemas.ai.$defs.artifact, 'artifact');
   if (Array.isArray(artifact?.pseudocode)) {
@@ -34,6 +38,25 @@ export function validateAIArtifact(artifact) {
   if (Array.isArray(artifact?.code_mappings)) artifact.code_mappings.forEach((mapping, index) => {
     if (Number.isInteger(mapping?.start_line) && Number.isInteger(mapping?.end_line) && mapping.end_line < mapping.start_line) errors.push(`code_mappings[${index}].end_line must not precede start_line`);
   });
+  return errors;
+}
+
+export function validateReviewResponse(response) {
+  const errors = validateSchema(response, schemas.ai.$defs.reviewResponse, 'review_response');
+  if (Array.isArray(response?.diagnostics)) {
+    const ids = new Set();
+    response.diagnostics.forEach((diagnostic, index) => {
+      if (ids.has(diagnostic?.id)) errors.push(`diagnostics[${index}].id must be unique`);
+      ids.add(diagnostic?.id);
+      const range = diagnostic?.range;
+      if (range && Number.isInteger(range.start_line) && Number.isInteger(range.start_char) &&
+        Number.isInteger(range.end_line) && Number.isInteger(range.end_char) &&
+        (range.end_line < range.start_line ||
+          (range.end_line === range.start_line && range.end_char < range.start_char))) {
+        errors.push(`diagnostics[${index}].range must not be inverted`);
+      }
+    });
+  }
   return errors;
 }
 
