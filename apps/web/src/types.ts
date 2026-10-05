@@ -93,6 +93,7 @@ export interface AIArtifact {
 }
 
 export type ReviewKind = 'explanation' | 'risk' | 'complexity';
+export type ReviewFreshness = 'current' | 'stale';
 export type DiagnosticLevel = 'error' | 'warning' | 'info' | 'hint';
 export interface SourceRange { start_line: number; start_char: number; end_line: number; end_char: number; }
 export interface ReviewDiagnostic { id: string; level: DiagnosticLevel; range: SourceRange | null; problem: string; basis: string; suggestion: string; }
@@ -112,6 +113,7 @@ export interface ReviewResult {
   review_kind: ReviewKind;
   diagnostics: ReviewDiagnostic[];
   visibility: 'visible' | 'hidden';
+  freshness: ReviewFreshness;
 }
 
 export interface DraftVersionSnapshot {

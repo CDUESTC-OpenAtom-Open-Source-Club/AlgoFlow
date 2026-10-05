@@ -85,6 +85,21 @@ test('AI artifact vectors match expected validity', async (t) => {
   }
 });
 
+test('shared review request and response vectors match the Gateway validators', async (t) => {
+  const source = new URL('../../../packages/contracts/vectors/review-results.json', import.meta.url);
+  const vectors = JSON.parse(await readFile(source, 'utf8'));
+  for (const vector of vectors.requests) {
+    await t.test(vector.name, () => {
+      assert.equal(validateReviewRequest(vector.request).length === 0, vector.valid, vector.name);
+    });
+  }
+  for (const vector of vectors.responses) {
+    await t.test(vector.name, () => {
+      assert.equal(validateReviewResponse(vector.response).length === 0, vector.valid, vector.name);
+    });
+  }
+});
+
 test('AI gateway mode values stay identical to the JSON Schema source of truth', async () => {
   const source = new URL('../../../packages/contracts/schemas/domain.schema.json', import.meta.url);
   const schema = JSON.parse(await readFile(source, 'utf8'));

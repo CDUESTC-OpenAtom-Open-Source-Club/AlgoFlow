@@ -1,0 +1,141 @@
+{
+  "requests": [
+    {
+      "name": "valid risk review request",
+      "valid": true,
+      "request": {
+        "mode": "faithful_transform",
+        "draft_id": "draft-review",
+        "draft_version": 4,
+        "language": "cpp",
+        "rule_version": "1.0.0",
+        "code": "int main() { return 0; }",
+        "idea": "Check the program entry point.",
+        "review_kind": "risk",
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "review request rejects a provider key",
+      "valid": false,
+      "request": {
+        "mode": "faithful_transform",
+        "draft_id": "draft-review",
+        "draft_version": 4,
+        "language": "cpp",
+        "rule_version": "1.0.0",
+        "code": "int main() { return 0; }",
+        "idea": "Check the program entry point.",
+        "review_kind": "risk",
+        "visibility": "visible",
+        "api_key": "sk-not-accepted"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "name": "valid review response",
+      "valid": true,
+      "response": {
+        "mode": "faithful_transform",
+        "source_draft_version": 4,
+        "model_id": "provider-review",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "diagnostics": [
+          {
+            "id": "diagnostic-1",
+            "level": "warning",
+            "range": { "start_line": 1, "start_char": 0, "end_line": 1, "end_char": 3 },
+            "problem": "Potential risk",
+            "basis": "Provider review",
+            "suggestion": "Check the entry point."
+          }
+        ],
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "review response rejects entity metadata",
+      "valid": false,
+      "response": {
+        "mode": "faithful_transform",
+        "source_draft_version": 4,
+        "model_id": "provider-review",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "diagnostics": [],
+        "visibility": "visible",
+        "server_sequence": 7
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "current review result entity",
+      "valid": true,
+      "entity": {
+        "id": "review-current",
+        "version": 1,
+        "server_sequence": 12,
+        "created_at": "2026-10-05T00:00:00.000Z",
+        "updated_at": "2026-10-05T00:00:00.000Z",
+        "deleted": false,
+        "last_modified_client_id": "web-test",
+        "draft_id": "draft-review",
+        "mode": "faithful_transform",
+        "source_draft_version": 4,
+        "model_id": "provider-review",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "diagnostics": [],
+        "visibility": "visible",
+        "freshness": "current"
+      }
+    },
+    {
+      "name": "historical review result entity stays valid when stale",
+      "valid": true,
+      "entity": {
+        "id": "review-stale",
+        "version": 1,
+        "server_sequence": 11,
+        "created_at": "2026-10-04T00:00:00.000Z",
+        "updated_at": "2026-10-04T00:00:00.000Z",
+        "deleted": false,
+        "last_modified_client_id": "web-test",
+        "draft_id": "draft-review",
+        "mode": "faithful_transform",
+        "source_draft_version": 3,
+        "model_id": "provider-review",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "diagnostics": [],
+        "visibility": "visible",
+        "freshness": "stale"
+      }
+    },
+    {
+      "name": "review result entity rejects unknown freshness",
+      "valid": false,
+      "entity": {
+        "id": "review-invalid",
+        "version": 1,
+        "server_sequence": 13,
+        "created_at": "2026-10-05T00:00:00.000Z",
+        "updated_at": "2026-10-05T00:00:00.000Z",
+        "deleted": false,
+        "last_modified_client_id": "web-test",
+        "draft_id": "draft-review",
+        "mode": "faithful_transform",
+        "source_draft_version": 4,
+        "model_id": "provider-review",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "diagnostics": [],
+        "visibility": "visible",
+        "freshness": "expired"
+      }
+    }
+  ]
+}

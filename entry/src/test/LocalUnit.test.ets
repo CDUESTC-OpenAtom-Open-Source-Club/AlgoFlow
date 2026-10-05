@@ -1,5 +1,6 @@
 import { describe, beforeAll, beforeEach, afterEach, afterAll, it, expect } from '@ohos/hypium';
-import { AIArtifact, AIMode, Draft, ReviewKind, ReviewResult, SyncStatus } from '../main/ets/domain/Models';
+import http from '@ohos.net.http';
+import { AIArtifact, AIMode, Draft, ReviewFreshness, ReviewKind, ReviewResult, SyncStatus } from '../main/ets/domain/Models';
 import { AIArtifactPayload } from '../main/ets/domain/AIArtifactCodec';
 import { AIGatewayReviewPayload, ConflictRecord, DraftPayload, PullChange, PullResult, PushResult, ReviewDiagnosticPayload, ReviewResultPayload, SourceRangePayload,
   SyncOperation, payloadToReview, reviewSourceMatchesDraft } from '../main/ets/domain/SyncModels';
@@ -7,7 +8,7 @@ import { DraftRepository } from '../main/ets/domain/DraftRepository';
 import { SyncRepository } from '../main/ets/domain/SyncRepository';
 import { PhoneSyncService, SyncRunStatus, SyncTransport } from '../main/ets/platform/PhoneSyncService';
 import { DraftWorkspaceViewModel, ReviewGateway } from '../main/ets/application/DraftWorkspaceViewModel';
-import { ReviewRequestInput } from '../main/ets/platform/HttpAIClient';
+import { AIHttpRequestHandle, HttpAIClient, ReviewRequestInput } from '../main/ets/platform/HttpAIClient';
 import { gatewayPayloadToReview } from '../main/ets/domain/SyncModels';
 
 export default function localUnitTest() {
@@ -60,6 +61,47 @@ export default function localUnitTest() {
       payload.review_kind = 'solution';
       expect(payloadToReview(payload) === undefined).assertTrue();
     });
+    it('maps current and stale review freshness values in the shared review entity', 0, () => {
+      const payload = validReviewPayload();
+      payload.freshness = ReviewFreshness.STALE;
+      const staleReview = payloadToReview(payload);
+      expect(staleReview?.freshness).assertEqual(ReviewFreshness.STALE);
+      payload.freshness = 'expired';
+      expect(payloadToReview(payload) === undefined).assertTrue();
+    });
+    it('caps phone AI request retries at one retry', 0, async () => {
+      let attempts = 0;
+      const client = new HttpAIClient('http://gateway', () => new FakeAIHttpRequest(async () => {
+        attempts += 1;
+        throw new Error('network');
+      }, () => {}));
+      let errorCode = '';
+      try {
+        await client.review(new ReviewRequestInput());
+      } catch (error) {
+        errorCode = error instanceof Error ? error.message : 'unknown';
+      }
+      expect(attempts).assertEqual(2);
+      expect(errorCode).assertEqual('AI_NETWORK_ERROR');
+    });
+    it('cancels a pending phone AI request through HttpRequest.destroy', 0, async () => {
+      let rejectRequest: ((error: Error) => void) | undefined = undefined;
+      let destroyCount = 0;
+      const client = new HttpAIClient('http://gateway', () => new FakeAIHttpRequest(
+        () => new Promise<http.HttpResponse>((_resolve, reject) => { rejectRequest = reject; }),
+        () => { destroyCount += 1; rejectRequest?.(new Error('destroyed')); }
+      ));
+      const request = client.review(new ReviewRequestInput());
+      client.cancel();
+      let errorCode = '';
+      try {
+        await request;
+      } catch (error) {
+        errorCode = error instanceof Error ? error.message : 'unknown';
+      }
+      expect(destroyCount).assertEqual(1);
+      expect(errorCode).assertEqual('AI_REQUEST_CANCELLED');
+    });
     it('maps a valid Gateway response into the shared review entity contract', 0, () => {
       const request = new ReviewRequestInput();
       request.mode = AIMode.FAITHFUL_TRANSFORM;
@@ -71,6 +113,29 @@ export default function localUnitTest() {
       expect(result !== undefined).assertTrue();
       expect(result?.sourceDraftVersion).assertEqual(2);
       expect(result?.reviewKind).assertEqual(ReviewKind.RISK);
+    });
+    it('marks a review stale when its Draft advances and prevents visibility changes', 0, async () => {
+      const draft = new Draft('draft-review-stale', 'Review');
+      draft.version = 2;
+      draft.code = 'x';
+      draft.idea = 'Check x';
+      draft.syncStatus = SyncStatus.SYNCED;
+      const repository = new ReviewSyncTestRepository(draft);
+      const gateway: ReviewGateway = async (baseUrl: string, request: ReviewRequestInput) => gatewayReview(request);
+      const viewModel = new DraftWorkspaceViewModel(repository, repository, gateway, () => 'review-stale-test');
+      const review = await viewModel.generateReview(draft.id, 'http://gateway', AIMode.FAITHFUL_TRANSFORM, ReviewKind.RISK);
+      expect(review.freshness).assertEqual(ReviewFreshness.CURRENT);
+      draft.version = 3;
+      draft.code = 'changed';
+      expect(viewModel.listReviews()[0].freshness).assertEqual(ReviewFreshness.STALE);
+      let rejected = false;
+      try {
+        await viewModel.toggleReview(review.id);
+      } catch (error) {
+        rejected = error instanceof Error && error.message === 'REVIEW_RESULT_STALE';
+      }
+      expect(rejected).assertTrue();
+      expect(repository.getReview(review.id)?.visibility).assertEqual('visible');
     });
     it('requires a locally available review source version', 0, () => {
       const draft = new Draft('draft-review', 'Review');
@@ -116,7 +181,7 @@ export default function localUnitTest() {
       expect(repository.getCursor()).assertEqual('4');
       expect(repository.listReviews().length).assertEqual(0);
 
-      payload.source_draft_version = 1;
+      payload.source_draft_version = 2;
       transport.nextPull = reviewPull(payload);
       const retry = await service.synchronize();
       expect(retry.status === SyncRunStatus.SYNCED).assertTrue();
@@ -329,4 +394,22 @@ class ReviewSyncTestTransport implements SyncTransport {
   constructor(nextPull: PullResult) { this.nextPull = nextPull; }
   async push(operation: SyncOperation): Promise<PushResult> { throw new Error('unexpected push'); }
   async pull(cursor: string): Promise<PullResult> { return this.nextPull; }
+}
+
+class FakeAIHttpRequest implements AIHttpRequestHandle {
+  private requestHandler: (url: string, options: http.HttpRequestOptions) => Promise<http.HttpResponse>;
+  private destroyHandler: () => void;
+
+  constructor(requestHandler: (url: string, options: http.HttpRequestOptions) => Promise<http.HttpResponse>, destroyHandler: () => void) {
+    this.requestHandler = requestHandler;
+    this.destroyHandler = destroyHandler;
+  }
+
+  request(url: string, options: http.HttpRequestOptions): Promise<http.HttpResponse> {
+    return this.requestHandler(url, options);
+  }
+
+  destroy(): void {
+    this.destroyHandler();
+  }
 }

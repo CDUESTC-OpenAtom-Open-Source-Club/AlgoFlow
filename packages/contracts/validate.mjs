@@ -9,7 +9,7 @@ const artifactFields = ['mode', 'pseudocode', 'code_snippet', 'code_mappings', '
 const entityFields = new Set(['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', ...artifactFields]);
 const reviewKinds = new Set(domain.$defs.reviewKind.enum);
 const diagnosticLevels = new Set(domain.$defs.diagnosticLevel.enum);
-const reviewEntityFields = new Set(['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', 'mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility']);
+const reviewEntityFields = new Set(['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', 'mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility', 'freshness']);
 
 export function validateReviewResultEntity(entity, sourceDraft = undefined) {
   const errors = [];
@@ -28,6 +28,7 @@ export function validateReviewResultEntity(entity, sourceDraft = undefined) {
   if (!modes.has(entity.mode)) errors.push('mode is invalid');
   if (!reviewKinds.has(entity.review_kind)) errors.push('review_kind is invalid');
   if (!visibilities.has(entity.visibility)) errors.push('visibility is invalid');
+  if (!['current', 'stale'].includes(entity.freshness)) errors.push('freshness is invalid');
   if (!Array.isArray(entity.diagnostics)) errors.push('diagnostics is invalid');
   else {
     const ids = new Set();

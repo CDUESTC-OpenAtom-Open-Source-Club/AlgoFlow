@@ -12,12 +12,15 @@ interface InspectorPanelProps {
   onToggleArtifact: () => void;
   review?: ReviewResult;
   reviewSourceAvailable: boolean;
+  reviewStale: boolean;
   reviewHistory: ReviewResult[];
   onReviewSelect: (id: string) => void;
   reviewKind: ReviewKind;
   reviewBusy: boolean;
+  aiRequestBusy: boolean;
   onReviewKindChange: (kind: ReviewKind) => void;
   onSaveReview: () => void;
+  onCancelAI: () => void;
   onToggleReview: () => void;
 }
 
@@ -27,7 +30,7 @@ const reviewKinds: Array<{ id: ReviewKind; label: string }> = [
   { id: 'complexity', label: '复杂度' },
 ];
 
-export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine, artifact, onToggleArtifact, review, reviewSourceAvailable, reviewHistory, onReviewSelect, reviewKind, reviewBusy, onReviewKindChange, onSaveReview, onToggleReview }: InspectorPanelProps) {
+export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine, artifact, onToggleArtifact, review, reviewSourceAvailable, reviewStale, reviewHistory, onReviewSelect, reviewKind, reviewBusy, aiRequestBusy, onReviewKindChange, onSaveReview, onCancelAI, onToggleReview }: InspectorPanelProps) {
   const errors = issues.filter((issue) => issue.severity === 'error').length;
   return (
     <>
@@ -56,13 +59,15 @@ export function InspectorPanel({ hidden, onHide, onShow, issues, onJumpToLine, a
           </div>
           {reviewHistory.length > 1 && (
             <select className="review-history-select" aria-label="审查历史" value={review?.id ?? ''} onChange={(event) => onReviewSelect(event.target.value)}>
-              {reviewHistory.map((item) => <option key={item.id} value={item.id}>草稿 v{item.source_draft_version} · {item.updated_at.slice(0, 10)}</option>)}
+              {reviewHistory.map((item) => <option key={item.id} value={item.id}>草稿 v{item.source_draft_version}{item.freshness === 'stale' ? ' · 已过期' : ''} · {item.updated_at.slice(0, 10)}</option>)}
             </select>
           )}
-          {review && !reviewSourceAvailable && <p className="warning-text">草稿 v{review.source_draft_version} 的本地源码快照不可用；此历史结果仅供查看，无法隐藏或同步。重新审查当前版本可创建可同步结果。</p>}
-          {review ? review.visibility === 'hidden' ? <p>审查结果已隐藏。<button type="button" className="quiet-button" disabled={!reviewSourceAvailable} onClick={onToggleReview}>显示</button></p> : review.diagnostics.length ? <ol>{review.diagnostics.map((item) => <li key={item.id}><strong>{item.level}</strong> <span>{formatRange(item.range)}</span> {item.problem}<small>依据：{item.basis} 建议：{item.suggestion}</small></li>)}</ol> : <p>当前代码未发现规则问题。</p> : <p>尚未保存独立审查结果。</p>}
-          <button type="button" className="outline-button" disabled={reviewBusy} onClick={onSaveReview}>{reviewBusy ? 'AI 正在审查…' : '请求 AI 审查'}</button>
-          {review && review.visibility === 'visible' && <button type="button" className="quiet-button" disabled={!reviewSourceAvailable} onClick={onToggleReview}>隐藏结果</button>}
+          {review && reviewStale && <p className="warning-text">该结果来自草稿 v{review.source_draft_version}，当前草稿已变化；结果已过期，仅作为只读历史记录。</p>}
+          {review && !reviewSourceAvailable && <p className="warning-text">草稿 v{review.source_draft_version} 的本地源码快照不可用，无法定位诊断行。</p>}
+          {review ? reviewStale ? review.diagnostics.length ? <ol>{review.diagnostics.map((item) => <li key={item.id}><strong>{item.level}</strong> <span>{formatRange(item.range)}</span> {item.problem}<small>依据：{item.basis} 建议：{item.suggestion}</small></li>)}</ol> : <p>该历史版本未发现规则问题。</p> : review.visibility === 'hidden' ? <p>审查结果已隐藏。<button type="button" className="quiet-button" disabled={!reviewSourceAvailable} onClick={onToggleReview}>显示</button></p> : review.diagnostics.length ? <ol>{review.diagnostics.map((item) => <li key={item.id}><strong>{item.level}</strong> <span>{formatRange(item.range)}</span> {item.problem}<small>依据：{item.basis} 建议：{item.suggestion}</small></li>)}</ol> : <p>当前代码未发现规则问题。</p> : <p>尚未保存独立审查结果。</p>}
+          <button type="button" className="outline-button" disabled={aiRequestBusy} onClick={onSaveReview}>{reviewBusy ? 'AI 正在审查…' : '请求 AI 审查'}</button>
+          {aiRequestBusy && <button type="button" className="quiet-button" onClick={onCancelAI}>取消 AI 请求</button>}
+          {review && !reviewStale && review.visibility === 'visible' && <button type="button" className="quiet-button" disabled={!reviewSourceAvailable} onClick={onToggleReview}>隐藏结果</button>}
         </section>
         <section className="inspect-section ai-artifact-result">
           <div className="inspect-title"><span>忠实转换结果</span><span>{artifact ? `v${artifact.version}` : '暂无'}</span></div>

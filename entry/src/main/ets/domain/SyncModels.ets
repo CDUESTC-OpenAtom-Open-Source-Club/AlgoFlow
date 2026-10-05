@@ -1,4 +1,4 @@
-import { AIArtifact, AIMode, AIVisibility, DiagnosticLevel, Draft, IdeaSegment, ReviewDiagnostic, ReviewKind, ReviewResult, SourceRange, SyncStatus } from './Models';
+import { AIArtifact, AIMode, AIVisibility, DiagnosticLevel, Draft, IdeaSegment, ReviewDiagnostic, ReviewFreshness, ReviewKind, ReviewResult, SourceRange, SyncStatus } from './Models';
 import { AIArtifactPayload } from './AIArtifactCodec';
 
 export class SourceRangePayload {
@@ -19,7 +19,7 @@ export class ReviewDiagnosticPayload {
 export class ReviewResultPayload {
   id: string = ''; version: number = 0; server_sequence: number = 0; created_at: string = ''; updated_at: string = ''; deleted: boolean = false;
   last_modified_client_id: string = ''; draft_id: string = ''; mode: string = AIMode.FAITHFUL_TRANSFORM; source_draft_version: number = 0;
-  model_id: string = ''; rule_version: string = ''; review_kind: string = 'risk'; diagnostics: ReviewDiagnosticPayload[] = []; visibility: string = 'visible';
+  model_id: string = ''; rule_version: string = ''; review_kind: string = 'risk'; diagnostics: ReviewDiagnosticPayload[] = []; visibility: string = 'visible'; freshness: string = ReviewFreshness.CURRENT;
 }
 
 export class AIGatewayReviewPayload {
@@ -171,6 +171,7 @@ export function reviewToPayload(review: ReviewResult): ReviewResultPayload {
   payload.last_modified_client_id = review.lastModifiedClientId; payload.draft_id = review.draftId; payload.mode = review.mode;
   payload.source_draft_version = review.sourceDraftVersion; payload.model_id = review.modelId; payload.rule_version = review.ruleVersion;
   payload.review_kind = review.reviewKind; payload.visibility = review.visibility;
+  payload.freshness = review.freshness;
   payload.diagnostics = review.diagnostics.map((item) => {
     const result = new ReviewDiagnosticPayload();
     result.id = item.id; result.level = item.level; result.range = item.range === null ? null : JSON.parse(JSON.stringify(item.range));
@@ -198,6 +199,7 @@ export function gatewayPayloadToReview(payload: AIGatewayReviewPayload, id: stri
   entity.review_kind = payload.review_kind;
   entity.diagnostics = payload.diagnostics;
   entity.visibility = payload.visibility;
+  entity.freshness = ReviewFreshness.CURRENT;
   return payloadToReview(entity);
 }
 
@@ -218,8 +220,10 @@ export function reviewSourceMatchesDraft(payload: ReviewResultPayload, draft: Dr
 
 export function payloadToReview(payload: ReviewResultPayload): ReviewResult | undefined {
   const allowedPayloadFields = ['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id',
-    'draft_id', 'mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility'];
-  if (payload === undefined || payload === null || typeof payload.id !== 'string' || payload.id.length === 0 ||
+    'draft_id', 'mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility', 'freshness'];
+  if (payload === undefined || payload === null) return undefined;
+  if (payload.freshness === undefined || payload.freshness === '') payload.freshness = ReviewFreshness.CURRENT;
+  if (typeof payload.id !== 'string' || payload.id.length === 0 ||
     Object.keys(payload).some((key: string) => !allowedPayloadFields.includes(key)) ||
     typeof payload.draft_id !== 'string' || payload.draft_id.length === 0 || !Number.isInteger(payload.version) || payload.version < 0 ||
     !Number.isInteger(payload.server_sequence) || payload.server_sequence < 0 || !isUtcTimestamp(payload.created_at) ||
@@ -227,7 +231,8 @@ export function payloadToReview(payload: ReviewResultPayload): ReviewResult | un
     !Number.isInteger(payload.source_draft_version) || payload.source_draft_version < 0 || typeof payload.model_id !== 'string' || payload.model_id.length === 0 ||
     typeof payload.rule_version !== 'string' || payload.rule_version.length === 0 || !['explanation', 'risk', 'complexity'].includes(payload.review_kind) ||
     !['faithful_transform', 'feasibility_analysis', 'progressive_hint', 'full_solution'].includes(payload.mode) ||
-    !['visible', 'hidden'].includes(payload.visibility) || typeof payload.deleted !== 'boolean' || !Array.isArray(payload.diagnostics)) return undefined;
+    !['visible', 'hidden'].includes(payload.visibility) || !['current', 'stale'].includes(payload.freshness) ||
+    typeof payload.deleted !== 'boolean' || !Array.isArray(payload.diagnostics)) return undefined;
   const diagnosticIds = new Set<string>();
   for (const item of payload.diagnostics) {
     if (item === undefined || item === null || typeof item.id !== 'string' || item.id.trim().length === 0 || diagnosticIds.has(item.id) ||
@@ -241,6 +246,7 @@ export function payloadToReview(payload: ReviewResultPayload): ReviewResult | un
   review.deleted = payload.deleted; review.lastModifiedClientId = payload.last_modified_client_id; review.mode = parseAIMode(payload.mode);
   review.sourceDraftVersion = payload.source_draft_version; review.modelId = payload.model_id; review.ruleVersion = payload.rule_version;
   review.reviewKind = payload.review_kind as ReviewKind; review.visibility = payload.visibility as AIVisibility;
+  review.freshness = payload.freshness as ReviewFreshness;
   review.diagnostics = payload.diagnostics.map((item: ReviewDiagnosticPayload): ReviewDiagnostic => {
     const diagnostic = new ReviewDiagnostic(); diagnostic.id = item.id; diagnostic.level = item.level as DiagnosticLevel;
     diagnostic.range = item.range === null ? null : JSON.parse(JSON.stringify(item.range)) as SourceRange;

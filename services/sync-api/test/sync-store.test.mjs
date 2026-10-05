@@ -1,9 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { SyncStore } from '../src/sync-store.mjs';
 import { createSyncServer } from '../src/server.mjs';
 import { queueAIArtifact, queueUpsert } from '../../../apps/web/src/storage.mjs';
 import { LocalSyncClient, synchronizeWorkspace } from '../../../apps/web/src/sync-client.mjs';
+import { validateReviewResultEntity } from '../../../packages/contracts/validate.mjs';
+
+test('shared review entity vectors match the sync-api validator', async (t) => {
+  const source = new URL('../../../packages/contracts/vectors/review-results.json', import.meta.url);
+  const vectors = JSON.parse(await readFile(source, 'utf8'));
+  const sourceDraft = { code: 'int main() { return 0; }' };
+  for (const vector of vectors.entities) {
+    await t.test(vector.name, () => {
+      assert.equal(validateReviewResultEntity(vector.entity, sourceDraft).length === 0, vector.valid, vector.name);
+    });
+  }
+});
 
 const operation = {
   operation_id: 'op-1', entity_type: 'draft', entity_id: 'draft-1', operation_type: 'upsert',
@@ -586,7 +599,7 @@ function makeReview(id, draftId, clientId) {
   const now = '2026-09-15T00:00:00.000Z';
   return {
     id, version: 0, server_sequence: 0, created_at: now, updated_at: now, deleted: false, last_modified_client_id: clientId,
-    draft_id: draftId, mode: 'faithful_transform', source_draft_version: 0, model_id: 'local-review-rules', rule_version: '1.0.0', review_kind: 'risk',
-    diagnostics: [{ id: 'diagnostic-1', level: 'warning', range: { start_line: 1, start_char: 0, end_line: 1, end_char: 1 }, problem: 'Potential issue', basis: 'Rule matched', suggestion: 'Review this line' }], visibility: 'visible'
+    draft_id: draftId, mode: 'faithful_transform', source_draft_version: 0, model_id: 'test-review-provider', rule_version: '1.0.0', review_kind: 'risk',
+    diagnostics: [{ id: 'diagnostic-1', level: 'warning', range: { start_line: 1, start_char: 0, end_line: 1, end_char: 1 }, problem: 'Potential issue', basis: 'Rule matched', suggestion: 'Review this line' }], visibility: 'visible', freshness: 'current'
   };
 }

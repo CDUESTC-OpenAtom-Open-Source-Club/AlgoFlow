@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveAIResultConflict, synchronizeWorkspace } from '../src/sync-client.mjs';
-import { buildReviewRequest, reviewResultFromGateway } from '../src/ai-client.mjs';
-import { BrowserWorkspaceRepository, hasReviewSource, queueReviewResult } from '../src/storage.mjs';
-import { createReviewResult } from '../src/review-use-case.mjs';
+import { buildReviewRequest, LocalAIClient, reviewResultFromGateway } from '../src/ai-client.mjs';
+import { BrowserWorkspaceRepository, getReviewFreshness, hasReviewSource, queueReviewResult, sortReviewResultsNewestFirst } from '../src/storage.mjs';
+import { createReviewResult, toggleReviewVisibility } from '../src/review-use-case.mjs';
+import { createAIGateway } from '../../../services/ai-gateway/src/server.mjs';
 
 test('creates a review without changing the Draft and synchronizes only after persistence', async () => {
   const initial = makeWorkspace('web-a', makeDraft('draft-review-use-case', 'int main() {}', 'web-a'));
@@ -30,6 +31,36 @@ test('creates a review without changing the Draft and synchronizes only after pe
   assert.equal(result.state.drafts[0].code, 'int main() {}');
   assert.deepEqual(result.state.operations.map((operation) => operation.entity_type), ['review_result']);
   assert.equal(result.state.review_results[0].source_draft_version, 4);
+});
+
+test('Web review use case calls the real Gateway route and stores the provider result', async (t) => {
+  const server = createAIGateway({ aiProvider: { review: async ({ request }) => gatewayReview(request) } });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+
+  const initial = makeWorkspace('web-a', makeDraft('draft-gateway-review', 'int main() {}', 'web-a'));
+  initial.drafts[0].version = 4;
+  initial.drafts[0].sync_status = 'synced';
+  const repository = memoryRepository(initial);
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const result = await createReviewResult({
+    repository,
+    aiClient: new LocalAIClient(`http://127.0.0.1:${address.port}`),
+    draftId: initial.drafts[0].id,
+    documents: { 'main.cpp': initial.drafts[0].code, 'idea.md': initial.drafts[0].idea, 'cases.txt': '' },
+    mode: 'faithful_transform',
+    reviewKind: 'risk',
+    clientId: 'web-a',
+    isOnline: () => false,
+    synchronize: async () => 'local_only',
+    getEditorRevision: () => 0,
+  });
+
+  const savedReview = result.state.review_results.find((review) => review.id === result.reviewId);
+  assert.equal(savedReview?.model_id, 'provider-review');
+  assert.equal(savedReview?.freshness, 'current');
+  assert.equal(result.state.drafts[0].version, 4);
 });
 
 test('does not call the Gateway for an unsaved or unsynchronized Draft', async () => {
@@ -289,6 +320,36 @@ test('rejects an invalid review before it enters the local queue', () => {
   assert.equal(state.operations.length, 0);
 });
 
+test('marks an old result stale while retaining its snapshot and keeps a new unsynced result first', async () => {
+  const draft = makeDraft('draft-1', 'new code', 'web-a');
+  draft.version = 2;
+  const oldReview = makeReview('old-review', 1, 'web-a', 'risk');
+  oldReview.source_draft_version = 1;
+  oldReview.server_sequence = 9;
+  oldReview.created_at = '2026-09-15T00:00:00.000Z';
+  const currentReview = makeReview('new-review', 0, 'web-a', 'risk');
+  currentReview.source_draft_version = 2;
+  currentReview.server_sequence = 0;
+  currentReview.created_at = '2026-09-16T00:00:00.000Z';
+  const state = makeWorkspace('web-a', draft);
+  state.draft_history = [
+    { draft_id: draft.id, version: 1, code: 'old code' },
+    { draft_id: draft.id, version: 2, code: 'new code' },
+  ];
+  state.review_results = [oldReview, currentReview];
+  const stale = { ...oldReview, freshness: getReviewFreshness(state, oldReview) };
+
+  assert.equal(hasReviewSource(state, stale), true);
+  assert.equal(stale.freshness, 'stale');
+  assert.equal(sortReviewResultsNewestFirst([stale, currentReview])[0].id, currentReview.id);
+
+  const repository = memoryRepository(state);
+  await assert.rejects(toggleReviewVisibility({
+    repository, reviewId: oldReview.id, clientId: 'web-a', isOnline: () => false, synchronize: async () => 'local_only',
+  }), /REVIEW_RESULT_STALE/);
+  assert.equal(repository.load().operations.length, 0);
+});
+
 test('rejects a diagnostic range outside the source code before queueing', () => {
   const draft = makeDraft('draft-range-review', 'x', 'web-a');
   const state = makeWorkspace('web-a', draft);
@@ -306,8 +367,8 @@ function makeReview(id, version, clientId, reviewKind, range = { start_line: 1, 
   const now = '2026-09-15T00:00:00.000Z';
   return {
     id, version, server_sequence: version, created_at: now, updated_at: now, deleted: false, last_modified_client_id: clientId,
-    draft_id: 'draft-1', mode: 'faithful_transform', source_draft_version: 1, model_id: 'local-review-rules', rule_version: '1.0.0',
-    review_kind: reviewKind, visibility: 'visible',
+    draft_id: 'draft-1', mode: 'faithful_transform', source_draft_version: 1, model_id: 'test-review-provider', rule_version: '1.0.0',
+    review_kind: reviewKind, visibility: 'visible', freshness: 'current',
     diagnostics: [{ id: `${id}-diagnostic`, level: 'warning', range, problem: 'Potential issue', basis: 'Rule matched', suggestion: 'Review this line' }],
   };
 }

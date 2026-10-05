@@ -5,7 +5,7 @@ import { InspectorPanel } from './components/InspectorPanel';
 import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { initialDocuments } from './data';
-import { BrowserWorkspaceRepository, hasReviewSource, queueAIArtifact, queueUpsert } from './storage.mjs';
+import { BrowserWorkspaceRepository, getReviewFreshness, hasReviewSource, queueAIArtifact, queueUpsert, sortReviewResultsNewestFirst } from './storage.mjs';
 import { LocalSyncClient, resolveAIResultConflict, synchronizeWorkspace } from './sync-client.mjs';
 import type { AIArtifact, ConflictRecord, Documents, Draft, FileId, Mode, Panel, ReviewKind, ReviewResult, SyncStatus, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
@@ -45,17 +45,23 @@ export function App() {
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
   const [aiMessage, setAIMessage] = useState('');
   const [aiGenerating, setAIGenerating] = useState(false);
+  const [aiRequestKind, setAIRequestKind] = useState<'review' | 'artifact' | null>(null);
   const [reviewKind, setReviewKind] = useState<ReviewKind>('risk');
   const [selectedReviewId, setSelectedReviewId] = useState('');
   const editorRevisionRef = useRef(0);
+  const aiAbortControllerRef = useRef<AbortController | null>(null);
   const currentArtifact = useMemo(() => currentDraft ? latestArtifact(workspace.ai_artifacts, currentDraft.id, mode) : undefined,
     [workspace.ai_artifacts, currentDraft, mode]);
   const reviewHistory = useMemo(() => currentDraft
-    ? listReviewHistory(workspace.review_results, currentDraft.id, mode, reviewKind)
-    : [], [workspace.review_results, currentDraft, mode, reviewKind]);
+    ? sortReviewResultsNewestFirst(listReviewHistory(workspace.review_results, currentDraft.id, mode, reviewKind).map((review) => ({
+      ...review,
+      freshness: isReviewCurrentAgainstEditor(workspace, review, currentDraft, documents) ? 'current' : 'stale',
+    })))
+    : [], [workspace, currentDraft, mode, reviewKind, documents]);
   const currentReview = useMemo(() => reviewHistory.find((review) => review.id === selectedReviewId) ?? reviewHistory[0],
     [reviewHistory, selectedReviewId]);
   const currentReviewSourceAvailable = currentReview ? hasReviewSource(workspace, currentReview) : false;
+  const currentReviewStale = currentReview ? !isReviewCurrentAgainstEditor(workspace, currentReview, currentDraft, documents) : false;
   const handleCursorChange = useCallback((line: number, column: number) => {
     setCursorPosition({ line, column });
   }, []);
@@ -170,7 +176,10 @@ export function App() {
     if (!currentDraft) return;
     if (aiGenerating) return;
     setAIGenerating(true);
+    setAIRequestKind('review');
     setAIMessage('正在请求 AI Gateway 审查...');
+    const controller = new AbortController();
+    aiAbortControllerRef.current = controller;
     try {
       const result = await createReviewResult({
         repository,
@@ -183,11 +192,11 @@ export function App() {
         isOnline: () => navigator.onLine,
         synchronize: flushQueue,
         getEditorRevision: () => editorRevisionRef.current,
+        signal: controller.signal,
       });
       setWorkspace(result.state);
       setSyncState(result.syncStatus);
-      const latest = listReviewHistory(result.state.review_results, currentDraft.id, mode, reviewKind)[0];
-      if (latest) setSelectedReviewId(latest.id);
+      if (result.reviewId) setSelectedReviewId(result.reviewId);
       setAIMessage(result.syncStatus === 'failed'
         ? '审查结果已本地保存；同步失败，可稍后重试。'
         : result.syncStatus === 'conflict'
@@ -199,8 +208,14 @@ export function App() {
         ? '请先保存并同步当前草稿，再请求审查结果。'
         : message);
     } finally {
+      if (aiAbortControllerRef.current === controller) aiAbortControllerRef.current = null;
+      setAIRequestKind(null);
       setAIGenerating(false);
     }
+  }
+
+  function cancelAIRequest() {
+    aiAbortControllerRef.current?.abort();
   }
 
   async function generateArtifact() {
@@ -210,14 +225,18 @@ export function App() {
       return;
     }
     setAIGenerating(true);
+    setAIRequestKind('artifact');
     setAIMessage('正在请求 AI Gateway...');
     const generationRevision = editorRevisionRef.current;
+    const controller = new AbortController();
+    aiAbortControllerRef.current = controller;
     try {
       if (!saved || (currentDraft.idea_segments ?? []).length === 0) await saveWorkspace();
       const state = repository.load();
       const draft = state.drafts.find((item) => item.id === currentDraft.id) ?? currentDraft;
       const request = buildAIRequest(draft, documents, mode);
-      const response = await aiClient.generate(request);
+      const response = await aiClient.generate(request, { signal: controller.signal });
+      if (controller.signal.aborted) throw new Error('AI_REQUEST_CANCELLED');
       const latestState = repository.load();
       const latestDraft = latestState.drafts.find((item) => item.id === draft.id);
       if (!latestDraft || latestDraft.version !== draft.version || latestState.selected_id !== draft.id || editorRevisionRef.current !== generationRevision) {
@@ -232,6 +251,8 @@ export function App() {
     } catch (error) {
       setAIMessage(error instanceof Error ? error.message : 'AI 请求失败');
     } finally {
+      if (aiAbortControllerRef.current === controller) aiAbortControllerRef.current = null;
+      setAIRequestKind(null);
       setAIGenerating(false);
     }
   }
@@ -351,12 +372,15 @@ export function App() {
           onToggleArtifact={toggleArtifactVisibility}
           review={currentReview}
           reviewSourceAvailable={currentReviewSourceAvailable}
+          reviewStale={currentReviewStale}
           reviewHistory={reviewHistory}
           onReviewSelect={setSelectedReviewId}
           reviewKind={reviewKind}
-          reviewBusy={aiGenerating}
+          reviewBusy={aiRequestKind === 'review'}
+          aiRequestBusy={aiGenerating}
           onReviewKindChange={chooseReviewKind}
           onSaveReview={saveLocalReview}
+          onCancelAI={cancelAIRequest}
           onToggleReview={toggleReviewVisibility}
         />
       </main>
@@ -411,5 +435,10 @@ function conflictMessage(entityType: ConflictChoice['entity_type']): string {
 
 function listReviewHistory(results: ReviewResult[], draftId: string, mode: Mode, kind: ReviewResult['review_kind']): ReviewResult[] {
   return results.filter((result) => result.draft_id === draftId && result.mode === mode && result.review_kind === kind && !result.deleted)
-    .sort((left, right) => right.server_sequence - left.server_sequence || right.version - left.version || right.updated_at.localeCompare(left.updated_at));
+}
+
+function isReviewCurrentAgainstEditor(state: WorkspaceState, review: ReviewResult, draft: Draft | undefined, currentDocuments: Documents): boolean {
+  return draft !== undefined && draft.id === review.draft_id && draft.version === review.source_draft_version &&
+    draft.code === currentDocuments['main.cpp'] && draft.idea === currentDocuments['idea.md'] &&
+    (draft.cases ?? '') === currentDocuments['cases.txt'] && getReviewFreshness(state, review, currentDocuments['main.cpp']) === 'current';
 }

@@ -1,5 +1,5 @@
 import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
-import { AIArtifact, AIVisibility, AIMode, DiagnosticLevel, Draft, IdeaSegment, PseudocodeStep, ReviewDiagnostic, ReviewKind, ReviewResult, SourceRange, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIVisibility, AIMode, DiagnosticLevel, Draft, IdeaSegment, PseudocodeStep, ReviewDiagnostic, ReviewFreshness, ReviewKind, ReviewResult, SourceRange, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
 import { saveCardSnapshot } from '../platform/CardSnapshot';
@@ -162,8 +162,7 @@ struct Index {
     this.segments = draft.ideaSegments;
     this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === draft.id && artifact.mode === draft.aiMode)
       .sort((left: AIArtifact, right: AIArtifact) => right.serverSequence - left.serverSequence || right.version - left.version);
-    this.reviews = this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === draft.id && review.mode === draft.aiMode)
-      .sort((left: ReviewResult, right: ReviewResult) => right.serverSequence - left.serverSequence || right.version - left.version);
+    this.reviews = this.sortReviewResults(this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === draft.id && review.mode === draft.aiMode));
     this.selectedReviewId = '';
     this.artifactHidden = this.artifacts.length > 0 && this.artifacts[0].visibility === AIVisibility.HIDDEN;
     saveCardSnapshot(getContext(this), draft);
@@ -505,8 +504,7 @@ struct Index {
       this.rewrite = draft.rewrite;
     this.segments = draft.ideaSegments;
       this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === draft.id && artifact.mode === draft.aiMode);
-      this.reviews = this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === draft.id && review.mode === draft.aiMode)
-        .sort((left: ReviewResult, right: ReviewResult) => right.serverSequence - left.serverSequence || right.version - left.version);
+      this.reviews = this.sortReviewResults(this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === draft.id && review.mode === draft.aiMode));
       saveCardSnapshot(getContext(this), draft);
     }
   }
@@ -530,9 +528,7 @@ struct Index {
     this.viewModel.setMode(this.selectedId, nextMode);
     this.mode = nextMode;
     this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === this.selectedId && artifact.mode === nextMode);
-    this.reviews = this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === this.selectedId && review.mode === nextMode)
-      .sort((left: ReviewResult, right: ReviewResult) =>
-        right.serverSequence - left.serverSequence || right.version - left.version || right.updatedAt.localeCompare(left.updatedAt));
+    this.reviews = this.sortReviewResults(this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === this.selectedId && review.mode === nextMode));
     this.artifactHidden = this.artifacts.length > 0 && this.artifacts[0].visibility === AIVisibility.HIDDEN;
     this.saved = false;
     this.syncStatus = SyncStatus.LOCAL_ONLY;
@@ -544,8 +540,7 @@ struct Index {
     this.artifactHidden = current !== undefined && current.visibility === AIVisibility.HIDDEN;
     this.artifacts = this.viewModel.listArtifacts().filter((artifact: AIArtifact) => artifact.draftId === this.selectedId && artifact.mode === this.mode)
       .sort((left: AIArtifact, right: AIArtifact) => right.serverSequence - left.serverSequence || right.version - left.version);
-    this.reviews = this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === this.selectedId && review.mode === this.mode)
-      .sort((left: ReviewResult, right: ReviewResult) => right.serverSequence - left.serverSequence || right.version - left.version);
+    this.reviews = this.sortReviewResults(this.viewModel.listReviews().filter((review: ReviewResult) => review.draftId === this.selectedId && review.mode === this.mode));
   }
 
   private chooseReviewKind(kind: ReviewKind): void {
@@ -556,6 +551,13 @@ struct Index {
   private reviewHistory(): ReviewResult[] {
     return this.reviews.filter((review: ReviewResult) => review.draftId === this.selectedId && review.mode === this.mode &&
       review.reviewKind === this.reviewKind && !review.deleted);
+  }
+
+  private sortReviewResults(results: ReviewResult[]): ReviewResult[] {
+    return results.sort((left: ReviewResult, right: ReviewResult) =>
+      Number(right.freshness === ReviewFreshness.CURRENT) - Number(left.freshness === ReviewFreshness.CURRENT) ||
+      right.sourceDraftVersion - left.sourceDraftVersion || right.createdAt.localeCompare(left.createdAt) ||
+      right.serverSequence - left.serverSequence || right.version - left.version);
   }
 
   private chooseReviewVersion(id: string): void {
@@ -576,15 +578,19 @@ struct Index {
     return review !== undefined && this.viewModel.hasReviewSource(review.id);
   }
 
+  private selectedReviewIsStale(): boolean {
+    const review = this.selectedReview();
+    return review === undefined || !this.viewModel.isReviewCurrent(review.id);
+  }
+
   private jumpToDiagnostic(diagnostic: ReviewDiagnostic): void {
     if (diagnostic.range !== null) this.jumpToLine(diagnostic.range.start_line);
   }
 
   private refreshReviews(): void {
     this.reviews = this.viewModel.listReviews().filter((review: ReviewResult) =>
-      review.draftId === this.selectedId && review.mode === this.mode)
-      .sort((left: ReviewResult, right: ReviewResult) =>
-        right.serverSequence - left.serverSequence || right.version - left.version || right.updatedAt.localeCompare(left.updatedAt));
+      review.draftId === this.selectedId && review.mode === this.mode);
+    this.reviews = this.sortReviewResults(this.reviews);
   }
 
   private async saveReview(): Promise<void> {
@@ -613,6 +619,12 @@ struct Index {
     } finally {
       this.aiGenerating = false;
     }
+  }
+
+  private cancelAIRequest(): void {
+    this.viewModel.cancelAIRequest();
+    this.aiMessage = '正在取消 AI 请求...';
+    this.reviewMessage = '正在取消 AI 请求...';
   }
 
   private async toggleReview(): Promise<void> {
@@ -1055,6 +1067,10 @@ struct Index {
         Button(this.artifactHidden ? '显示结果区' : '隐藏结果区').height(32).fontSize(10)
           .fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).onClick(() => this.toggleArtifact())
       }.width('100%').margin({ top: 4 })
+      if (this.aiGenerating) {
+        Button('取消 AI 请求').width('100%').height(30).fontSize(10).fontColor('#FF9A94')
+          .backgroundColor('#2A1B1C').borderRadius(4).onClick(() => this.cancelAIRequest())
+      }
       TextInput({ text: this.aiBaseUrl, placeholder: 'http://电脑局域网IP:8788' }).width('100%').height(32).fontSize(10)
         .onChange((value: string) => { this.aiBaseUrl = value; })
       if (this.artifacts.length === 0) {
@@ -1113,7 +1129,7 @@ struct Index {
           Scroll() {
             Row({ space: 5 }) {
               ForEach(this.reviewHistory(), (review: ReviewResult) => {
-                Button(`源 v${review.sourceDraftVersion} · ${review.updatedAt.substring(0, 10)}`)
+                Button(`源 v${review.sourceDraftVersion}${this.viewModel.isReviewCurrent(review.id) ? '' : ' · 已过期'} · ${review.updatedAt.substring(0, 10)}`)
                   .height(27).fontSize(9).fontColor(this.selectedReview()?.id === review.id ? '#07110A' : '#B8B8BD')
                   .backgroundColor(this.selectedReview()?.id === review.id ? '#30D158' : '#29292C').borderRadius(4)
                   .onClick(() => this.chooseReviewVersion(review.id))
@@ -1124,6 +1140,25 @@ struct Index {
         }
         if (this.selectedReview() === undefined) {
           Text('当前类型暂无已保存审查结果。').fontSize(10).fontColor('#8E8E93')
+        } else if (this.selectedReviewIsStale()) {
+          Text(`该结果来自草稿 v${this.selectedReview()?.sourceDraftVersion}，当前草稿已变化；结果已过期，仅作为只读历史记录。`)
+            .width('100%').fontSize(9).lineHeight(14).fontColor('#FFB340')
+          if (!this.selectedReviewHasSource()) {
+            Text('原始代码快照不可用，诊断位置无法定位。').width('100%').fontSize(9).lineHeight(14).fontColor('#FFB340')
+          }
+          if (this.selectedReviewDiagnostics().length === 0) {
+            Text('该历史版本未发现规则问题。').fontSize(10).fontColor('#8E8E93')
+          } else {
+            ForEach(this.selectedReviewDiagnostics(), (diagnostic: ReviewDiagnostic) => {
+              Column({ space: 3 }) {
+                Text(`${this.diagnosticLevelLabel(diagnostic.level)} · ${this.reviewRangeLabel(diagnostic.range)}`)
+                  .width('100%').fontSize(10).fontColor('#B8B8BD')
+                Text(diagnostic.problem).width('100%').fontSize(10).lineHeight(15).fontColor('#ECECED')
+                Text(`依据：${diagnostic.basis}`).width('100%').fontSize(9).lineHeight(14).fontColor('#8E8E93')
+                Text(`建议：${diagnostic.suggestion}`).width('100%').fontSize(9).lineHeight(14).fontColor('#B8DDBF')
+              }.width('100%').padding({ bottom: 8 })
+            }, (diagnostic: ReviewDiagnostic) => diagnostic.id)
+          }
         } else if (!this.selectedReviewHasSource()) {
           Text('该历史结果的源代码快照不可用，仅供查看；请重新审查当前版本以同步。')
             .width('100%').fontSize(9).lineHeight(14).fontColor('#FFB340')
@@ -1140,7 +1175,7 @@ struct Index {
               }.width('100%').padding({ bottom: 8 })
             }, (diagnostic: ReviewDiagnostic) => diagnostic.id)
           }
-        } else if (this.selectedReview()?.visibility === AIVisibility.HIDDEN) {
+        } else if (this.selectedReview()?.visibility === AIVisibility.HIDDEN && !this.selectedReviewIsStale()) {
           Text('审查结果已隐藏，记录仍保留并参与同步。').fontSize(10).fontColor('#8E8E93')
         } else if (this.selectedReviewDiagnostics().length === 0) {
           Text('当前审查未发现规则问题。').fontSize(11).fontColor('#30D158')
@@ -1163,12 +1198,16 @@ struct Index {
         Button(this.aiGenerating ? 'AI 审查请求中' : '请求 AI 审查').width('100%').height(34).fontSize(10)
           .enabled(!this.aiGenerating).fontColor('#07110A')
           .backgroundColor('#30D158').borderRadius(4).margin({ top: 8 }).onClick(() => this.saveReview())
+        if (this.aiGenerating) {
+          Button('取消 AI 请求').width('100%').height(30).fontSize(10).fontColor('#FF9A94')
+            .backgroundColor('#2A1B1C').borderRadius(4).margin({ top: 5 }).onClick(() => this.cancelAIRequest())
+        }
         if (this.reviewMessage.length > 0) {
           Text(this.reviewMessage).width('100%').fontSize(9).lineHeight(14).fontColor('#8E8E93').margin({ top: 5 })
         }
         if (this.selectedReview() !== undefined) {
           Button(this.selectedReview()?.visibility === AIVisibility.HIDDEN ? '显示审查结果' : '隐藏审查结果').width('100%').height(32).fontSize(10)
-            .enabled(this.selectedReviewHasSource()).fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).margin({ top: 6 }).onClick(() => this.toggleReview())
+            .enabled(this.selectedReviewHasSource() && !this.selectedReviewIsStale()).fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).margin({ top: 6 }).onClick(() => this.toggleReview())
         }
         Text(`本地基础检查：${this.reviewIssues.length === 0 ? '通过' : `${this.reviewIssues.length} 项提示`}`).fontSize(9).fontColor('#8E8E93').margin({ top: 8 })
         if (this.reviewIssues.length > 0) {

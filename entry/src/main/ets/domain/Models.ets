@@ -24,6 +24,7 @@ export enum AIVisibility {
 }
 
 export enum ReviewKind { EXPLANATION = 'explanation', RISK = 'risk', COMPLEXITY = 'complexity' }
+export enum ReviewFreshness { CURRENT = 'current', STALE = 'stale' }
 export enum DiagnosticLevel { ERROR = 'error', WARNING = 'warning', INFO = 'info', HINT = 'hint' }
 
 export class SourceRange {
@@ -39,7 +40,7 @@ export class ReviewResult {
   id: string; version: number = 0; serverSequence: number = 0; createdAt: string; updatedAt: string;
   deleted: boolean = false; lastModifiedClientId: string = ''; draftId: string; mode: AIMode = AIMode.FAITHFUL_TRANSFORM;
   sourceDraftVersion: number = 0; modelId: string = ''; ruleVersion: string = ''; reviewKind: ReviewKind = ReviewKind.RISK;
-  diagnostics: ReviewDiagnostic[] = []; visibility: AIVisibility = AIVisibility.VISIBLE;
+  diagnostics: ReviewDiagnostic[] = []; visibility: AIVisibility = AIVisibility.VISIBLE; freshness: ReviewFreshness = ReviewFreshness.CURRENT;
   constructor(id: string, draftId: string) { this.id = id; this.draftId = draftId; this.createdAt = new Date().toISOString(); this.updatedAt = this.createdAt; }
 }
 

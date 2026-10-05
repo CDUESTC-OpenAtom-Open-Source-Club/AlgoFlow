@@ -9,24 +9,47 @@ export class LocalAIClient {
     this.baseUrl = baseUrl.replace(/\/$/, '');
   }
 
-  /** @param {Record<string, unknown>} request */
-  async generate(request) {
-    const response = await fetch(`${this.baseUrl}/requests`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.code ?? 'AI_REQUEST_FAILED');
-    return result;
+  /** @param {Record<string, unknown>} request @param {{ signal?: AbortSignal, maxRetries?: number, timeoutMs?: number }} [options] */
+  async generate(request, options = {}) {
+    return this.postJson('/requests', request, options, 'AI_REQUEST_FAILED');
   }
 
-  /** @param {Record<string, unknown>} request */
-  async review(request) {
-    const response = await fetch(`${this.baseUrl}/reviews`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.code ?? 'AI_REVIEW_FAILED');
-    return result;
+  /** @param {Record<string, unknown>} request @param {{ signal?: AbortSignal, maxRetries?: number, timeoutMs?: number }} [options] */
+  async review(request, options = {}) {
+    return this.postJson('/reviews', request, options, 'AI_REVIEW_FAILED');
+  }
+
+  /** @param {string} path @param {Record<string, unknown>} request @param {{ signal?: AbortSignal, maxRetries?: number, timeoutMs?: number }} options @param {string} fallbackCode */
+  async postJson(path, request, options, fallbackCode) {
+    const maxRetries = Math.max(0, Math.min(Number.isInteger(options.maxRetries) ? (options.maxRetries ?? 1) : 1, 1));
+    const timeoutMs = options.timeoutMs ?? 30000;
+    for (let attempt = 0; ; attempt += 1) {
+      if (options.signal?.aborted) throw new Error('AI_REQUEST_CANCELLED');
+      const requestController = new AbortController();
+      const timeout = setTimeout(() => requestController.abort(), timeoutMs);
+      const abortFromCaller = () => requestController.abort();
+      options.signal?.addEventListener('abort', abortFromCaller, { once: true });
+      try {
+        const response = await fetch(`${this.baseUrl}${path}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), signal: requestController.signal,
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          const error = new Error(result.code ?? fallbackCode);
+          if ([502, 503, 504].includes(response.status)) Object.assign(error, { retryable: true });
+          throw error;
+        }
+        return result;
+      } catch (error) {
+        if (options.signal?.aborted) throw new Error('AI_REQUEST_CANCELLED');
+        if (requestController.signal.aborted) throw new Error('AI_REQUEST_TIMEOUT');
+        const retryable = error instanceof TypeError || (error instanceof Error && /** @type {Error & { retryable?: boolean }} */ (error).retryable === true);
+        if (!retryable || attempt >= maxRetries) throw error;
+      } finally {
+        clearTimeout(timeout);
+        options.signal?.removeEventListener('abort', abortFromCaller);
+      }
+    }
   }
 }
 
@@ -115,7 +138,7 @@ export function reviewResultFromGateway(response, draft, clientId, mode, reviewK
   const now = new Date().toISOString();
   const result = /** @type {import('./types').ReviewResult} */ (/** @type {unknown} */ ({
     ...response, id: crypto.randomUUID(), version: 0, server_sequence: 0, created_at: now, updated_at: now,
-    deleted: false, last_modified_client_id: clientId, draft_id: draft.id,
+    deleted: false, last_modified_client_id: clientId, draft_id: draft.id, freshness: 'current',
   }));
   assertReviewResult(result);
   if (result.mode !== mode || result.source_draft_version !== draft.version || result.rule_version !== ruleVersion ||

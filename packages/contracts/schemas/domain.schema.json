@@ -23,6 +23,10 @@
       "type": "string",
       "enum": ["explanation", "risk", "complexity"]
     },
+    "reviewFreshness": {
+      "type": "string",
+      "enum": ["current", "stale"]
+    },
     "diagnosticLevel": {
       "type": "string",
       "enum": ["error", "warning", "info", "hint"]
@@ -127,7 +131,7 @@
     },
     "reviewResult": {
       "type": "object",
-      "required": ["id", "version", "server_sequence", "created_at", "updated_at", "deleted", "last_modified_client_id", "draft_id", "mode", "source_draft_version", "model_id", "rule_version", "review_kind", "diagnostics", "visibility"],
+      "required": ["id", "version", "server_sequence", "created_at", "updated_at", "deleted", "last_modified_client_id", "draft_id", "mode", "source_draft_version", "model_id", "rule_version", "review_kind", "diagnostics", "visibility", "freshness"],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "version": { "type": "integer", "minimum": 0 },
@@ -143,7 +147,8 @@
         "rule_version": { "type": "string", "minLength": 1 },
         "review_kind": { "$ref": "#/$defs/reviewKind" },
         "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/reviewDiagnostic" } },
-        "visibility": { "$ref": "#/$defs/aiVisibility" }
+        "visibility": { "$ref": "#/$defs/aiVisibility" },
+        "freshness": { "$ref": "#/$defs/reviewFreshness", "description": "Derived against the active Draft version by clients; historical results are read-only." }
       },
       "additionalProperties": false
     }

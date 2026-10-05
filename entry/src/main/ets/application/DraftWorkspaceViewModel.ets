@@ -1,5 +1,5 @@
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, ReviewKind, ReviewResult, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIVisibility, AIMode, Draft, IdeaSegment, ReviewFreshness, ReviewKind, ReviewResult, SyncStatus } from '../domain/Models';
 import { SyncRepository } from '../domain/SyncRepository';
 import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
 import { AIGatewayReviewPayload, ConflictRecord, SyncEntityType, reviewSourceMatchesDraft, reviewToPayload } from '../domain/SyncModels';
@@ -8,13 +8,14 @@ import { gatewayPayloadToArtifact } from '../domain/AIArtifactCodec';
 import { gatewayPayloadToReview } from '../domain/SyncModels';
 import { util } from '@kit.ArkTS';
 
-export type ReviewGateway = (baseUrl: string, request: ReviewRequestInput) => Promise<AIGatewayReviewPayload>;
+export type ReviewGateway = (baseUrl: string, request: ReviewRequestInput, client?: HttpAIClient) => Promise<AIGatewayReviewPayload>;
 
 export class DraftWorkspaceViewModel {
   private repository: DraftRepository;
   private syncRepository?: SyncRepository;
   private reviewGateway: ReviewGateway;
   private createReviewId: () => string;
+  private activeAIClient: HttpAIClient | undefined = undefined;
   private sequence: number = 1;
   private segmentSequence: number = 1;
 
@@ -22,8 +23,8 @@ export class DraftWorkspaceViewModel {
     createReviewId: () => string = () => util.generateRandomUUID()) {
     this.repository = repository;
     this.syncRepository = syncRepository;
-    this.reviewGateway = reviewGateway ?? ((baseUrl: string, request: ReviewRequestInput) =>
-      new HttpAIClient(baseUrl).review(request));
+    this.reviewGateway = reviewGateway ?? ((baseUrl: string, request: ReviewRequestInput, client?: HttpAIClient) =>
+      (client ?? new HttpAIClient(baseUrl)).review(request));
     this.createReviewId = createReviewId;
   }
 
@@ -47,6 +48,10 @@ export class DraftWorkspaceViewModel {
     this.syncRepository?.setBaseUrl(baseUrl);
   }
 
+  cancelAIRequest(): void {
+    this.activeAIClient?.cancel();
+  }
+
   ensureStarterDraft(): string {
     const existing = this.repository.list();
     if (existing.length > 0) return existing[0].id;
@@ -64,7 +69,13 @@ export class DraftWorkspaceViewModel {
   getDraft(id: string): Draft | undefined { return this.repository.get(id); }
 
   listArtifacts(): AIArtifact[] { return this.syncRepository?.listArtifacts() ?? []; }
-  listReviews(): ReviewResult[] { return this.syncRepository?.listReviews() ?? []; }
+  listReviews(): ReviewResult[] {
+    const reviews = this.syncRepository?.listReviews() ?? [];
+    return reviews.map((review: ReviewResult) => {
+      review.freshness = this.isReviewCurrent(review.id) ? ReviewFreshness.CURRENT : ReviewFreshness.STALE;
+      return review;
+    });
+  }
   hasReviewSource(id: string): boolean {
     const review = this.syncRepository?.getReview(id);
     if (review === undefined || this.syncRepository === undefined) return false;
@@ -73,14 +84,28 @@ export class DraftWorkspaceViewModel {
       this.syncRepository.getDraftSourceCode(review.draftId, review.sourceDraftVersion));
   }
 
+  isReviewCurrent(id: string): boolean {
+    const review = this.syncRepository?.getReview(id);
+    const draft = review === undefined ? undefined : this.syncRepository?.getDraft(review.draftId);
+    if (review === undefined || draft === undefined || draft.deleted || draft.version !== review.sourceDraftVersion ||
+      this.syncRepository?.hasPendingOperation(SyncEntityType.DRAFT, draft.id)) return false;
+    const snapshotCode = this.syncRepository?.getDraftSourceCode(review.draftId, review.sourceDraftVersion);
+    return snapshotCode === undefined || snapshotCode === draft.code;
+  }
+
   saveReview(review: ReviewResult): void {
+    const draft = this.syncRepository?.getDraft(review.draftId);
+    review.freshness = draft !== undefined && draft.version === review.sourceDraftVersion &&
+      !this.syncRepository?.hasPendingOperation(SyncEntityType.DRAFT, draft.id) ? ReviewFreshness.CURRENT : ReviewFreshness.STALE;
     this.syncRepository?.saveReview(review);
   }
 
   async toggleReview(id: string): Promise<void> {
     const review = this.syncRepository?.getReview(id);
     if (review === undefined) return;
+    if (!this.isReviewCurrent(id) || !this.hasReviewSource(id)) throw new Error('REVIEW_RESULT_STALE');
     review.visibility = review.visibility === AIVisibility.HIDDEN ? AIVisibility.VISIBLE : AIVisibility.HIDDEN;
+    review.freshness = ReviewFreshness.CURRENT;
     this.syncRepository?.saveReview(review);
     await this.repository.flush();
   }
@@ -109,15 +134,22 @@ export class DraftWorkspaceViewModel {
     request.problem_context = draft.idea.length > 0 ? draft.idea : draft.title;
     request.idea_segments = draft.ideaSegments.map((segment: IdeaSegment) =>
       new AIRequestIdeaSegment(segment.id, segment.content));
-    const response = await new HttpAIClient(baseUrl).generate(request);
-    if (response.mode !== request.mode || response.source_draft_version !== request.draft_version ||
-      response.rule_version !== request.rule_version || response.output_kind !== request.output_kind ||
-      response.visibility !== request.visibility) throw new Error('INVALID_AI_ARTIFACT');
-    const artifact = gatewayPayloadToArtifact(response, util.generateRandomUUID(), draft.id, draft.version,
-      this.syncRepository.getClientId(), draft.ideaSegments.map((segment: IdeaSegment) => segment.id));
-    if (artifact === undefined) throw new Error('INVALID_AI_ARTIFACT');
-    this.syncRepository.saveArtifact(artifact);
-    return artifact;
+    const client = new HttpAIClient(baseUrl);
+    this.activeAIClient = client;
+    try {
+      const response = await client.generate(request);
+      if (client.wasCancelled()) throw new Error('AI_REQUEST_CANCELLED');
+      if (response.mode !== request.mode || response.source_draft_version !== request.draft_version ||
+        response.rule_version !== request.rule_version || response.output_kind !== request.output_kind ||
+        response.visibility !== request.visibility) throw new Error('INVALID_AI_ARTIFACT');
+      const artifact = gatewayPayloadToArtifact(response, util.generateRandomUUID(), draft.id, draft.version,
+        this.syncRepository.getClientId(), draft.ideaSegments.map((segment: IdeaSegment) => segment.id));
+      if (artifact === undefined) throw new Error('INVALID_AI_ARTIFACT');
+      this.syncRepository.saveArtifact(artifact);
+      return artifact;
+    } finally {
+      if (this.activeAIClient === client) this.activeAIClient = undefined;
+    }
   }
 
   async generateReview(id: string, baseUrl: string, mode: AIMode, reviewKind: ReviewKind): Promise<ReviewResult> {
@@ -136,21 +168,28 @@ export class DraftWorkspaceViewModel {
     request.code = sourceCode;
     request.idea = sourceIdea;
     request.review_kind = reviewKind;
-    const response = await this.reviewGateway(baseUrl, request);
-    if (response.mode !== request.mode || response.source_draft_version !== request.draft_version ||
-      response.rule_version !== request.rule_version || response.review_kind !== request.review_kind ||
-      response.visibility !== request.visibility) throw new Error('INVALID_REVIEW_RESULT');
-    const latestDraft = this.repository.get(id);
-    if (latestDraft === undefined || latestDraft.version !== sourceVersion || latestDraft.code !== sourceCode ||
-      latestDraft.idea !== sourceIdea || latestDraft.syncStatus !== SyncStatus.SYNCED ||
-      this.syncRepository.hasPendingOperation(SyncEntityType.DRAFT, id)) throw new Error('DRAFT_CHANGED_RETRY_REVIEW');
-    const review = gatewayPayloadToReview(response, this.createReviewId(), draft.id, sourceVersion,
-      this.syncRepository.getClientId());
-    if (review === undefined || review.mode !== mode || review.reviewKind !== reviewKind ||
-      review.sourceDraftVersion !== sourceVersion) throw new Error('INVALID_REVIEW_RESULT');
-    this.syncRepository.saveReview(review);
-    await this.repository.flush();
-    return review;
+    const client = new HttpAIClient(baseUrl);
+    this.activeAIClient = client;
+    try {
+      const response = await this.reviewGateway(baseUrl, request, client);
+      if (client.wasCancelled()) throw new Error('AI_REQUEST_CANCELLED');
+      if (response.mode !== request.mode || response.source_draft_version !== request.draft_version ||
+        response.rule_version !== request.rule_version || response.review_kind !== request.review_kind ||
+        response.visibility !== request.visibility) throw new Error('INVALID_REVIEW_RESULT');
+      const latestDraft = this.repository.get(id);
+      if (latestDraft === undefined || latestDraft.version !== sourceVersion || latestDraft.code !== sourceCode ||
+        latestDraft.idea !== sourceIdea || latestDraft.syncStatus !== SyncStatus.SYNCED ||
+        this.syncRepository.hasPendingOperation(SyncEntityType.DRAFT, id)) throw new Error('DRAFT_CHANGED_RETRY_REVIEW');
+      const review = gatewayPayloadToReview(response, this.createReviewId(), draft.id, sourceVersion,
+        this.syncRepository.getClientId());
+      if (review === undefined || review.mode !== mode || review.reviewKind !== reviewKind ||
+        review.sourceDraftVersion !== sourceVersion) throw new Error('INVALID_REVIEW_RESULT');
+      this.syncRepository.saveReview(review);
+      await this.repository.flush();
+      return review;
+    } finally {
+      if (this.activeAIClient === client) this.activeAIClient = undefined;
+    }
   }
 
   update(id: string, title: string, idea: string, code: string, shortCode: string, rewrite: string): void {

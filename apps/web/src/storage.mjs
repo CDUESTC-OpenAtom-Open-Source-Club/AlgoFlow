@@ -24,7 +24,10 @@ export class BrowserWorkspaceRepository {
           review_results: Array.isArray(value.review_results) ? value.review_results : [],
           draft_history: normalizeDraftHistory(value.draft_history, value.drafts),
         };
-        state.review_results = /** @type {import('./types').ReviewResult[]} */ (state.review_results).filter((review) => {
+        state.review_results = /** @type {import('./types').ReviewResult[]} */ (state.review_results).map((review) => ({
+          ...review,
+          freshness: getReviewFreshness(state, review),
+        })).filter((review) => {
           try {
             assertReviewResult(review);
             return true;
@@ -42,6 +45,10 @@ export class BrowserWorkspaceRepository {
 
   /** @param {import('./types').WorkspaceState} state */
   save(state) {
+    state.review_results = (state.review_results ?? []).map((review) => ({
+      ...review,
+      freshness: getReviewFreshness(state, review),
+    }));
     const { operations, client_id: clientId, cursor, ...sharedState } = state;
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...sharedState, operations: [] }));
     localStorage.setItem(`${QUEUE_KEY_PREFIX}${clientId}`, JSON.stringify(operations));
@@ -77,7 +84,7 @@ export function assertReviewResult(value, state = undefined) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_REVIEW_RESULT');
   /** @type {Record<string, unknown>} */
   const result = /** @type {Record<string, unknown>} */ (value);
-  const required = ['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', 'mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility'];
+  const required = ['id', 'version', 'server_sequence', 'created_at', 'updated_at', 'deleted', 'last_modified_client_id', 'draft_id', 'mode', 'source_draft_version', 'model_id', 'rule_version', 'review_kind', 'diagnostics', 'visibility', 'freshness'];
   if (required.some((field) => !(field in result)) || Object.keys(result).some((field) => !required.includes(field))) throw new Error('INVALID_REVIEW_RESULT');
   if (typeof result.id !== 'string' || result.id.trim().length === 0 ||
     typeof result.version !== 'number' || !Number.isInteger(result.version) || result.version < 0 ||
@@ -90,7 +97,9 @@ export function assertReviewResult(value, state = undefined) {
     typeof result.model_id !== 'string' || result.model_id.trim().length === 0 ||
     typeof result.rule_version !== 'string' || result.rule_version.trim().length === 0 ||
     typeof result.review_kind !== 'string' || !['explanation', 'risk', 'complexity'].includes(result.review_kind) ||
-    typeof result.visibility !== 'string' || !['visible', 'hidden'].includes(result.visibility) || !Array.isArray(result.diagnostics)) throw new Error('INVALID_REVIEW_RESULT');
+    typeof result.visibility !== 'string' || !['visible', 'hidden'].includes(result.visibility) ||
+    typeof result.freshness !== 'string' || !['current', 'stale'].includes(result.freshness) ||
+    !Array.isArray(result.diagnostics)) throw new Error('INVALID_REVIEW_RESULT');
   const diagnostics = /** @type {unknown[]} */ (result.diagnostics);
   const ids = new Set();
   for (const diagnosticValue of diagnostics) {
@@ -131,6 +140,24 @@ export function hasReviewSource(state, result) {
   return reviewSourceCode(state, result) !== undefined;
 }
 
+/** @param {import('./types').WorkspaceState} state @param {import('./types').ReviewResult} result @param {string} [editorCode] */
+export function getReviewFreshness(state, result, editorCode = undefined) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return 'stale';
+  const draft = state.drafts.find((item) => item.id === result.draft_id && !item.deleted);
+  if (!draft || draft.version !== result.source_draft_version ||
+    state.operations?.some((operation) => operation.entity_type === 'draft' && operation.entity_id === result.draft_id)) return 'stale';
+  const sourceCode = reviewSourceCode(state, result);
+  if (sourceCode === undefined || sourceCode !== draft.code || (editorCode !== undefined && editorCode !== sourceCode)) return 'stale';
+  return 'current';
+}
+
+/** @param {import('./types').ReviewResult[]} results */
+export function sortReviewResultsNewestFirst(results) {
+  return [...results].sort((left, right) => Number(right.freshness === 'current') - Number(left.freshness === 'current') ||
+    right.source_draft_version - left.source_draft_version || right.created_at.localeCompare(left.created_at) ||
+    right.server_sequence - left.server_sequence || right.version - left.version || right.updated_at.localeCompare(left.updated_at));
+}
+
 /** @param {import('./types').WorkspaceState} state @param {import('./types').ReviewResult} result */
 function reviewSourceCode(state, result) {
   const draft = state.drafts.find((item) => item.id === result.draft_id && !item.deleted);
@@ -168,6 +195,7 @@ function isValidSourceRange(value) {
 
 /** @param {import('./types').WorkspaceState} state @param {import('./types').ReviewResult} result */
 export function queueReviewResult(state, result) {
+  result = { ...result, freshness: getReviewFreshness(state, result) };
   assertReviewResult(result, state);
   const existing = state.operations.find((item) => item.entity_type === 'review_result' && item.entity_id === result.id && item.operation_type === 'upsert');
   /** @type {import('./types').SyncOperation} */
