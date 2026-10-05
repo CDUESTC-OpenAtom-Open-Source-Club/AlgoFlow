@@ -105,9 +105,9 @@ export class WebAIClient {
 
 /** Legacy client port retained for the persisted artifact/review tests. */
 export class LocalAIClient extends WebAIClient {
-  /** @param {Record<string, unknown>} request @param {{ signal?: AbortSignal }} [options] */
+  /** @param {import('./types').AIReviewRequest} request @param {{ signal?: AbortSignal }} [options] */
   async review(request, options = {}) {
-    return (await this.requestReview({ ...request, output_kind: 'review', problem_context: request.problem_context ?? '', idea_segments: request.idea_segments ?? [] }, options)).result;
+    return (await this.requestReview(request, options)).result;
   }
 
   /** @param {Record<string, unknown>} request @param {{ signal?: AbortSignal }} [options] */
