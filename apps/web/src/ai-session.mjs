@@ -3,7 +3,7 @@ import { AIClientError, createIdeaSegments, parseCompletionResult, parseReviewRe
 /** UI-independent application use case; no workspace/sync repository is available here. */
 export class AISession {
   /** @type {import('./types').AISessionState} */
-  state = { reviews: [], completion: null, segments: [], storageError: '' };
+  state = { reviews: [], completion: null, completionHistory: [], segments: [], storageError: '' };
   /** @type {import('./types').AIContext | null} */
   context = null;
   generation = 0;
@@ -32,7 +32,7 @@ export class AISession {
   setContext(next) {
     if (this.context && sameContext(this.context, next)) return;
     const previous = this.context;
-    this.#invalidate();
+    this.#invalidate(true);
     this.context = { ...next };
     const newSession = !previous || previous.draftId !== next.draftId || previous.mode !== next.mode;
     if (newSession) {
@@ -40,19 +40,23 @@ export class AISession {
       let records = [];
       try { records = this.repository.listForDraft(next.draftId, next.mode); }
       catch (error) { this.#storageFailure(error); }
-      // A recovered request belongs to an earlier session/generation. Keep its
-      // result and hidden state, but never silently re-arm an old code edit.
-      records = records.map(record => ({ ...record, stale: true }));
+      records = restoreRecords(records, next);
       this.confirmedRecords = new Set(records.map(record => record.id));
+      const completionHistory = records.filter(record => record.capability === 'completion');
       this.state = { ...this.state, reviews: records.filter(record => record.capability === 'review'),
-        completion: records.find(record => record.capability === 'completion') ?? null, segments: [] };
+        completion: latestRecord(completionHistory) ?? null, completionHistory, segments: [] };
+    } else {
+      const restored = restoreRecords(this.#records(), next);
+      this.state = { ...this.state, reviews: restored.filter(record => record.capability === 'review'),
+        completion: latestRecord(restored.filter(record => record.capability === 'completion')) ?? null,
+        completionHistory: restored.filter(record => record.capability === 'completion') };
     }
     if (newSession || previous?.idea !== next.idea) this.#refreshSegments();
     this.#emit();
   }
 
   cancel() {
-    this.#invalidate();
+    this.#invalidate(true);
     this.#emit();
   }
 
@@ -79,8 +83,8 @@ export class AISession {
 
   rejectCompletion() {
     const record = this.state.completion;
-    if (!record?.result || record.state !== 'success') return;
-    const updated = { ...record, state: /** @type {const} */ ('rejected') };
+    if (!record?.result || record.state !== 'success' || record.stale) return;
+    const updated = { ...record, state: /** @type {const} */ ('rejected'), stale: true };
     this.#replace(updated);
     this.#persist(updated);
     this.#emit();
@@ -93,7 +97,8 @@ export class AISession {
       !record.hidden && !record.stale && record.requestGeneration === this.generation &&
       record.draftId === context.draftId && record.mode === context.mode &&
       record.sourceFile === 'main.cpp' && context.fileId === 'main.cpp' && record.sourceDraftVersion === context.draftVersion &&
-      record.sourceCode === context.code && record.sourceIdea === context.idea && record.sourceProblemContext === context.problemContext);
+      record.sourceCode === context.code && record.sourceIdea === context.idea && record.sourceProblemContext === context.problemContext &&
+      (context.syncStatus === undefined || context.syncStatus === 'synced'));
   }
 
   /** Apply synchronously through the editor's checked, undoable transaction. @param {import('./types').ApplyAIEditorChange} apply */
@@ -128,9 +133,9 @@ export class AISession {
     try { this.repository.removeDraft(draftId); }
     catch (error) { this.#storageFailure(error); }
     if (this.context?.draftId === draftId) {
-      this.#invalidate();
+      this.#invalidate(true);
       this.context = null;
-      this.state = { ...this.state, reviews: [], completion: null, segments: [] };
+      this.state = { ...this.state, reviews: [], completion: null, completionHistory: [], segments: [] };
     }
     this.#emit();
   }
@@ -139,9 +144,8 @@ export class AISession {
     this.state = { ...this.state, storageError: '' };
     this.#refreshSegments();
     const records = this.#records();
-    for (const [index, record] of records.entries()) {
+    for (const record of records) {
       if (record.state === 'loading' || record.state === 'cancelled') continue;
-      if (records.slice(index + 1).some(item => item.capability === record.capability && item.reviewKind === record.reviewKind)) continue;
       this.#persist(record, true);
     }
     this.#emit();
@@ -151,7 +155,7 @@ export class AISession {
   async #request(kind, cursor) {
     const context = this.context;
     if (!context) return;
-    this.#invalidate();
+    this.#invalidate(false);
     const active = { controller: new AbortController(), generation: this.generation };
     this.active = active;
     /** @type {import('./types').AIResultRecord} */
@@ -165,12 +169,17 @@ export class AISession {
       sourceSegments: this.state.segments.map(segment => ({ ...segment })), sourceCursor: cursor ? { ...cursor } : null,
       updatedAt: new Date().toISOString(),
     };
-    this.state = kind === 'completion' ? { ...this.state, completion: record } : { ...this.state, reviews: [...this.state.reviews, record] };
+    this.state = kind === 'completion'
+      ? { ...this.state, completion: record, completionHistory: [...this.state.completionHistory, record] }
+      : { ...this.state, reviews: [...this.state.reviews, record] };
     this.#emit();
     let isTestData = false;
     let responseReceived = false;
     try {
       if (context.mode !== 'faithful_transform') throw new AIClientError('AI_MODE_NOT_AVAILABLE', '当前模式尚未接入，请选择忠实转换', 409);
+      if (context.syncStatus !== undefined && context.syncStatus !== 'synced') {
+        throw new AIClientError('AI_DRAFT_NOT_SYNCED', '草稿尚未可靠同步，请先保存并同步后再请求 AI', 409);
+      }
       if (!record.sourceSegments.length || !context.code.trim() || !context.problemContext.trim()) {
         throw new AIClientError('INVALID_REQUEST', '请先填写 main.cpp 和 idea.md，再请求 AI', 400);
       }
@@ -195,6 +204,7 @@ export class AISession {
       if (!this.#isCurrent(active)) return;
       const updated = { ...record, state: /** @type {const} */ ('success'), result, isTestData, updatedAt: new Date().toISOString() };
       this.#replace(updated);
+      this.#markHistorical(updated);
       this.confirmedRecords.add(record.id);
       this.#persist(updated, true);
     } catch (error) {
@@ -223,12 +233,14 @@ export class AISession {
     return this.active === active && active.generation === this.generation && !active.controller.signal.aborted;
   }
 
-  #invalidate() {
+  /** @param {boolean} markResults */
+  #invalidate(markResults) {
     this.generation += 1;
     this.active?.controller.abort();
     this.active = null;
     for (const record of this.#records()) {
       if (record.stale && record.state !== 'loading') continue;
+      if (!markResults && record.state !== 'loading') continue;
       const updated = { ...record, stale: true,
         state: record.state === 'loading' ? /** @type {const} */ ('cancelled') : record.state,
         ...(record.state === 'loading' ? { errorCode: 'CANCELLED', errorMessage: '请求已取消，可重新发起' } : {}),
@@ -249,13 +261,24 @@ export class AISession {
     }
   }
 
-  #records() { return [...this.state.reviews, ...(this.state.completion ? [this.state.completion] : [])]; }
+  #records() { return [...this.state.reviews, ...this.state.completionHistory]; }
 
   /** @param {import('./types').AIResultRecord} record */
   #replace(record) {
     this.state = record.capability === 'review'
       ? { ...this.state, reviews: this.state.reviews.map(item => item.id === record.id ? record : item) }
-      : { ...this.state, completion: this.state.completion?.id === record.id ? record : this.state.completion };
+      : { ...this.state, completion: this.state.completion?.id === record.id ? record : this.state.completion,
+        completionHistory: this.state.completionHistory.map(item => item.id === record.id ? record : item) };
+  }
+
+  /** @param {import('./types').AIResultRecord} current */
+  #markHistorical(current) {
+    const slot = resultSlot(current);
+    for (const record of this.#records()) {
+      if (record.id === current.id || resultSlot(record) !== slot || record.stale) continue;
+      this.#replace({ ...record, stale: true });
+      if (this.confirmedRecords.has(record.id)) this.#persist({ ...record, stale: true });
+    }
   }
 
   /** @param {import('./types').AIResultRecord} record @param {boolean} [latest] */
@@ -275,7 +298,48 @@ export class AISession {
 /** @param {import('./types').AIContext} left @param {import('./types').AIContext} right */
 function sameContext(left, right) {
   return left.draftId === right.draftId && left.draftVersion === right.draftVersion && left.fileId === right.fileId &&
-    left.mode === right.mode && left.code === right.code && left.idea === right.idea && left.problemContext === right.problemContext;
+    left.mode === right.mode && left.code === right.code && left.idea === right.idea && left.problemContext === right.problemContext &&
+    left.syncStatus === right.syncStatus;
+}
+
+/** @param {import('./types').AIResultRecord[]} records @param {import('./types').AIContext} context */
+function restoreRecords(records, context) {
+  const sourceCurrent = records.filter((record) => record.capability === 'review' && record.state === 'success' && record.result !== null && recordIsCurrent(record, context));
+  const winners = new Map();
+  for (const record of sourceCurrent) {
+    const slot = resultSlot(record);
+    const previous = winners.get(slot);
+    if (!previous || compareRecords(record, previous) > 0) winners.set(slot, record);
+  }
+  return records.map((record) => ({ ...record,
+    // A restored completion is always read-only until a new request is made.
+    stale: record.capability === 'completion' || winners.get(resultSlot(record))?.id !== record.id || !recordIsCurrent(record, context),
+  }));
+}
+
+/** @param {import('./types').AIResultRecord[]} records */
+function latestRecord(records) {
+  const successful = records.filter((record) => record.state === 'success' && record.result !== null);
+  return [...(successful.length > 0 ? successful : records)].sort((left, right) =>
+    Number(left.isTestData) - Number(right.isTestData) || compareRecords(right, left))[0] ?? null;
+}
+
+/** @param {import('./types').AIResultRecord} record @param {import('./types').AIContext} context */
+function recordIsCurrent(record, context) {
+  return record.draftId === context.draftId && record.mode === context.mode && record.sourceFile === context.fileId &&
+    record.sourceDraftVersion === context.draftVersion && record.sourceCode === context.code &&
+    record.sourceIdea === context.idea && record.sourceProblemContext === context.problemContext &&
+    (context.syncStatus === undefined || context.syncStatus === 'synced');
+}
+
+/** @param {import('./types').AIResultRecord} record */
+function resultSlot(record) {
+  return `${record.draftId}/${record.mode}/${record.capability}/${record.reviewKind ?? ''}/${record.isTestData ? 'test' : 'normal'}`;
+}
+
+/** @param {import('./types').AIResultRecord} left @param {import('./types').AIResultRecord} right */
+function compareRecords(left, right) {
+  return left.sourceDraftVersion - right.sourceDraftVersion || left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id);
 }
 
 /** @param {import('./types').AIResultRecord} record @returns {import('./types').AISourceRequest} */

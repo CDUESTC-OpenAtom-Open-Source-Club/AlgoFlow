@@ -99,26 +99,29 @@ export function InspectorPanel({
           <div className="inspect-title"><span>忠实模式局部补全</span><span>预览后写入</span></div>
           <p className="ai-help">仅补充当前思路。接受后仍需保存，不自动上传。</p>
           <button type="button" className="outline-button" onClick={onCompletion} disabled={!canRequest}>请求局部补全</button>
-          {completion && (
-            <article className={completion.stale ? 'ai-result stale' : 'ai-result'} aria-label="补全结果">
-              <ResultHeading record={completion} title="补全预览" onToggle={onToggleResult} />
-              {!completion.hidden && <>
-                <ResultStatus record={completion} />
-                {completion.result?.output_kind === 'completion' && <>
-                  <p>替换范围：{completion.result.replaced_range.start_line}:{completion.result.replaced_range.start_char + 1}
-                    {' → '}{completion.result.replaced_range.end_line}:{completion.result.replaced_range.end_char + 1}（列从 1 开始）</p>
-                  <p>替换前</p>
-                  <pre aria-label="替换前代码">{originalFragment(completion) || '（光标处插入，不删除原文）'}</pre>
-                  <p>建议片段</p>
-                  <pre aria-label="建议代码">{completion.result.suggestion_text}</pre>
-                  <div className="review-actions">
-                    <button type="button" className="outline-button" disabled={!canAcceptCompletion} onClick={onAcceptCompletion}>接受并写入 main.cpp</button>
-                    <button type="button" className="outline-button" disabled={completion.state !== 'success'} onClick={onRejectCompletion}>拒绝补全</button>
-                  </div>
+          {aiState.completionHistory.map(record => {
+            const isCurrentRecord = record.id === completion?.id;
+            return (
+              <article className={record.stale ? 'ai-result stale' : 'ai-result'} aria-label={record.stale ? '历史补全结果' : '补全结果'} key={record.id}>
+                <ResultHeading record={record} title={record.stale ? '补全历史' : '补全预览'} onToggle={onToggleResult} />
+                {!record.hidden && <>
+                  <ResultStatus record={record} />
+                  {record.result?.output_kind === 'completion' && <>
+                    <p>替换范围：{record.result.replaced_range.start_line}:{record.result.replaced_range.start_char + 1}
+                      {' → '}{record.result.replaced_range.end_line}:{record.result.replaced_range.end_char + 1}（列从 1 开始）</p>
+                    <p>替换前</p>
+                    <pre aria-label="替换前代码">{originalFragment(record) || '（光标处插入，不删除原文）'}</pre>
+                    <p>建议片段</p>
+                    <pre aria-label="建议代码">{record.result.suggestion_text}</pre>
+                    {isCurrentRecord && <div className="review-actions">
+                      <button type="button" className="outline-button" disabled={!canAcceptCompletion} onClick={onAcceptCompletion}>接受并写入 main.cpp</button>
+                      <button type="button" className="outline-button" disabled={record.state !== 'success' || record.stale} onClick={onRejectCompletion}>拒绝补全</button>
+                    </div>}
+                  </>}
                 </>}
-              </>}
-            </article>
-          )}
+              </article>
+            );
+          })}
         </section>
       </aside>
       {hidden && (

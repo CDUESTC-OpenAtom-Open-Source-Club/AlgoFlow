@@ -71,7 +71,7 @@ test('recovered results are read-only and hidden state is local', () => {
   const repo = repository(); repo.records.push(resultRecord({ hidden: true }));
   const session = new AISession({ requestReview: async () => { throw new Error(); }, requestCompletion: async () => { throw new Error(); } }, repo);
   session.setContext(context());
-  assert.equal(session.getSnapshot().reviews[0].hidden, true); assert.equal(session.getSnapshot().reviews[0].stale, true);
+  assert.equal(session.getSnapshot().reviews[0].hidden, true); assert.equal(session.getSnapshot().reviews[0].stale, false);
 });
 
 for (const [label, update] of Object.entries({ code: { code: 'new code' }, idea: { idea: 'new idea' },

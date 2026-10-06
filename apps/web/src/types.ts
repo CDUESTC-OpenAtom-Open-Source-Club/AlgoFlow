@@ -65,6 +65,8 @@ export interface AIContext {
   idea: string;
   idea_segments?: IdeaSegment[];
   problemContext: string;
+  /** A missing value keeps compatibility with callers that predate sync gating. */
+  syncStatus?: SyncStatus;
 }
 
 export interface AIResponse<T> {
@@ -183,7 +185,12 @@ export interface ReviewResult {
   freshness: ReviewFreshness;
 }
 
-export interface DraftVersionSnapshot { draft_id: string; version: number; code: string; }
+export interface DraftVersionSnapshot {
+  draft_id: string;
+  version: number;
+  code: string;
+  idea_segments?: IdeaSegment[];
+}
 
 export interface AIResultRepository {
   listForDraft(draftId: string, mode: Mode): AIResultRecord[];
@@ -196,6 +203,7 @@ export interface AIResultRepository {
 export interface AISessionState {
   reviews: AIResultRecord[];
   completion: AIResultRecord | null;
+  completionHistory: AIResultRecord[];
   segments: IdeaSegment[];
   storageError: string;
 }

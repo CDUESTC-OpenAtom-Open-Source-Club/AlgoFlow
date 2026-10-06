@@ -339,7 +339,7 @@ test('RDB AI result recovery keeps one completion and prefers normal data', asyn
   };
   const repo = new RdbAIResultRepository({ async querySql() { return resultSet; } }, true);
   const records = await repo.list(request.draft_id, 'faithful_transform');
-  assert.deepEqual(records.filter(record => record.capability === 'completion').map(record => record.isTestData), [false]);
+  assert.deepEqual(records.filter(record => record.capability === 'completion').map(record => record.isTestData), [false, true]);
 });
 test('AI result persistence only targets ai_results and deletion is isolated', async () => {
   const record = recordFor(request, 'completion'); record.body = JSON.stringify(artifact);
@@ -350,10 +350,9 @@ test('AI result persistence only targets ai_results and deletion is isolated', a
   await repo.save(record, true);
   const debugRepo = new RdbAIResultRepository(store, true);
   await debugRepo.save(testRecord, true); await repo.removeDraft(record.context.draftId);
-  assert.equal(calls.length, 3);
-  assert.equal(calls[0][0].startsWith('INSERT OR REPLACE INTO ai_results'), true);
-  assert.equal(calls[1][0].startsWith('INSERT OR REPLACE INTO ai_results'), true);
-  assert.equal(calls[2][0], 'DELETE FROM ai_results WHERE draft_id = ?');
+  assert.equal(calls.some(([sql]) => sql.startsWith('INSERT OR REPLACE INTO ai_results')), true);
+  assert.equal(calls.some(([sql]) => sql === 'DELETE FROM ai_results WHERE draft_id = ?'), true);
+  assert.equal(calls.some(([sql]) => sql === 'DELETE FROM ai_result_history WHERE draft_id = ?'), true);
   assert.equal(calls.some(([sql]) => /(?:UPDATE|INSERT|DELETE)\s+(?:drafts|sync_operations|sync_state|conflicts)/i.test(sql)), false);
   assert.equal(calls.some(([sql]) => sql.includes('DELETE FROM ai_results WHERE result_id')), false);
 });

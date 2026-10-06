@@ -1,5 +1,5 @@
 const API_BASE = import.meta.env?.VITE_SYNC_API_BASE ?? 'http://127.0.0.1:8787';
-import { assertReviewResult, createAIArtifactConflictCopy, createReviewResultConflictCopy, queueAIArtifact, queueReviewResult, recordDraftSnapshot } from './storage.mjs';
+import { assertReviewResult, createAIArtifactConflictCopy, createReviewResultConflictCopy, queueAIArtifact, queueReviewResult, recordDraftSnapshot, recomputeReviewFreshness } from './storage.mjs';
 
 export { assertReviewResult } from './storage.mjs';
 
@@ -142,6 +142,7 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
 
   if (hadConflict || next.conflicts.some((conflict) => !conflict.resolved)) return { state: next, status: 'conflict' };
   if (hadFailure) return { state: next, status: 'failed' };
+  recomputeReviewFreshness(next);
   return { state: next, status: next.operations.length ? 'local_only' : 'synced' };
 }
 
@@ -251,6 +252,9 @@ function replaceReviewResult(state, result) {
 
 /** @param {import('./types').WorkspaceState} state @param {import('./types').AIArtifact} artifact */
 function sourceIdsForArtifact(state, artifact) {
+  const snapshot = (state.draft_history ?? []).find((item) => item.draft_id === artifact.draft_id && item.version === artifact.source_draft_version);
+  if (snapshot?.idea_segments) return new Set(snapshot.idea_segments.map((segment) => segment.id));
+  if (snapshot) return new Set();
   const draft = state.drafts.find((item) => item.id === artifact.draft_id);
   if (!draft || draft.version !== artifact.source_draft_version) return undefined;
   return new Set((draft.idea_segments ?? []).map((segment) => segment.id));

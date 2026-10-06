@@ -53,6 +53,7 @@ export class DraftWorkspaceViewModel {
     context.file = file; context.mode = draft.aiMode; context.code = draft.code; context.idea = draft.idea;
     context.problemContext = draft.title || '当前草稿';
     context.segments = draft.ideaSegments.map(segment => new AIRequestSegment(segment.id, segment.content));
+    context.syncStatus = draft.syncStatus;
     this.aiSession?.setContext(context);
   }
 

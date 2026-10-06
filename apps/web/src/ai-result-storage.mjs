@@ -22,8 +22,9 @@ export class BrowserAIResultRepository {
   /** @param {import('./types').AIResultRecord} record */
   save(record) {
     if (record.isTestData && !this.allowTestData) throw new Error('当前配置禁止保存测试数据');
-    const records = this.#partition(record.isTestData).filter(item => !sameSlot(item, record));
-    records.push(decodeRecord(record));
+    const decoded = decodeRecord(record);
+    const records = this.#partition(record.isTestData).filter(item => item.id !== decoded.id);
+    records.push(decoded);
     this.#write(record.isTestData ? TEST_KEY : NORMAL_KEY, records);
   }
 
@@ -32,26 +33,17 @@ export class BrowserAIResultRepository {
     if (record.isTestData && !this.allowTestData) throw new Error('当前配置禁止保存测试数据');
     const records = this.#partition(record.isTestData);
     // Hiding an older chat message must never resurrect it as the latest result.
-    if (!records.some(item => item.id === record.id && sameSlot(item, record))) return;
+    if (!records.some(item => item.id === record.id)) return;
     this.#write(record.isTestData ? TEST_KEY : NORMAL_KEY,
-      records.map(item => item.id === record.id && sameSlot(item, record) ? decodeRecord(record) : item));
+      records.map(item => item.id === record.id ? decodeRecord(record) : item));
   }
 
   /** @param {string} draftId @param {import('./types').Mode} [mode] */
   listForDraft(draftId, mode = 'faithful_transform') {
-    const records = this.load().filter(item => item.draftId === draftId && item.mode === mode)
-      // Keep the normal partition first so debug/test rows are visibly separate.
-      .sort((left, right) => Number(left.isTestData) - Number(right.isTestData) || left.updatedAt.localeCompare(right.updatedAt));
-    const seenDisplaySlots = new Set();
-    return records.filter((record, index) => {
-      if (record.capability === 'completion') {
-        const slot = `${record.draftId}/${record.mode}/${record.capability}`;
-        if (seenDisplaySlots.has(slot)) return false;
-        seenDisplaySlots.add(slot);
-        return true;
-      }
-      return !records.slice(index + 1).some(item => sameDisplaySlot(item, record));
-    });
+    return this.load().filter(item => item.draftId === draftId && item.mode === mode)
+      // Keep every result as immutable history. The session chooses the one
+      // current record for a display slot using the shared ordering rules.
+      .sort(compareRecords);
   }
 
   /** @param {string} draftId @param {string} idea @param {import('./types').IdeaSegment[]} [fallback] */
@@ -108,15 +100,10 @@ export class BrowserAIResultRepository {
 }
 
 /** @param {import('./types').AIResultRecord} left @param {import('./types').AIResultRecord} right */
-function sameSlot(left, right) {
-  return left.draftId === right.draftId && left.mode === right.mode && left.capability === right.capability &&
-    left.reviewKind === right.reviewKind && left.isTestData === right.isTestData;
-}
-
-/** @param {import('./types').AIResultRecord} left @param {import('./types').AIResultRecord} right */
-function sameDisplaySlot(left, right) {
-  if (left.capability !== 'completion' || right.capability !== 'completion') return sameSlot(left, right);
-  return left.draftId === right.draftId && left.mode === right.mode && left.capability === right.capability;
+function compareRecords(left, right) {
+  return Number(left.isTestData) - Number(right.isTestData) ||
+    left.sourceDraftVersion - right.sourceDraftVersion || left.updatedAt.localeCompare(right.updatedAt) ||
+    left.id.localeCompare(right.id);
 }
 
 /** @param {unknown} value @param {boolean} [legacy] @returns {import('./types').AIResultRecord} */

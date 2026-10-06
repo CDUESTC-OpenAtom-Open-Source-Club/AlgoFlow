@@ -52,12 +52,30 @@ export async function migrateWorkspaceStore(store: relationalStore.RdbStore): Pr
           'draft_id TEXT NOT NULL, mode TEXT NOT NULL, slot TEXT NOT NULL, is_test INTEGER NOT NULL, ' +
           'result_id TEXT NOT NULL, updated_at TEXT NOT NULL, record_json TEXT NOT NULL, ' +
           'PRIMARY KEY (draft_id, mode, slot, is_test))');
+        await store.executeSql('CREATE TABLE IF NOT EXISTS ai_result_history (' +
+          'draft_id TEXT NOT NULL, mode TEXT NOT NULL, slot TEXT NOT NULL, is_test INTEGER NOT NULL, ' +
+          'result_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, record_json TEXT NOT NULL)');
         store.version = 2;
         store.commit();
       } catch (error) {
         store.rollBack();
         if (store.version === 2) store.version = 1;
         throw new Error('AI 结果数据库升级失败，原工作区未删除');
+      }
+    }
+    // Existing v2 databases already have ai_results. Add history storage
+    // transactionally without changing the public database version or any
+    // Draft/sync table.
+    if (store.version === DATABASE_VERSION) {
+      store.beginTransaction();
+      try {
+        await store.executeSql('CREATE TABLE IF NOT EXISTS ai_result_history (' +
+          'draft_id TEXT NOT NULL, mode TEXT NOT NULL, slot TEXT NOT NULL, is_test INTEGER NOT NULL, ' +
+          'result_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, record_json TEXT NOT NULL)');
+        store.commit();
+      } catch (error) {
+        store.rollBack();
+        throw new Error('AI 历史结果表升级失败，原工作区未删除');
       }
     }
   }
@@ -349,7 +367,10 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
         draft.version, draft.createdAt, draft.updatedAt, draft.deleted ? 1 : 0, draft.lastModifiedClientId,
         draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0, JSON.stringify(draft.ideaSegments)
       ]);
-    if (draft.deleted) await store.executeSql('DELETE FROM ai_results WHERE draft_id = ?', [draft.id]);
+    if (draft.deleted) {
+      await store.executeSql('DELETE FROM ai_results WHERE draft_id = ?', [draft.id]);
+      await store.executeSql('DELETE FROM ai_result_history WHERE draft_id = ?', [draft.id]);
+    }
   }
 
   private async persistOperation(operation: SyncOperation): Promise<void> {

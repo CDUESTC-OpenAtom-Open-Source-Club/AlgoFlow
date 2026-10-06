@@ -317,8 +317,11 @@ export function App() {
 }
 
 function makeAIContext(draft: Draft, documents: Documents, fileId: FileId, mode: Mode): AIContext {
+  const sourceMatches = documents['main.cpp'] === draft.code && documents['idea.md'] === draft.idea &&
+    documents['cases.txt'] === (draft.cases ?? '') && mode === draft.ai_mode;
   return { draftId: draft.id, draftVersion: draft.version, fileId, mode,
-    code: documents['main.cpp'], idea: documents['idea.md'], idea_segments: draft.idea_segments ?? [], problemContext: draft.title || '当前草稿' };
+    code: documents['main.cpp'], idea: documents['idea.md'], idea_segments: draft.idea_segments ?? [], problemContext: draft.title || '当前草稿',
+    syncStatus: sourceMatches ? draft.sync_status : 'local_only' };
 }
 
 function getClientId(): string {
