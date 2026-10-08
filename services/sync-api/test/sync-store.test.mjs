@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { SyncStore } from '../src/sync-store.mjs';
 import { createSyncServer } from '../src/server.mjs';
-import { queueAIArtifact, queueUpsert } from '../../../apps/web/src/storage.mjs';
+import { queueAIArtifact, queueReviewResult, queueUpsert } from '../../../apps/web/src/storage.mjs';
 import { LocalSyncClient, synchronizeWorkspace } from '../../../apps/web/src/sync-client.mjs';
 import { validateReviewResultEntity } from '../../../packages/contracts/validate.mjs';
 
@@ -303,6 +303,40 @@ test('syncs an independent faithful artifact without changing the draft entity',
   assert.equal(pulled.state.drafts.find((item) => item.id === draft.id)?.id, draft.id);
 });
 
+test('two AI clients retain independent review results and choose the same current slot winner', async (context) => {
+  const server = createSyncServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+  const draft = makeDraft('draft-review-concurrent', 'seed', 'web-a');
+  draft.sync_status = 'synced';
+  const seed = makeWorkspace('seed', structuredClone(draft));
+  queueUpsert(seed, draft);
+  const seeded = await synchronizeWorkspace(seed, client);
+  const syncedDraft = seeded.state.drafts.find((item) => item.id === draft.id);
+  assert.ok(syncedDraft);
+  const first = makeWorkspace('web-a', { ...structuredClone(syncedDraft), last_modified_client_id: 'web-a', sync_status: 'synced' });
+  const second = makeWorkspace('web-b', { ...structuredClone(syncedDraft), last_modified_client_id: 'web-b', sync_status: 'synced' });
+  const older = makeReview('review-a', draft.id, 'web-a');
+  const newer = makeReview('review-b', draft.id, 'web-b');
+  older.source_draft_version = syncedDraft.version; newer.source_draft_version = syncedDraft.version;
+  older.created_at = '2026-10-08T00:00:00.000Z'; older.updated_at = older.created_at;
+  newer.created_at = '2026-10-08T00:00:01.000Z'; newer.updated_at = newer.created_at;
+  first.review_results.push(older); second.review_results.push(newer);
+  queueReviewResult(first, older); queueReviewResult(second, newer);
+  const pushedFirst = await synchronizeWorkspace(first, client);
+  const pushedSecond = await synchronizeWorkspace(second, client);
+  const pulledFirst = await synchronizeWorkspace(pushedFirst.state, client);
+  const pulledSecond = await synchronizeWorkspace(pushedSecond.state, client);
+  assert.equal(pulledFirst.state.review_results.length, 2);
+  assert.equal(pulledSecond.state.review_results.length, 2);
+  assert.equal(pulledFirst.state.review_results.find((item) => item.id === 'review-b')?.freshness, 'current');
+  assert.equal(pulledSecond.state.review_results.find((item) => item.id === 'review-b')?.freshness, 'current');
+  assert.equal(pulledFirst.state.review_results.find((item) => item.id === 'review-a')?.freshness, 'stale');
+});
+
 test('rejects malformed independent AI artifacts before they enter the change stream', () => {
   const store = new SyncStore();
   const malformed = store.apply({
@@ -577,7 +611,7 @@ function makeWorkspace(clientId, draft) {
     cursor: '0',
     online: true,
     selected_id: draft.id,
-    drafts: [draft], ai_artifacts: [],
+    drafts: [draft], ai_artifacts: [], review_results: [],
     operations: [],
     conflicts: []
   };
