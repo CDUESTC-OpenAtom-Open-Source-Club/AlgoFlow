@@ -47,6 +47,16 @@ export class IDEAISession {
     }
     this.onChange();
   }
+  async reload(): Promise<void> {
+    if (this.context === null) return;
+    const generation = this.generation;
+    await this.writes;
+    const records = await this.repository.list(this.context.draftId, this.context.mode);
+    if (generation !== this.generation) return;
+    this.records = restoreRecords(records, this.context);
+    this.persistedIds = new Set<string>(this.records.map(record => record.id));
+    this.onChange();
+  }
   cancel(markResults: boolean = true): void {
     this.generation++; this.provider.cancel(); this.acceptedContext = '';
     this.records.forEach(record => {
@@ -64,7 +74,7 @@ export class IDEAISession {
     const record = new IDERecord(); record.id = `ai-${Date.now()}-${++this.sequence}`;
     record.context = JSON.parse(JSON.stringify(this.context)) as IDEContext;
     record.capability = capability; record.reviewKind = kind; record.cursor = cursor;
-    record.generation = this.generation; record.updatedAt = new Date().toISOString();
+    record.generation = this.generation; record.updatedAt = new Date().toISOString(); record.createdAt = record.updatedAt;
     this.records = this.records.concat([record]);
     this.onChange();
     let responseReceived = false;
@@ -115,7 +125,7 @@ export class IDEAISession {
     record.state = IDEState.REJECTED; if (this.persistedIds.has(record.id)) this.persist(record, false); this.onChange();
   }
   canAccept(record: IDERecord): boolean {
-    return record.capability === IDECapability.COMPLETION && record.state === IDEState.SUCCESS && !record.stale && !record.hidden &&
+    return record.capability === IDECapability.COMPLETION && record.state === IDEState.SUCCESS && !record.stale && !record.restored && !record.hidden &&
       record.generation === this.generation && record.context.file === 'main.cpp' && JSON.stringify(record.context) === JSON.stringify(this.context);
   }
   accept(id: string, apply: (code: string) => void): boolean {
@@ -212,5 +222,7 @@ function displaySlot(record: IDERecord): string {
 }
 
 function compareRecords(left: IDERecord, right: IDERecord): number {
-  return left.context.version - right.context.version || left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id);
+  return Number(left.isTestData) - Number(right.isTestData) || left.context.version - right.context.version ||
+    left.createdAt.localeCompare(right.createdAt) || left.serverSequence - right.serverSequence ||
+    left.serverVersion - right.serverVersion || left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id);
 }

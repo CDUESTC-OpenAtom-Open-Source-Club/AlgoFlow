@@ -187,7 +187,7 @@ export class AISession {
       sourceDraftVersion: context.draftVersion, sourceFile: context.fileId, sourceCode: context.code,
       sourceIdea: context.idea, sourceProblemContext: context.problemContext,
       sourceSegments: this.state.segments.map(segment => ({ ...segment })), sourceCursor: cursor ? { ...cursor } : null,
-      updatedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(), createdAt: new Date().toISOString(),
     };
     this.state = kind === 'completion'
       ? { ...this.state, completion: record, completionHistory: [...this.state.completionHistory, record] }
@@ -361,7 +361,10 @@ function resultSlot(record) {
 
 /** @param {import('./types').AIResultRecord} left @param {import('./types').AIResultRecord} right */
 function compareRecords(left, right) {
-  return left.sourceDraftVersion - right.sourceDraftVersion || left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id);
+  return Number(left.isTestData) - Number(right.isTestData) || left.sourceDraftVersion - right.sourceDraftVersion ||
+    (left.createdAt ?? left.updatedAt).localeCompare(right.createdAt ?? right.updatedAt) ||
+    (left.serverSequence ?? 0) - (right.serverSequence ?? 0) || (left.serverVersion ?? 0) - (right.serverVersion ?? 0) ||
+    left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id);
 }
 
 /** @param {import('./types').AIResultRecord} record @returns {import('./types').AISourceRequest} */

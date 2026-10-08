@@ -140,6 +140,9 @@ export interface AIResultRecord {
   sourceSegments: IdeaSegment[];
   sourceCursor: AICursor | null;
   updatedAt: string;
+  createdAt?: string;
+  serverVersion?: number;
+  serverSequence?: number;
 }
 
 export interface AIArtifact {

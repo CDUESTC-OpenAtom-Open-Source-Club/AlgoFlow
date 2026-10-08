@@ -128,7 +128,7 @@ export function App() {
 
   useEffect(() => {
     aiSession.setPersistedResultHandler((record) => {
-      if (record.capability !== 'review' || record.state !== 'success' || record.result?.output_kind !== 'review') return;
+      if (record.isTestData || record.capability !== 'review' || record.state !== 'success' || record.result?.output_kind !== 'review') return;
       const state = repository.load();
       const review = reviewEntityFromRecord(record, state, clientId);
       if (!review) return;
@@ -229,6 +229,10 @@ export function App() {
     try {
       const request = buildAIRequest(source, documents, mode);
       const response = await aiClient.requestTransform(request, {});
+      if (response.isTestData) {
+        setArtifactMessage('测试数据仅供本地调试，不进入跨端同步。');
+        return;
+      }
       const latest = repository.load().drafts.find((draft) => draft.id === source.id);
       if (!latest || latest.version !== source.version || latest.sync_status !== 'synced') throw new Error('DRAFT_CHANGED_RETRY_AI');
       const artifact = artifactFromGateway(response.result, source, clientId, request.idea_segments.map((segment) => segment.id), request.rule_version);
@@ -439,6 +443,7 @@ function reviewRecordsForSession(state: WorkspaceState): AIResultRecord[] {
       requestGeneration: 0, sourceDraftVersion: review.source_draft_version, sourceFile: 'main.cpp', sourceCode,
       sourceIdea: draft?.idea ?? '', sourceProblemContext: draft?.title || '当前草稿',
       sourceSegments: sourceSegments.map((segment) => ({ ...segment })), sourceCursor: null, updatedAt: review.updated_at,
+      createdAt: review.created_at, serverVersion: review.version, serverSequence: review.server_sequence,
     } satisfies AIResultRecord;
   });
 }

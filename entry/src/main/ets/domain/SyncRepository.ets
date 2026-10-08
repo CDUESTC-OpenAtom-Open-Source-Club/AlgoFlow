@@ -1,4 +1,4 @@
-import { Draft, SyncStatus } from './Models';
+import { Draft, IdeaSegment, SyncStatus } from './Models';
 import { AIArtifactPayload, ConflictRecord, DraftPayload, ReviewResultPayload, SyncOperation } from './SyncModels';
 import { IDERecord } from './IDEAIModels';
 
@@ -22,4 +22,5 @@ export interface SyncRepository {
   applyServerReview(payload: ReviewResultPayload): Promise<void>;
   saveConflictAIRecord(record: IDERecord, conflict: ConflictRecord): Promise<void>;
   getDraftSourceCode(draftId: string, version: number): string | undefined;
+  getDraftSourceSegments(draftId: string, version: number): IdeaSegment[] | undefined;
 }

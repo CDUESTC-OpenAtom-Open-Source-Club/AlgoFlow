@@ -67,6 +67,7 @@ export class DraftWorkspaceViewModel {
       const result = await new PhoneSyncService(this.syncRepository).synchronize();
       await this.repository.flush();
       this.selectAIContext(this.aiDraft, this.aiFile);
+      await this.aiSession?.reload();
       return result;
     } finally { this.syncing = false; }
   }

@@ -963,7 +963,7 @@ struct Index {
       }
       ForEach(this.aiRecords, (record: IDERecord) => {
         Column({ space: 5 }) {
-          Text(`${record.capability}/${record.reviewKind} · ${record.state}${record.stale ? ' · 过期只读' : ''}${record.isTestData ? ' · 测试数据' : ''}`)
+          Text(`${record.capability}/${record.reviewKind} · ${record.state}${record.stale ? ' · 过期只读' : record.restored ? ' · 当前恢复结果（只读）' : ''}${record.isTestData ? ' · 测试数据' : ''}`)
             .fontSize(10).fontColor('#79C0FF')
           Text(`草稿版本 ${record.context.version} · 规则 1.0.0 · ${this.viewModel.aiSession?.result(record)?.modelId ?? ''}`)
             .fontSize(9).fontColor('#8E8E93')
