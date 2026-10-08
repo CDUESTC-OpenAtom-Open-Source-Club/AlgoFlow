@@ -5,11 +5,12 @@ import { InspectorPanel } from './components/InspectorPanel';
 import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { initialDocuments } from './data';
-import { BrowserWorkspaceRepository, queueUpsert } from './storage.mjs';
+import { BrowserWorkspaceRepository, getAIArtifactFreshness, queueAIArtifact, queueReviewResult, queueUpsert, selectCurrentAIArtifact, sortAIArtifactsNewestFirst } from './storage.mjs';
 import { LocalSyncClient, synchronizeWorkspace } from './sync-client.mjs';
-import type { ConflictRecord, Documents, Draft, FileId, Mode, Panel, SyncStatus, WorkspaceState } from './types';
+import type { AIArtifact, AIResultRecord, ConflictRecord, Documents, Draft, FileId, Mode, Panel, ReviewResult, SyncStatus, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
-import { WebAIClient, toCursor } from './ai-client.mjs';
+import { artifactFromGateway, buildAIRequest, WebAIClient, toCursor } from './ai-client.mjs';
+import { assertAIArtifact } from './sync-client.mjs';
 import { BrowserAIResultRepository } from './ai-result-storage.mjs';
 import { AISession } from './ai-session.mjs';
 import type { AIContext, ApplyAIEditorChange } from './types';
@@ -44,8 +45,15 @@ export function App() {
   const [conflict, setConflict] = useState<ConflictChoice | null>(() => unresolvedConflict(workspace));
   const [jumpToLine, setJumpToLine] = useState(0);
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
+  const [artifactBusy, setArtifactBusy] = useState(false);
+  const [artifactMessage, setArtifactMessage] = useState('');
   const [aiSession] = useState(() => new AISession(aiClient, new BrowserAIResultRepository()));
   const aiState = useSyncExternalStore(aiSession.subscribe, aiSession.getSnapshot, aiSession.getSnapshot);
+  const artifactHistory = useMemo(() => currentDraft
+    ? sortAIArtifactsNewestFirst((workspace.ai_artifacts ?? []).filter((artifact) => artifact.draft_id === currentDraft.id && artifact.mode === mode && !artifact.deleted))
+    : [], [workspace.ai_artifacts, currentDraft, mode]);
+  const currentArtifact = useMemo(() => currentDraft ? selectCurrentAIArtifact(workspace, currentDraft.id, mode) ?? null : null,
+    [workspace, currentDraft, mode]);
   const editorApply = useRef<ApplyAIEditorChange | null>(null);
   const editEpoch = useRef(0);
   const hasUnsavedEdits = useRef(false);
@@ -60,6 +68,10 @@ export function App() {
   useLayoutEffect(() => {
     if (currentDraft) aiSession.setContext(makeAIContext(currentDraft, documents, activeFile, mode));
   }, [aiSession, currentDraft, documents, activeFile, mode]);
+
+  useEffect(() => {
+    aiSession.importRecords(reviewRecordsForSession(workspace));
+  }, [aiSession, workspace.review_results, workspace.draft_history, workspace.drafts]);
 
   useEffect(() => () => aiSession.dispose(), [aiSession]);
 
@@ -79,6 +91,7 @@ export function App() {
     if (!navigator.onLine) {
       setSyncState('local_only');
       setWorkspace(state);
+      aiSession.importRecords(reviewRecordsForSession(state));
       return;
     }
     setSyncState('syncing');
@@ -91,6 +104,7 @@ export function App() {
       continue;
     }
     repository.save(result.state);
+    aiSession.importRecords(reviewRecordsForSession(result.state));
     setWorkspace(previous => {
       if (!hasUnsavedEdits.current) return result.state;
       const local = previous.drafts.find(draft => draft.id === previous.selected_id);
@@ -111,6 +125,27 @@ export function App() {
       syncRunning.current = false;
     }
   }, [aiSession, repository]);
+
+  useEffect(() => {
+    aiSession.setPersistedResultHandler((record) => {
+      if (record.capability !== 'review' || record.state !== 'success' || record.result?.output_kind !== 'review') return;
+      const state = repository.load();
+      const review = reviewEntityFromRecord(record, state, clientId);
+      if (!review) return;
+      try {
+        queueReviewResult(state, review);
+        repository.save(state);
+        setWorkspace(state);
+        setSyncState(navigator.onLine ? 'syncing' : 'local_only');
+        if (navigator.onLine) void flushQueue();
+      } catch (error) {
+        // The session still keeps the local result visible; source/version
+        // validation prevents an invalid entity from entering sync storage.
+        console.warn(`[AlgoFlow] review sync bridge rejected result: ${error instanceof Error ? error.message : 'unknown'}`);
+      }
+    });
+    return () => aiSession.setPersistedResultHandler(() => {});
+  }, [aiSession, clientId, flushQueue, repository]);
 
   useEffect(() => {
     void flushQueue();
@@ -181,6 +216,38 @@ export function App() {
       return;
     }
     void flushQueue();
+  }
+
+  async function requestArtifact() {
+    if (!currentDraft || artifactBusy || mode !== 'faithful_transform' || activeFile !== 'main.cpp') return;
+    if (currentDraft.sync_status !== 'synced' || !saved) {
+      setArtifactMessage('请先保存并同步当前草稿，再请求忠实转换。');
+      return;
+    }
+    setArtifactBusy(true); setArtifactMessage('正在请求 AI Gateway…');
+    const source = currentDraft;
+    try {
+      const request = buildAIRequest(source, documents, mode);
+      const response = await aiClient.requestTransform(request, {});
+      const latest = repository.load().drafts.find((draft) => draft.id === source.id);
+      if (!latest || latest.version !== source.version || latest.sync_status !== 'synced') throw new Error('DRAFT_CHANGED_RETRY_AI');
+      const artifact = artifactFromGateway(response.result, source, clientId, request.idea_segments.map((segment) => segment.id), request.rule_version);
+      assertAIArtifact(artifact, new Set(request.idea_segments.map((segment) => segment.id)));
+      const state = repository.load();
+      queueAIArtifact(state, artifact);
+      repository.save(state);
+      setWorkspace(state); setArtifactMessage('忠实转换结果已保存，可同步到手机端。');
+      if (navigator.onLine) void flushQueue();
+    } catch (error) {
+      setArtifactMessage(error instanceof Error ? error.message : 'AI 请求失败');
+    } finally { setArtifactBusy(false); }
+  }
+
+  function toggleArtifact(artifact: AIArtifact) {
+    const state = repository.load();
+    const updated: AIArtifact = { ...artifact, visibility: artifact.visibility === 'hidden' ? 'visible' : 'hidden', updated_at: new Date().toISOString(), last_modified_client_id: clientId };
+    queueAIArtifact(state, updated); repository.save(state); setWorkspace(state);
+    if (navigator.onLine) void flushQueue();
   }
 
   function selectDraft(draftId: string) {
@@ -300,6 +367,12 @@ export function App() {
           onHide={() => setInspectorHidden(true)}
           onShow={() => setInspectorHidden(false)}
           aiState={aiState}
+          artifact={currentArtifact}
+          artifactHistory={artifactHistory}
+          artifactBusy={artifactBusy}
+          artifactMessage={artifactMessage}
+          onArtifact={requestArtifact}
+          onToggleArtifact={toggleArtifact}
           mode={mode}
           activeFile={activeFile}
           canAcceptCompletion={aiSession.canAcceptCompletion()}
@@ -348,4 +421,38 @@ function unresolvedConflict(state: WorkspaceState): ConflictChoice | null {
   if (!record) return null;
   const copy = state.drafts.find((draft) => draft.id === record.local_copy_id);
   return copy && 'title' in record.server_entity ? { copy, server: record.server_entity } : null;
+}
+
+function reviewRecordsForSession(state: WorkspaceState): AIResultRecord[] {
+  return (state.review_results ?? []).filter((review) => !review.deleted).map((review) => {
+    const draft = state.drafts.find((item) => item.id === review.draft_id);
+    const snapshot = (state.draft_history ?? []).find((item) => item.draft_id === review.draft_id && item.version === review.source_draft_version);
+    const sourceCode = snapshot?.code ?? (draft?.version === review.source_draft_version ? draft.code : '');
+    const sourceSegments = snapshot?.idea_segments ?? draft?.idea_segments ?? [];
+    return {
+      id: review.id, draftId: review.draft_id, capability: 'review', mode: review.mode, reviewKind: review.review_kind,
+      state: 'success', result: {
+        mode: review.mode, draft_id: review.draft_id, source_draft_version: review.source_draft_version,
+        model_id: review.model_id, rule_version: review.rule_version, review_kind: review.review_kind,
+        output_kind: 'review', diagnostics: review.diagnostics, visibility: review.visibility,
+      }, isTestData: false, hidden: review.visibility === 'hidden', stale: review.freshness === 'stale', restored: true,
+      requestGeneration: 0, sourceDraftVersion: review.source_draft_version, sourceFile: 'main.cpp', sourceCode,
+      sourceIdea: draft?.idea ?? '', sourceProblemContext: draft?.title || '当前草稿',
+      sourceSegments: sourceSegments.map((segment) => ({ ...segment })), sourceCursor: null, updatedAt: review.updated_at,
+    } satisfies AIResultRecord;
+  });
+}
+
+function reviewEntityFromRecord(record: AIResultRecord, state: WorkspaceState, clientId: string): ReviewResult | null {
+  if (record.result?.output_kind !== 'review') return null;
+  const draft = state.drafts.find((item) => item.id === record.draftId && !item.deleted);
+  if (!draft || draft.version !== record.sourceDraftVersion || draft.sync_status !== 'synced') return null;
+  const now = record.updatedAt || new Date().toISOString();
+  return {
+    id: record.id, version: 0, server_sequence: 0, created_at: now, updated_at: now, deleted: false,
+    last_modified_client_id: clientId, draft_id: record.draftId, mode: record.result.mode,
+    source_draft_version: record.result.source_draft_version, model_id: record.result.model_id,
+    rule_version: record.result.rule_version, review_kind: record.result.review_kind,
+    diagnostics: record.result.diagnostics, visibility: record.result.visibility, freshness: 'current',
+  };
 }

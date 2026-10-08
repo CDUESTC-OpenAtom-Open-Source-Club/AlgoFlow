@@ -1,7 +1,7 @@
 import { Icon } from './Icon';
 import type { ReviewIssue } from '../code-review';
 import { rangeToOffsets } from '../ai-client.mjs';
-import type { AIResultRecord, AISessionState, FileId, IdeaSegment, Mode, ReviewKind } from '../types';
+import type { AIArtifact, AIResultRecord, AISessionState, FileId, IdeaSegment, Mode, ReviewKind } from '../types';
 
 interface InspectorPanelProps {
   hidden: boolean;
@@ -20,11 +20,18 @@ interface InspectorPanelProps {
   onCancel: () => void;
   onToggleResult: (id: string, hidden: boolean) => void;
   onRetryStorage: () => void;
+  artifact: AIArtifact | null;
+  artifactHistory: AIArtifact[];
+  artifactBusy: boolean;
+  artifactMessage: string;
+  onArtifact: () => void;
+  onToggleArtifact: (artifact: AIArtifact) => void;
 }
 
 export function InspectorPanel({
   hidden, onHide, onShow, issues, onJumpToLine, aiState, mode, activeFile, canAcceptCompletion,
   onReview, onCompletion, onAcceptCompletion, onRejectCompletion, onCancel, onToggleResult, onRetryStorage,
+  artifact, artifactHistory, artifactBusy, artifactMessage, onArtifact, onToggleArtifact,
 }: InspectorPanelProps) {
   const errors = issues.filter((issue) => issue.severity === 'error').length;
   const canRequest = mode === 'faithful_transform' && activeFile === 'main.cpp';
@@ -95,6 +102,21 @@ export function InspectorPanel({
             ))}
           </div>
         </section>
+        <section className="inspect-section ai-artifact-history">
+          <div className="inspect-title"><span>忠实转换结果</span><span>跨端同步</span></div>
+          <p className="ai-help">结果进入独立 AI artifact 同步实体；旧来源保留为历史，只读。</p>
+          <button type="button" className="outline-button" onClick={onArtifact} disabled={artifactBusy || !canRequest}>请求忠实转换</button>
+          {artifactMessage && <p className="ai-help" role="status">{artifactMessage}</p>}
+          {artifactHistory.map((item) => (
+            <article className={item.id === artifact?.id && getArtifactFreshness(item, artifact) === 'current' ? 'ai-result' : 'ai-result stale'} key={item.id}>
+              <div className="ai-result-heading"><strong>{item.id === artifact?.id ? '当前结果' : '历史结果'}</strong><button type="button" className="quiet-button" onClick={() => onToggleArtifact(item)}>{item.visibility === 'hidden' ? '显示结果' : '隐藏结果'}</button></div>
+              {item.visibility !== 'hidden' && <>
+                <p className="ai-provenance">草稿 v{item.source_draft_version} · {item.mode} · {item.model_id}</p>
+                {item.pseudocode.map((step) => <div className="ai-diagnostic" key={step.id}><strong>{step.step}</strong><p>来源：{step.source_refs.join(', ')}</p></div>)}
+              </>}
+            </article>
+          ))}
+        </section>
         <section className="inspect-section completion-section">
           <div className="inspect-title"><span>忠实模式局部补全</span><span>预览后写入</span></div>
           <p className="ai-help">仅补充当前思路。接受后仍需保存，不自动上传。</p>
@@ -137,6 +159,10 @@ export function InspectorPanel({
       )}
     </>
   );
+}
+
+function getArtifactFreshness(artifact: AIArtifact, current: AIArtifact | null): 'current' | 'stale' {
+  return current?.id === artifact.id ? 'current' : 'stale';
 }
 
 function reviewLabel(kind: ReviewKind): string {

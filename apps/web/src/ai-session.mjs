@@ -13,6 +13,8 @@ export class AISession {
   active = null;
   /** @type {Set<() => void>} */
   listeners = new Set();
+  /** @type {(record: import('./types').AIResultRecord) => void} */
+  onPersistedResult = () => {};
 
   /** @param {import('./types').AIClientPort} client @param {import('./types').AIResultRepository} repository */
   constructor(client, repository) {
@@ -71,6 +73,24 @@ export class AISession {
   /** @param {import('./types').AICursor} cursor */
   requestCompletion(cursor) { return this.#request('completion', cursor); }
 
+  /** @param {(record: import('./types').AIResultRecord) => void} handler */
+  setPersistedResultHandler(handler) { this.onPersistedResult = handler; }
+
+  /** @param {import('./types').AIResultRecord[]} records */
+  importRecords(records) {
+    try {
+      for (const record of records) this.repository.save(record);
+      if (!this.context) return;
+      const loaded = this.repository.listForDraft(this.context.draftId, this.context.mode);
+      const restored = restoreRecords(loaded, this.context);
+      this.confirmedRecords = new Set(restored.map(record => record.id));
+      this.state = { ...this.state, reviews: restored.filter(record => record.capability === 'review'),
+        completion: latestRecord(restored.filter(record => record.capability === 'completion')) ?? null,
+        completionHistory: restored.filter(record => record.capability === 'completion') };
+      this.#emit();
+    } catch (error) { this.#storageFailure(error); }
+  }
+
   /** @param {string} id @param {boolean} hidden */
   setHidden(id, hidden) {
     const record = this.#records().find(item => item.id === id);
@@ -94,7 +114,7 @@ export class AISession {
     const record = this.state.completion;
     const context = this.context;
     return !!(record && context && record.result?.output_kind === 'completion' && record.state === 'success' &&
-      !record.hidden && !record.stale && record.requestGeneration === this.generation &&
+      !record.hidden && !record.stale && !record.restored && record.requestGeneration === this.generation &&
       record.draftId === context.draftId && record.mode === context.mode &&
       record.sourceFile === 'main.cpp' && context.fileId === 'main.cpp' && record.sourceDraftVersion === context.draftVersion &&
       record.sourceCode === context.code && record.sourceIdea === context.idea && record.sourceProblemContext === context.problemContext &&
@@ -163,7 +183,7 @@ export class AISession {
       id: crypto.randomUUID(), draftId: context.draftId, mode: context.mode,
       capability: kind === 'completion' ? 'completion' : 'review',
       ...(kind === 'completion' ? {} : { reviewKind: kind }), state: 'loading', result: null,
-      isTestData: false, hidden: false, stale: false, requestGeneration: active.generation,
+      isTestData: false, hidden: false, stale: false, restored: false, requestGeneration: active.generation,
       sourceDraftVersion: context.draftVersion, sourceFile: context.fileId, sourceCode: context.code,
       sourceIdea: context.idea, sourceProblemContext: context.problemContext,
       sourceSegments: this.state.segments.map(segment => ({ ...segment })), sourceCursor: cursor ? { ...cursor } : null,
@@ -207,6 +227,7 @@ export class AISession {
       this.#markHistorical(updated);
       this.confirmedRecords.add(record.id);
       this.#persist(updated, true);
+      this.onPersistedResult(updated);
     } catch (error) {
       if (!this.#isCurrent(active)) return;
       const code = error instanceof AIClientError ? error.code : 'NETWORK_ERROR';
@@ -313,7 +334,8 @@ function restoreRecords(records, context) {
   }
   return records.map((record) => ({ ...record,
     // A restored completion is always read-only until a new request is made.
-    stale: record.capability === 'completion' || winners.get(resultSlot(record))?.id !== record.id || !recordIsCurrent(record, context),
+    stale: record.capability === 'completion' ? !recordIsCurrent(record, context) : winners.get(resultSlot(record))?.id !== record.id || !recordIsCurrent(record, context),
+    restored: true,
   }));
 }
 

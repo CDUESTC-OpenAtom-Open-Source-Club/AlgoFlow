@@ -50,6 +50,10 @@ export interface AIReviewRequest extends AISourceRequest {
   review_kind: ReviewKind;
 }
 
+export interface AITransformRequest extends AISourceRequest {
+  output_kind: 'pseudocode';
+}
+
 export interface AICompletionRequest extends AISourceRequest {
   output_kind: 'completion';
   cursor: AICursor;
@@ -126,6 +130,7 @@ export interface AIResultRecord {
   isTestData: boolean;
   hidden: boolean;
   stale: boolean;
+  restored?: boolean;
   requestGeneration: number;
   sourceDraftVersion: number;
   sourceFile: FileId;

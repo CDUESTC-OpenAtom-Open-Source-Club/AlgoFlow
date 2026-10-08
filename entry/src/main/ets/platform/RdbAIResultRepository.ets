@@ -7,8 +7,9 @@ import { DEBUG } from 'BuildProfile';
 export class RdbAIResultRepository implements AIResultRepository {
   private store: relationalStore.RdbStore;
   private allowTestData: boolean;
-  constructor(store: relationalStore.RdbStore, allowTestData: boolean) {
-    this.store = store; this.allowTestData = DEBUG && allowTestData;
+  private onLatest?: (record: IDERecord) => void;
+  constructor(store: relationalStore.RdbStore, allowTestData: boolean, onLatest?: (record: IDERecord) => void) {
+    this.store = store; this.allowTestData = DEBUG && allowTestData; this.onLatest = onLatest;
   }
   async list(draftId: string, mode: AIMode): Promise<IDERecord[]> {
     const records: IDERecord[] = [];
@@ -45,6 +46,9 @@ export class RdbAIResultRepository implements AIResultRepository {
       await this.store.executeSql('UPDATE ai_result_history SET record_json = ?, updated_at = ? WHERE result_id = ?',
         [json, record.updatedAt, record.id]);
     }
+    if (latest && !record.restored && record.state === IDEState.SUCCESS && (record.capability === IDECapability.REVIEW || record.capability === IDECapability.TRANSFORM)) {
+      this.onLatest?.(record);
+    }
   }
   async removeDraft(draftId: string): Promise<void> {
     await this.store.executeSql('DELETE FROM ai_results WHERE draft_id = ?', [draftId]);
@@ -68,7 +72,8 @@ function displaySlot(record: IDERecord): string {
 }
 function compareRecords(left: IDERecord, right: IDERecord): number {
   return Number(left.isTestData) - Number(right.isTestData) || left.context.version - right.context.version ||
-    left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id);
+    left.createdAt.localeCompare(right.createdAt) || left.serverSequence - right.serverSequence ||
+    left.serverVersion - right.serverVersion || left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id);
 }
 export function decodeAIRecord(json: string): IDERecord {
   const record = JSON.parse(json) as IDERecord;
@@ -82,6 +87,11 @@ export function decodeAIRecord(json: string): IDERecord {
     !['explanation', 'risk', 'complexity'].includes(record.reviewKind) ||
     !['loading', 'success', 'error', 'cancelled', 'accepted', 'rejected'].includes(record.state)) throw new Error('AI 缓存损坏，请保留数据并重试');
   if (record.body.length > 0) parseIDEResult(record.body, record);
+  if (record.serverVersion === undefined) record.serverVersion = 0;
+  if (record.serverSequence === undefined) record.serverSequence = 0;
+  if (record.createdAt === undefined) record.createdAt = record.updatedAt;
+  if (record.syncEntityType === undefined) record.syncEntityType = '';
+  if (record.restored === undefined) record.restored = false;
   if (record.context.syncStatus === undefined) record.context.syncStatus = 'synced';
   return record;
 }

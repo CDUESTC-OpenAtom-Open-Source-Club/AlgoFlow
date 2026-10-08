@@ -112,6 +112,7 @@ function decodeRecord(value, legacy = false) {
   for (const key of ['id', 'draftId', 'sourceCode', 'sourceIdea', 'updatedAt']) if (typeof record[key] !== 'string') throw cacheError();
   for (const key of ['requestGeneration', 'sourceDraftVersion']) if (!Number.isInteger(record[key]) || Number(record[key]) < 0) throw cacheError();
   for (const key of ['isTestData', 'hidden', 'stale']) if (typeof record[key] !== 'boolean') throw cacheError();
+  if (record.restored !== undefined && typeof record.restored !== 'boolean') throw cacheError();
   if (!['main.cpp', 'idea.md', 'cases.txt'].includes(String(record.sourceFile))) throw cacheError();
   const review = record.capability === 'review';
   if ((!review && record.capability !== 'completion') || (review && !['explanation', 'risk', 'complexity'].includes(String(record.reviewKind)))) throw cacheError();
@@ -133,7 +134,8 @@ function decodeRecord(value, legacy = false) {
       (result.output_kind === 'review' && result.review_kind !== record.reviewKind))) throw cacheError();
   return /** @type {import('./types').AIResultRecord} */ (/** @type {unknown} */ ({
     ...record, mode, result, state: state === 'loading' ? 'cancelled' : state,
-    stale: legacy || record.stale || state === 'loading', sourceSegments: segments, sourceCursor: cursor,
+    stale: record.stale || state === 'loading', restored: record.restored === true,
+    sourceSegments: segments, sourceCursor: cursor,
     sourceProblemContext: legacy ? '' : record.sourceProblemContext,
   }));
 }

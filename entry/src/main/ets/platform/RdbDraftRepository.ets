@@ -3,11 +3,11 @@ import { relationalStore } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIArtifact, AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
-import { ConflictRecord, DraftPayload, SyncOperation, SyncOperationType, draftToPayload,
-  payloadToDraft } from '../domain/SyncModels';
+import { AIArtifact, AIMode, AIRequestSegment, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIArtifactPayload, ConflictRecord, DraftPayload, ReviewDiagnosticPayload, ReviewResultPayload, SyncOperation, SyncOperationType, SyncEntityType,
+  draftToPayload, payloadToDraft } from '../domain/SyncModels';
 import { SyncRepository } from '../domain/SyncRepository';
-import { AIResultRepository } from '../domain/IDEAIModels';
+import { AIResultRepository, IDECapability, IDERecord, IDEState, ReviewKind } from '../domain/IDEAIModels';
 import { RdbAIResultRepository } from './RdbAIResultRepository';
 
 const DOMAIN = 0x0000;
@@ -157,7 +157,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   }
 
   aiResults(allowTestData: boolean = false): AIResultRepository {
-    return new RdbAIResultRepository(this.requireStore(), allowTestData);
+    return new RdbAIResultRepository(this.requireStore(), allowTestData, (record: IDERecord) => this.queueAIRecord(record));
   }
 
   getClientId(): string { return this.clientId; }
@@ -198,6 +198,54 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   applyServerDraft(draft: Draft): void {
     draft.syncStatus = SyncStatus.SYNCED;
     this.replaceDraft(draft);
+  }
+
+  queueAIRecord(record: IDERecord): void {
+    if (record.state !== IDEState.SUCCESS || record.capability === IDECapability.COMPLETION) return;
+    const entityType = record.capability === IDECapability.REVIEW ? SyncEntityType.REVIEW_RESULT : SyncEntityType.AI_ARTIFACT;
+    const payload = recordToSyncPayload(record, this.clientId, entityType);
+    const existing = this.operations.find((operation: SyncOperation) => operation.entity_type === entityType && operation.entity_id === record.id);
+    const operation = new SyncOperation();
+    operation.operation_id = existing !== undefined && existing.operation_id.trim().length > 0 && !this.inFlight.includes(existing.operation_id)
+      ? existing.operation_id : createOperationId();
+    operation.entity_type = entityType;
+    operation.entity_id = record.id;
+    operation.operation_type = SyncOperationType.UPSERT;
+    operation.base_version = existing?.base_version ?? record.serverVersion;
+    operation.client_id = this.clientId;
+    operation.occurred_at = record.updatedAt || new Date().toISOString();
+    operation.payload = payload;
+    this.operations = this.operations.filter((item: SyncOperation) => !(item.entity_type === entityType && item.entity_id === record.id));
+    this.operations.push(operation);
+    this.enqueue(async () => this.persistOperation(operation));
+  }
+
+  async getAIRecord(id: string): Promise<IDERecord | undefined> {
+    const repository = new RdbAIResultRepository(this.requireStore(), false);
+    for (const draft of this.drafts) {
+      const records = await repository.list(draft.id, draft.aiMode);
+      const found = records.find((record: IDERecord) => record.id === id);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  async applyServerAIArtifact(payload: AIArtifactPayload): Promise<void> {
+    await this.applyServerAIRecord(payload, SyncEntityType.AI_ARTIFACT);
+  }
+
+  async applyServerReview(payload: ReviewResultPayload): Promise<void> {
+    await this.applyServerAIRecord(payload, SyncEntityType.REVIEW_RESULT);
+  }
+
+  async saveConflictAIRecord(record: IDERecord, conflict: ConflictRecord): Promise<void> {
+    await this.aiResults(false).save(record, true);
+    this.enqueue(async () => this.persistConflict(conflict));
+  }
+
+  getDraftSourceCode(draftId: string, version: number): string | undefined {
+    const draft = this.drafts.find((item: Draft) => item.id === draftId && !item.deleted);
+    return draft !== undefined && draft.version === version ? draft.code : undefined;
   }
 
   saveConflictDraft(draft: Draft, record: ConflictRecord): void {
@@ -322,6 +370,13 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     this.enqueue(async () => this.persistDraft(snapshot));
   }
 
+  private async applyServerAIRecord(payload: AIArtifactPayload | ReviewResultPayload, entityType: string): Promise<void> {
+    const draft = this.drafts.find((item: Draft) => item.id === payload.draft_id && !item.deleted);
+    if (draft === undefined) throw new Error('AI_SOURCE_DRAFT_NOT_FOUND');
+    const record = syncPayloadToRecord(payload, entityType, draft);
+    await new RdbAIResultRepository(this.requireStore(), false).save(record, true);
+  }
+
   private queueOperation(draft: Draft, operationType: SyncOperationType): void {
     const existing = this.operations.find((operation: SyncOperation) => operation.entity_id === draft.id);
     const operation = new SyncOperation();
@@ -406,6 +461,74 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
 
 function readString(resultSet: relationalStore.ResultSet, column: string): string {
   return resultSet.getString(resultSet.getColumnIndex(column));
+}
+
+function recordToSyncPayload(record: IDERecord, clientId: string, entityType: string): AIArtifactPayload | ReviewResultPayload {
+  const value = JSON.parse(record.body) as Record<string, Object>;
+  if (entityType === SyncEntityType.REVIEW_RESULT) {
+    const payload = new ReviewResultPayload();
+    payload.id = record.id; payload.version = record.serverVersion; payload.server_sequence = record.serverSequence;
+    payload.created_at = record.createdAt.length > 0 ? record.createdAt : record.updatedAt; payload.updated_at = record.updatedAt; payload.deleted = false;
+    payload.last_modified_client_id = clientId; payload.draft_id = record.context.draftId;
+    payload.mode = record.context.mode; payload.source_draft_version = record.context.version;
+    payload.model_id = String(value['model_id']); payload.rule_version = String(value['rule_version']);
+    payload.review_kind = record.reviewKind; payload.diagnostics = value['diagnostics'] as ReviewDiagnosticPayload[];
+    payload.visibility = String(value['visibility']); payload.freshness = record.stale ? 'stale' : 'current';
+    return payload;
+  }
+  const payload = new AIArtifactPayload();
+  payload.id = record.id; payload.version = record.serverVersion; payload.server_sequence = record.serverSequence;
+  payload.created_at = record.updatedAt; payload.updated_at = record.updatedAt; payload.deleted = false;
+  payload.last_modified_client_id = clientId; payload.draft_id = record.context.draftId;
+  payload.mode = record.context.mode; payload.pseudocode = value['pseudocode'] as Object[];
+  payload.code_snippet = value['code_snippet'] as string | null; payload.code_mappings = value['code_mappings'] as Object[];
+  payload.assumptions = value['assumptions'] as string[]; payload.missing_information = value['missing_information'] as string[];
+  payload.risk_flags = value['risk_flags'] as string[]; payload.added_algorithm_steps = value['added_algorithm_steps'] as string[];
+  payload.source_draft_version = record.context.version; payload.model_id = String(value['model_id']);
+  payload.rule_version = String(value['rule_version']); payload.output_kind = String(value['output_kind']);
+  payload.visibility = String(value['visibility']); payload.template_id = value['template_id'] as string | null;
+  return payload;
+}
+
+function syncPayloadToRecord(payload: AIArtifactPayload | ReviewResultPayload, entityType: string, draft: Draft): IDERecord {
+  const record = new IDERecord();
+  record.id = payload.id; record.context.draftId = payload.draft_id; record.context.version = payload.source_draft_version;
+  record.context.file = 'main.cpp'; record.context.mode = parseMode(payload.mode); record.context.code = draft.code;
+  record.context.idea = draft.idea; record.context.problemContext = draft.title || '当前草稿';
+  record.context.segments = draft.ideaSegments.map((segment: IdeaSegment): AIRequestSegment => new AIRequestSegment(segment.id, segment.content));
+  record.context.syncStatus = draft.syncStatus; record.capability = entityType === SyncEntityType.REVIEW_RESULT ? IDECapability.REVIEW : IDECapability.TRANSFORM;
+  record.reviewKind = entityType === SyncEntityType.REVIEW_RESULT ? parseReviewKind((payload as ReviewResultPayload).review_kind) : ReviewKind.EXPLANATION;
+  record.state = IDEState.SUCCESS; record.serverVersion = payload.version; record.serverSequence = payload.server_sequence;
+  record.syncEntityType = entityType; record.createdAt = payload.created_at; record.updatedAt = payload.updated_at; record.restored = true;
+  if (entityType === SyncEntityType.REVIEW_RESULT) {
+    const review = payload as ReviewResultPayload;
+    record.body = JSON.stringify({ mode: review.mode, source_draft_version: review.source_draft_version, model_id: review.model_id,
+      rule_version: review.rule_version, review_kind: review.review_kind, output_kind: 'review', diagnostics: review.diagnostics,
+      visibility: review.visibility });
+    record.stale = review.freshness === 'stale';
+  } else {
+    const artifact = payload as AIArtifactPayload;
+    record.body = JSON.stringify({ mode: artifact.mode, pseudocode: artifact.pseudocode, code_snippet: artifact.code_snippet,
+      code_mappings: artifact.code_mappings, assumptions: artifact.assumptions, missing_information: artifact.missing_information,
+      risk_flags: artifact.risk_flags, added_algorithm_steps: artifact.added_algorithm_steps, source_draft_version: artifact.source_draft_version,
+      model_id: artifact.model_id, rule_version: artifact.rule_version, output_kind: artifact.output_kind, visibility: artifact.visibility,
+      template_id: artifact.template_id });
+    record.stale = false;
+  }
+  return record;
+}
+
+function parseMode(value: string): AIMode {
+  if (value === AIMode.FEASIBILITY_ANALYSIS) return AIMode.FEASIBILITY_ANALYSIS;
+  if (value === AIMode.PROGRESSIVE_HINT) return AIMode.PROGRESSIVE_HINT;
+  if (value === AIMode.FULL_SOLUTION) return AIMode.FULL_SOLUTION;
+  return AIMode.FAITHFUL_TRANSFORM;
+}
+
+function parseReviewKind(value: string): ReviewKind {
+  if (value === 'explanation') return ReviewKind.EXPLANATION;
+  if (value === 'complexity') return ReviewKind.COMPLEXITY;
+  return ReviewKind.RISK;
 }
 
 function readNumber(resultSet: relationalStore.ResultSet, column: string): number {

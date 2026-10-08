@@ -183,17 +183,18 @@ export class IDEAISession {
 
 function restoreRecords(records: IDERecord[], context: IDEContext): IDERecord[] {
   const latest = new Map<string, IDERecord>();
-  records.filter((record: IDERecord) => record.capability === IDECapability.REVIEW && matchesCurrentSource(record, context))
+  records.filter((record: IDERecord) => record.state === IDEState.SUCCESS && record.body.length > 0 && matchesCurrentSource(record, context))
     .forEach((record: IDERecord) => {
       const slot = displaySlot(record);
       const previous = latest.get(slot);
       if (previous === undefined || compareRecords(record, previous) > 0) latest.set(slot, record);
     });
   return records.map((record: IDERecord) => {
-    // Recovered completion is always read-only. Reviews are current only when
-    // they match the synchronized source and win their review slot.
-    record.stale = record.capability === IDECapability.COMPLETION ||
-      latest.get(displaySlot(record))?.id !== record.id || !matchesCurrentSource(record, context);
+    // A restored result is current when it matches the synchronized source and
+    // wins its shared capability/test partition slot. It remains read-only
+    // because a fresh request generation is required for acceptance.
+    record.stale = latest.get(displaySlot(record))?.id !== record.id || !matchesCurrentSource(record, context);
+    record.restored = true;
     return record;
   });
 }

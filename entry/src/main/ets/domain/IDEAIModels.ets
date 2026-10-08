@@ -83,6 +83,11 @@ export class IDERecord {
   errorCode: string = '';
   message: string = '';
   updatedAt: string = '';
+  createdAt: string = '';
+  serverVersion: number = 0;
+  serverSequence: number = 0;
+  syncEntityType: string = '';
+  restored: boolean = false;
 }
 export interface AIResultRepository {
   list(draftId: string, mode: AIMode): Promise<IDERecord[]>;
