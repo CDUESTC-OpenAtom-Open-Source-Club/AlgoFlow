@@ -326,15 +326,35 @@ test('two AI clients retain independent review results and choose the same curre
   newer.created_at = '2026-10-08T00:00:01.000Z'; newer.updated_at = newer.created_at;
   first.review_results.push(older); second.review_results.push(newer);
   queueReviewResult(first, older); queueReviewResult(second, newer);
-  const pushedFirst = await synchronizeWorkspace(first, client);
-  const pushedSecond = await synchronizeWorkspace(second, client);
+  const pendingPushes = [];
+  const concurrentClient = {
+    push(operation) {
+      return new Promise((resolve, reject) => {
+        pendingPushes.push({ operation, resolve, reject });
+        if (pendingPushes.length !== 2) return;
+        const batch = pendingPushes.splice(0);
+        Promise.all(batch.slice().reverse().map((entry) => client.push(entry.operation)
+          .then((result) => ({ entry, result }))))
+          .then((results) => results.forEach(({ entry, result }) => entry.resolve(result)))
+          .catch((error) => batch.forEach((entry) => entry.reject(error)));
+      });
+    },
+    pull: (...args) => client.pull(...args),
+  };
+  const firstPush = synchronizeWorkspace(first, concurrentClient);
+  const secondPush = synchronizeWorkspace(second, concurrentClient);
+  const [pushedFirst, pushedSecond] = await Promise.all([firstPush, secondPush]);
   const pulledFirst = await synchronizeWorkspace(pushedFirst.state, client);
   const pulledSecond = await synchronizeWorkspace(pushedSecond.state, client);
-  assert.equal(pulledFirst.state.review_results.length, 2);
-  assert.equal(pulledSecond.state.review_results.length, 2);
-  assert.equal(pulledFirst.state.review_results.find((item) => item.id === 'review-b')?.freshness, 'current');
-  assert.equal(pulledSecond.state.review_results.find((item) => item.id === 'review-b')?.freshness, 'current');
-  assert.equal(pulledFirst.state.review_results.find((item) => item.id === 'review-a')?.freshness, 'stale');
+  for (const result of [pulledFirst, pulledSecond]) {
+    assert.equal(result.state.review_results.length, 2);
+    assert.equal(result.state.review_results.find((item) => item.id === 'review-a')?.freshness, 'stale');
+    assert.equal(result.state.review_results.find((item) => item.id === 'review-b')?.freshness, 'current');
+    const current = result.state.review_results.filter((item) => item.draft_id === draft.id &&
+      item.mode === 'faithful_transform' && item.review_kind === 'risk' && item.freshness === 'current');
+    assert.equal(current.length, 1);
+    assert.equal(current[0].id, 'review-b');
+  }
 });
 
 test('rejects malformed independent AI artifacts before they enter the change stream', () => {
