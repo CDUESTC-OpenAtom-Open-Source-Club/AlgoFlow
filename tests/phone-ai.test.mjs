@@ -492,6 +492,48 @@ test('phone sync preserves server version and creates a local conflict copy', as
     HttpSyncClient.prototype.pull = oldPull;
   }
 });
+test('Node ArkTS loader: PhoneSyncService orchestration retains an independent faithful artifact', async () => {
+  const { PhoneSyncService } = load('platform/PhoneSyncService');
+  const { HttpSyncClient } = load('platform/HttpSyncClient');
+  const first = {
+    id: 'phone-artifact-a', version: 0, server_sequence: 0,
+    created_at: '2026-10-10T00:00:00.000Z', updated_at: '2026-10-10T00:00:00.000Z',
+    deleted: false, last_modified_client_id: 'phone-a', draft_id: 'shared-draft',
+    mode: 'faithful_transform', pseudocode: [{ id: 'step-a', step: 'Sort by right endpoint', source_refs: ['segment-1'] }],
+    code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [],
+    added_algorithm_steps: [], source_draft_version: 4, model_id: 'provider-disabled',
+    rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null,
+  };
+  const second = { ...structuredClone(first), id: 'web-artifact-b', last_modified_client_id: 'web-b',
+    created_at: '2026-10-10T00:00:01.000Z', updated_at: '2026-10-10T00:00:01.000Z',
+    pseudocode: [{ id: 'step-b', step: 'Select non-overlapping intervals', source_refs: ['segment-1'] }] };
+  const records = new Map([[first.id, first]]);
+  const operations = [{ operation_id: 'phone-artifact-op', entity_type: 'ai_artifact', entity_id: first.id,
+    operation_type: 'upsert', base_version: 0, client_id: 'phone-a', occurred_at: first.updated_at, payload: first }];
+  const repository = {
+    listPendingOperations: () => operations.slice(), markInFlight() {}, getBaseUrl: () => 'http://sync', getCursor: () => repository.cursor,
+    getClientId: () => 'phone-a', getDraft: () => undefined, setCursor(cursor) { repository.cursor = cursor; }, cursor: '0',
+    setDraftSyncStatus() {}, hasPendingOperation: (id) => operations.some((operation) => operation.entity_id === id),
+    removeOperation(id) { const index = operations.findIndex((operation) => operation.operation_id === id); if (index >= 0) operations.splice(index, 1); },
+    applyServerDraft() {}, saveConflictDraft() {}, queueAIRecord() {}, getAIRecord: async (id) => records.get(id),
+    applyServerAIArtifact: async (payload) => { records.set(payload.id, payload); }, applyServerReview: async () => {},
+    saveConflictAIRecord: async () => {}, getDraftSourceCode: () => undefined, getDraftSourceSegments: () => undefined,
+  };
+  const oldPush = HttpSyncClient.prototype.push;
+  const oldPull = HttpSyncClient.prototype.pull;
+  HttpSyncClient.prototype.push = async (operation) => ({ status: 'applied', version: 1, server_entity: { ...operation.payload, version: 1, server_sequence: 1 } });
+  HttpSyncClient.prototype.pull = async () => ({ changes: [{ cursor: '2', entity_type: 'ai_artifact', entity: { ...second, version: 1, server_sequence: 2 } }], next_cursor: '2' });
+  try {
+    const result = await new PhoneSyncService(repository).synchronize();
+    assert.equal(result.status, 'synced');
+    assert.equal(operations.length, 0);
+    assert.equal(repository.cursor, '2');
+    assert.deepEqual([...records.keys()].sort(), ['phone-artifact-a', 'web-artifact-b']);
+  } finally {
+    HttpSyncClient.prototype.push = oldPush;
+    HttpSyncClient.prototype.pull = oldPull;
+  }
+});
 test('phone sync ignores an older remote change during pull', async () => {
   const { PhoneSyncService } = load('platform/PhoneSyncService');
   const { HttpSyncClient } = load('platform/HttpSyncClient');
