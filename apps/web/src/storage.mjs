@@ -24,10 +24,8 @@ export class BrowserWorkspaceRepository {
           review_results: Array.isArray(value.review_results) ? value.review_results : [],
           draft_history: normalizeDraftHistory(value.draft_history, value.drafts),
         };
-        state.review_results = /** @type {import('./types').ReviewResult[]} */ (state.review_results).map((review) => ({
-          ...review,
-          freshness: getReviewFreshness(state, review),
-        })).filter((review) => {
+        recomputeReviewFreshness(state);
+        state.review_results = /** @type {import('./types').ReviewResult[]} */ (state.review_results).filter((review) => {
           try {
             assertReviewResult(review);
             return true;
@@ -45,10 +43,7 @@ export class BrowserWorkspaceRepository {
 
   /** @param {import('./types').WorkspaceState} state */
   save(state) {
-    state.review_results = (state.review_results ?? []).map((review) => ({
-      ...review,
-      freshness: getReviewFreshness(state, review),
-    }));
+    recomputeReviewFreshness(state);
     const { operations, client_id: clientId, cursor, ...sharedState } = state;
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...sharedState, operations: [] }));
     localStorage.setItem(`${QUEUE_KEY_PREFIX}${clientId}`, JSON.stringify(operations));
@@ -143,19 +138,104 @@ export function hasReviewSource(state, result) {
 /** @param {import('./types').WorkspaceState} state @param {import('./types').ReviewResult} result @param {string} [editorCode] */
 export function getReviewFreshness(state, result, editorCode = undefined) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return 'stale';
-  const draft = state.drafts.find((item) => item.id === result.draft_id && !item.deleted);
-  if (!draft || draft.version !== result.source_draft_version ||
-    state.operations?.some((operation) => operation.entity_type === 'draft' && operation.entity_id === result.draft_id)) return 'stale';
-  const sourceCode = reviewSourceCode(state, result);
-  if (sourceCode === undefined || sourceCode !== draft.code || (editorCode !== undefined && editorCode !== sourceCode)) return 'stale';
-  return 'current';
+  const candidate = editorCode === undefined ? result : { ...result, __editorCode: editorCode };
+  const results = [...(state.review_results ?? []).filter((item) => item.id !== result.id), result];
+  const withCandidate = { ...state, review_results: results };
+  const fresh = baseReviewFreshness(withCandidate, candidate);
+  if (fresh !== 'current') return 'stale';
+  const winner = currentReviewForSlot(withCandidate, reviewSlot(result));
+  return winner?.id === result.id ? 'current' : 'stale';
+}
+
+/**
+ * Recomputes the display freshness of every independent review result. The
+ * source draft must be synchronized and the result must win its deterministic
+ * display slot; older results remain readable history.
+ * @param {import('./types').WorkspaceState} state
+ */
+export function recomputeReviewFreshness(state) {
+  const results = state.review_results ?? [];
+  const winners = new Map();
+  for (const result of results) {
+    if (result.deleted || baseReviewFreshness(state, result) !== 'current') continue;
+    const slot = reviewSlot(result);
+    const current = winners.get(slot);
+    if (!current || compareReviewResults(result, current) > 0) winners.set(slot, result);
+  }
+  state.review_results = results.map((result) => ({
+    ...result,
+    freshness: winners.get(reviewSlot(result))?.id === result.id && baseReviewFreshness(state, result) === 'current' ? 'current' : 'stale',
+  }));
+  return state.review_results;
 }
 
 /** @param {import('./types').ReviewResult[]} results */
 export function sortReviewResultsNewestFirst(results) {
   return [...results].sort((left, right) => Number(right.freshness === 'current') - Number(left.freshness === 'current') ||
-    right.source_draft_version - left.source_draft_version || right.created_at.localeCompare(left.created_at) ||
-    right.server_sequence - left.server_sequence || right.version - left.version || right.updated_at.localeCompare(left.updated_at));
+    compareReviewResults(right, left));
+}
+
+/** @param {import('./types').ReviewResult} result */
+function reviewSlot(result) {
+  return `${result.draft_id}/${result.mode}/${result.review_kind}`;
+}
+
+/** @param {import('./types').ReviewResult} left @param {import('./types').ReviewResult} right */
+function compareReviewResults(left, right) {
+  return left.source_draft_version - right.source_draft_version ||
+    left.created_at.localeCompare(right.created_at) ||
+    left.server_sequence - right.server_sequence ||
+    left.version - right.version ||
+    left.updated_at.localeCompare(right.updated_at) ||
+    left.id.localeCompare(right.id);
+}
+
+/** @param {import('./types').WorkspaceState} state @param {string} slot */
+function currentReviewForSlot(state, slot) {
+  return (state.review_results ?? []).filter((result) => !result.deleted && reviewSlot(result) === slot &&
+    baseReviewFreshness(state, result) === 'current').sort((left, right) => compareReviewResults(right, left))[0];
+}
+
+/** @param {import('./types').WorkspaceState} state @param {import('./types').ReviewResult & {__editorCode?: string}} result */
+function baseReviewFreshness(state, result) {
+  const draft = state.drafts.find((item) => item.id === result.draft_id && !item.deleted);
+  if (!draft || draft.sync_status !== 'synced' || draft.version !== result.source_draft_version ||
+    state.operations?.some((operation) => operation.entity_type === 'draft' && operation.entity_id === result.draft_id)) return 'stale';
+  const sourceCode = reviewSourceCode(state, result);
+  if (sourceCode === undefined || sourceCode !== draft.code ||
+    (result.__editorCode !== undefined && result.__editorCode !== sourceCode)) return 'stale';
+  return 'current';
+}
+
+/**
+ * Computes whether an AI artifact belongs to the synchronized current source.
+ * The artifact stays in the state array when stale so it can be inspected from
+ * history; callers must check this value before offering any write action.
+ * @param {import('./types').WorkspaceState} state
+ * @param {import('./types').AIArtifact} artifact
+ * @returns {'current' | 'stale'}
+ */
+export function getAIArtifactFreshness(state, artifact) {
+  const draft = state.drafts.find((item) => item.id === artifact?.draft_id && !item.deleted);
+  if (!draft || draft.sync_status !== 'synced' || draft.version !== artifact.source_draft_version ||
+    state.operations?.some((operation) => operation.entity_type === 'draft' && operation.entity_id === artifact.draft_id)) return 'stale';
+  const snapshot = (state.draft_history ?? []).find((item) => item.draft_id === artifact.draft_id && item.version === artifact.source_draft_version);
+  const sourceIds = snapshot?.idea_segments?.map((segment) => segment.id) ?? (draft.idea_segments ?? []).map((segment) => segment.id);
+  const references = (artifact.pseudocode ?? []).flatMap((step) => step.source_refs ?? []);
+  return references.every((reference) => sourceIds.includes(reference)) ? 'current' : 'stale';
+}
+
+/** @param {import('./types').AIArtifact[]} artifacts */
+export function sortAIArtifactsNewestFirst(artifacts) {
+  return [...artifacts].sort((left, right) => left.source_draft_version - right.source_draft_version ||
+    left.created_at.localeCompare(right.created_at) || left.server_sequence - right.server_sequence ||
+    left.version - right.version || left.updated_at.localeCompare(right.updated_at) || left.id.localeCompare(right.id)).reverse();
+}
+
+/** @param {import('./types').WorkspaceState} state @param {string} draftId @param {import('./types').Mode} mode */
+export function selectCurrentAIArtifact(state, draftId, mode) {
+  return sortAIArtifactsNewestFirst((state.ai_artifacts ?? []).filter((artifact) =>
+    !artifact.deleted && artifact.draft_id === draftId && artifact.mode === mode && getAIArtifactFreshness(state, artifact) === 'current'))[0];
 }
 
 /** @param {import('./types').WorkspaceState} state @param {import('./types').ReviewResult} result */
@@ -171,7 +251,8 @@ export function recordDraftSnapshot(state, draft) {
   if (draft.deleted || !Number.isInteger(draft.version) || draft.version < 1) return;
   const history = state.draft_history ?? (state.draft_history = []);
   if (history.some((item) => item.draft_id === draft.id && item.version === draft.version)) return;
-  history.push({ draft_id: draft.id, version: draft.version, code: draft.code });
+  history.push({ draft_id: draft.id, version: draft.version, code: draft.code,
+    idea_segments: (draft.idea_segments ?? []).map((segment) => ({ ...segment })) });
 }
 
 
@@ -195,8 +276,11 @@ function isValidSourceRange(value) {
 
 /** @param {import('./types').WorkspaceState} state @param {import('./types').ReviewResult} result */
 export function queueReviewResult(state, result) {
-  result = { ...result, freshness: getReviewFreshness(state, result) };
-  assertReviewResult(result, state);
+  const nextResult = { ...cloneReviewResult(result), freshness: getReviewFreshness(state, result) };
+  assertReviewResult(nextResult, state);
+  state.review_results = (state.review_results ?? []).filter((item) => item.id !== nextResult.id).concat(nextResult);
+  recomputeReviewFreshness(state);
+  result = state.review_results.find((item) => item.id === nextResult.id) ?? nextResult;
   const existing = state.operations.find((item) => item.entity_type === 'review_result' && item.entity_id === result.id && item.operation_type === 'upsert');
   /** @type {import('./types').SyncOperation} */
   const operation = {
@@ -206,7 +290,7 @@ export function queueReviewResult(state, result) {
   };
   state.operations = state.operations.filter((item) => !(item.entity_type === 'review_result' && item.entity_id === result.id));
   state.operations.push(operation);
-  state.review_results = (state.review_results ?? []).filter((item) => item.id !== result.id).concat(cloneReviewResult(result));
+  state.review_results = state.review_results.map((item) => item.id === result.id ? cloneReviewResult(result) : item);
 }
 
 /** @param {import('./types').ReviewResult} result @param {string} clientId @param {string} id @returns {import('./types').ReviewResult} */
@@ -277,14 +361,25 @@ function initialState(clientId = null) {
 /** @param {unknown} value @param {import('./types').Draft[]} drafts @returns {import('./types').DraftVersionSnapshot[]} */
 function normalizeDraftHistory(value, drafts) {
   const history = Array.isArray(value) ? value.filter((item) => item && typeof item.draft_id === 'string' &&
-    Number.isInteger(item.version) && item.version >= 1 && typeof item.code === 'string') : [];
+    Number.isInteger(item.version) && item.version >= 1 && typeof item.code === 'string' &&
+    (item.idea_segments === undefined || validIdeaSegments(item.idea_segments))) : [];
   for (const draft of drafts) {
     if (!draft.deleted && draft.sync_status === 'synced' && draft.version >= 1 &&
       !history.some((item) => item.draft_id === draft.id && item.version === draft.version)) {
-      history.push({ draft_id: draft.id, version: draft.version, code: draft.code });
+      history.push({ draft_id: draft.id, version: draft.version, code: draft.code,
+        idea_segments: (draft.idea_segments ?? []).map((segment) => ({ ...segment })) });
     }
   }
   return history;
+}
+
+/** @param {unknown} value */
+function validIdeaSegments(value) {
+  if (!Array.isArray(value)) return false;
+  const ids = new Set();
+  return value.every((segment) => segment && typeof segment.id === 'string' && segment.id.length > 0 &&
+    typeof segment.content === 'string' && !ids.has(segment.id) && (segment.position === undefined || Number.isInteger(segment.position)) &&
+    (ids.add(segment.id), true));
 }
 
 /**

@@ -40,34 +40,47 @@ export class IDEAISession {
         await this.writes;
         const records = await this.repository.list(context.draftId, context.mode);
         if (generation === this.generation) {
-          this.records = records;
+          this.records = restoreRecords(records, context);
           this.persistedIds = new Set<string>(records.map(record => record.id));
         }
       } catch (error) { if (generation === this.generation) this.storageError = 'AI 本地结果读取失败，请重试；工作区未清空'; }
     }
     this.onChange();
   }
-  cancel(): void {
+  async reload(): Promise<void> {
+    if (this.context === null) return;
+    const generation = this.generation;
+    await this.writes;
+    const records = await this.repository.list(this.context.draftId, this.context.mode);
+    if (generation !== this.generation) return;
+    this.records = restoreRecords(records, this.context);
+    this.persistedIds = new Set<string>(this.records.map(record => record.id));
+    this.onChange();
+  }
+  cancel(markResults: boolean = true): void {
     this.generation++; this.provider.cancel(); this.acceptedContext = '';
     this.records.forEach(record => {
-      record.stale = true;
-      if (record.state === IDEState.LOADING) { record.state = IDEState.CANCELLED; record.message = '请求已取消'; }
-      if (this.persistedIds.has(record.id)) this.persist(record, false);
+      if (markResults || record.state === IDEState.LOADING) {
+        record.stale = true;
+        if (record.state === IDEState.LOADING) { record.state = IDEState.CANCELLED; record.message = '请求已取消'; }
+        if (this.persistedIds.has(record.id)) this.persist(record, false);
+      }
     }); this.onChange();
   }
   dispose(): void { this.cancel(); this.context = null; this.onChange = () => {}; }
   async request(capability: IDECapability, kind: ReviewKind = ReviewKind.EXPLANATION, cursor: SourceCursor = new SourceCursor()): Promise<void> {
     if (this.context === null) return;
-    this.cancel();
+    this.cancel(false);
     const record = new IDERecord(); record.id = `ai-${Date.now()}-${++this.sequence}`;
     record.context = JSON.parse(JSON.stringify(this.context)) as IDEContext;
     record.capability = capability; record.reviewKind = kind; record.cursor = cursor;
-    record.generation = this.generation; record.updatedAt = new Date().toISOString();
-    this.records = capability === IDECapability.REVIEW ? this.records.concat([record]) : this.records.filter(item => item.capability !== capability).concat([record]);
+    record.generation = this.generation; record.updatedAt = new Date().toISOString(); record.createdAt = record.updatedAt;
+    this.records = this.records.concat([record]);
     this.onChange();
     let responseReceived = false;
     try {
       if (record.context.mode !== AIMode.FAITHFUL_TRANSFORM) throw new Error('AI_MODE_NOT_AVAILABLE');
+      if (record.context.syncStatus.length > 0 && record.context.syncStatus !== 'synced') throw new Error('AI_DRAFT_NOT_SYNCED');
       if (record.context.segments.length === 0 || record.context.problemContext.trim().length === 0 ||
         (capability !== IDECapability.TRANSFORM && (record.context.file !== 'main.cpp' || record.context.code.trim().length === 0))) throw new Error('INVALID_REQUEST');
       const reply = await this.provider.request(buildIDERequest(record), capability);
@@ -79,13 +92,15 @@ export class IDEAISession {
         try { parseIDEResult(reply.body, record); }
         catch (error) { throw new Error('INVALID_AI_ARTIFACT'); }
         record.body = reply.body; record.state = IDEState.SUCCESS;
+        this.markHistorical(record);
       }
     } catch (error) {
       if (record.generation !== this.generation) return;
       const reason = error instanceof Error ? error.message : '';
-      record.errorCode = ['AI_MODE_NOT_AVAILABLE', 'INVALID_REQUEST', 'INVALID_AI_ARTIFACT'].includes(reason) ? reason : 'AI_PROVIDER_ERROR';
+      record.errorCode = ['AI_MODE_NOT_AVAILABLE', 'AI_DRAFT_NOT_SYNCED', 'INVALID_REQUEST', 'INVALID_AI_ARTIFACT'].includes(reason) ? reason : 'AI_PROVIDER_ERROR';
       record.message = record.errorCode === 'AI_MODE_NOT_AVAILABLE' ? '当前模式尚未接入' :
-        record.errorCode === 'INVALID_REQUEST' ? '请填写思路和代码，并切换到 main.cpp' : record.errorCode === 'AI_PROVIDER_ERROR' ? 'AI 服务异常，请主动重试' : 'AI 产物格式、来源或范围无效，已拒绝使用';
+        record.errorCode === 'AI_DRAFT_NOT_SYNCED' ? '草稿尚未可靠同步，请先保存并同步后再请求 AI' :
+          record.errorCode === 'INVALID_REQUEST' ? '请填写思路和代码，并切换到 main.cpp' : record.errorCode === 'AI_PROVIDER_ERROR' ? 'AI 服务异常，请主动重试' : 'AI 产物格式、来源或范围无效，已拒绝使用';
       record.state = IDEState.ERROR;
     }
     if (record.generation === this.generation) {
@@ -110,7 +125,7 @@ export class IDEAISession {
     record.state = IDEState.REJECTED; if (this.persistedIds.has(record.id)) this.persist(record, false); this.onChange();
   }
   canAccept(record: IDERecord): boolean {
-    return record.capability === IDECapability.COMPLETION && record.state === IDEState.SUCCESS && !record.stale && !record.hidden &&
+    return record.capability === IDECapability.COMPLETION && record.state === IDEState.SUCCESS && !record.stale && !record.restored && !record.hidden &&
       record.generation === this.generation && record.context.file === 'main.cpp' && JSON.stringify(record.context) === JSON.stringify(this.context);
   }
   accept(id: string, apply: (code: string) => void): boolean {
@@ -166,4 +181,48 @@ export class IDEAISession {
       catch (error) { this.storageError = 'AI 本地结果保存失败，请检查空间后重试；源文件未清空'; this.onChange(); }
     });
   }
+  private markHistorical(current: IDERecord): void {
+    const slot = displaySlot(current);
+    this.records.forEach(record => {
+      if (record.id === current.id || displaySlot(record) !== slot || record.stale) return;
+      record.stale = true;
+      if (this.persistedIds.has(record.id)) this.persist(record, false);
+    });
+  }
+}
+
+function restoreRecords(records: IDERecord[], context: IDEContext): IDERecord[] {
+  const latest = new Map<string, IDERecord>();
+  records.filter((record: IDERecord) => record.state === IDEState.SUCCESS && record.body.length > 0 && matchesCurrentSource(record, context))
+    .forEach((record: IDERecord) => {
+      const slot = displaySlot(record);
+      const previous = latest.get(slot);
+      if (previous === undefined || compareRecords(record, previous) > 0) latest.set(slot, record);
+    });
+  return records.map((record: IDERecord) => {
+    // A restored result is current when it matches the synchronized source and
+    // wins its shared capability/test partition slot. It remains read-only
+    // because a fresh request generation is required for acceptance.
+    record.stale = latest.get(displaySlot(record))?.id !== record.id || !matchesCurrentSource(record, context);
+    record.restored = true;
+    return record;
+  });
+}
+
+function matchesCurrentSource(record: IDERecord, context: IDEContext): boolean {
+  return record.context.draftId === context.draftId && record.context.version === context.version &&
+    record.context.file === context.file && record.context.mode === context.mode &&
+    record.context.code === context.code && record.context.idea === context.idea &&
+    record.context.problemContext === context.problemContext &&
+    (context.syncStatus.length === 0 || context.syncStatus === 'synced');
+}
+
+function displaySlot(record: IDERecord): string {
+  return `${record.capability}/${record.capability === IDECapability.REVIEW ? record.reviewKind : ''}/${record.isTestData ? 'test' : 'normal'}`;
+}
+
+function compareRecords(left: IDERecord, right: IDERecord): number {
+  return Number(left.isTestData) - Number(right.isTestData) || left.context.version - right.context.version ||
+    left.createdAt.localeCompare(right.createdAt) || left.serverSequence - right.serverSequence ||
+    left.serverVersion - right.serverVersion || left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id);
 }

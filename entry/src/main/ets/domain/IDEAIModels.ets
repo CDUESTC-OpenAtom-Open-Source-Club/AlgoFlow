@@ -27,6 +27,9 @@ export class IDEContext {
   idea: string = '';
   problemContext: string = '';
   segments: AIRequestSegment[] = [];
+  // Synchronization is part of provenance. Older callers may leave the
+  // default so local unit fixtures remain compatible.
+  syncStatus: string = 'synced';
 }
 export class IDERequest {
   mode: string = AIMode.FAITHFUL_TRANSFORM;
@@ -80,6 +83,11 @@ export class IDERecord {
   errorCode: string = '';
   message: string = '';
   updatedAt: string = '';
+  createdAt: string = '';
+  serverVersion: number = 0;
+  serverSequence: number = 0;
+  syncEntityType: string = '';
+  restored: boolean = false;
 }
 export interface AIResultRepository {
   list(draftId: string, mode: AIMode): Promise<IDERecord[]>;

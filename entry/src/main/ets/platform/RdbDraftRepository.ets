@@ -3,16 +3,17 @@ import { relationalStore } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIArtifact, AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
-import { ConflictRecord, DraftPayload, SyncOperation, SyncOperationType, draftToPayload,
-  payloadToDraft } from '../domain/SyncModels';
+import { AIArtifact, AIMode, AIRequestSegment, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIArtifactPayload, ConflictRecord, DraftPayload, ReviewDiagnosticPayload, ReviewResultPayload, SyncOperation, SyncOperationType, SyncEntityType,
+  draftToPayload, payloadToDraft } from '../domain/SyncModels';
 import { SyncRepository } from '../domain/SyncRepository';
-import { AIResultRepository } from '../domain/IDEAIModels';
+import { AIResultRepository, IDECapability, IDERecord, IDEState, ReviewKind } from '../domain/IDEAIModels';
 import { RdbAIResultRepository } from './RdbAIResultRepository';
 
 const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
 const DATABASE_VERSION = 2;
+interface DraftSourceSnapshot { code: string; ideaSegments: IdeaSegment[]; }
 export async function migrateWorkspaceStore(store: relationalStore.RdbStore): Promise<void> {
     if (store.version > DATABASE_VERSION) {
       throw new Error(`Unsupported database version ${store.version}`);
@@ -35,7 +36,7 @@ export async function migrateWorkspaceStore(store: relationalStore.RdbStore): Pr
         await store.executeSql('CREATE TABLE IF NOT EXISTS sync_state (' +
           'state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL)');
         await store.executeSql('CREATE TABLE IF NOT EXISTS conflicts (' +
-          'id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, local_copy_id TEXT NOT NULL, ' +
+          'id TEXT PRIMARY KEY, entity_type TEXT NOT NULL DEFAULT \'draft\', entity_id TEXT NOT NULL, local_copy_id TEXT NOT NULL, ' +
           'server_entity_json TEXT NOT NULL, created_at TEXT NOT NULL, resolved INTEGER NOT NULL)');
         store.version = 1;
         store.commit();
@@ -52,12 +53,38 @@ export async function migrateWorkspaceStore(store: relationalStore.RdbStore): Pr
           'draft_id TEXT NOT NULL, mode TEXT NOT NULL, slot TEXT NOT NULL, is_test INTEGER NOT NULL, ' +
           'result_id TEXT NOT NULL, updated_at TEXT NOT NULL, record_json TEXT NOT NULL, ' +
           'PRIMARY KEY (draft_id, mode, slot, is_test))');
+        await store.executeSql('CREATE TABLE IF NOT EXISTS ai_result_history (' +
+          'draft_id TEXT NOT NULL, mode TEXT NOT NULL, slot TEXT NOT NULL, is_test INTEGER NOT NULL, ' +
+          'result_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, record_json TEXT NOT NULL)');
+        await store.executeSql('CREATE TABLE IF NOT EXISTS draft_source_history (' +
+          'draft_id TEXT NOT NULL, version INTEGER NOT NULL, code TEXT NOT NULL, idea_segments_json TEXT NOT NULL, ' +
+          'PRIMARY KEY (draft_id, version))');
+        await ensureConflictEntityType(store);
         store.version = 2;
         store.commit();
       } catch (error) {
         store.rollBack();
         if (store.version === 2) store.version = 1;
         throw new Error('AI 结果数据库升级失败，原工作区未删除');
+      }
+    }
+    // Existing v2 databases already have ai_results. Add history storage
+    // transactionally without changing the public database version or any
+    // Draft/sync table.
+    if (store.version === DATABASE_VERSION) {
+      store.beginTransaction();
+      try {
+        await store.executeSql('CREATE TABLE IF NOT EXISTS ai_result_history (' +
+          'draft_id TEXT NOT NULL, mode TEXT NOT NULL, slot TEXT NOT NULL, is_test INTEGER NOT NULL, ' +
+          'result_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, record_json TEXT NOT NULL)');
+        await store.executeSql('CREATE TABLE IF NOT EXISTS draft_source_history (' +
+          'draft_id TEXT NOT NULL, version INTEGER NOT NULL, code TEXT NOT NULL, idea_segments_json TEXT NOT NULL, ' +
+          'PRIMARY KEY (draft_id, version))');
+        await ensureConflictEntityType(store);
+        store.commit();
+      } catch (error) {
+        store.rollBack();
+        throw new Error('AI 历史结果表升级失败，原工作区未删除');
       }
     }
   }
@@ -76,6 +103,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   private context: common.Context;
   private store?: relationalStore.RdbStore;
   private drafts: Draft[] = [];
+  private sourceHistory: Map<string, Map<number, DraftSourceSnapshot>> = new Map();
   private operations: SyncOperation[] = [];
   private clientId: string = '';
   private cursor: string = '0';
@@ -96,6 +124,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     try {
       await this.loadState(store);
       await this.loadDrafts(store);
+      await this.loadSourceHistory(store);
       await this.loadOperations(store);
     } catch (error) { this.store = undefined; throw new Error('RDB initialization failed'); }
   }
@@ -139,7 +168,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   }
 
   aiResults(allowTestData: boolean = false): AIResultRepository {
-    return new RdbAIResultRepository(this.requireStore(), allowTestData);
+    return new RdbAIResultRepository(this.requireStore(), allowTestData, (record: IDERecord) => this.queueAIRecord(record));
   }
 
   getClientId(): string { return this.clientId; }
@@ -180,6 +209,61 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   applyServerDraft(draft: Draft): void {
     draft.syncStatus = SyncStatus.SYNCED;
     this.replaceDraft(draft);
+  }
+
+  queueAIRecord(record: IDERecord): void {
+    if (record.isTestData || record.state !== IDEState.SUCCESS || record.capability === IDECapability.COMPLETION) return;
+    const entityType = record.capability === IDECapability.REVIEW ? SyncEntityType.REVIEW_RESULT : SyncEntityType.AI_ARTIFACT;
+    const payload = recordToSyncPayload(record, this.clientId, entityType);
+    const existing = this.operations.find((operation: SyncOperation) => operation.entity_type === entityType && operation.entity_id === record.id);
+    const operation = new SyncOperation();
+    operation.operation_id = existing !== undefined && existing.operation_id.trim().length > 0 && !this.inFlight.includes(existing.operation_id)
+      ? existing.operation_id : createOperationId();
+    operation.entity_type = entityType;
+    operation.entity_id = record.id;
+    operation.operation_type = SyncOperationType.UPSERT;
+    operation.base_version = existing?.base_version ?? record.serverVersion;
+    operation.client_id = this.clientId;
+    operation.occurred_at = record.updatedAt || new Date().toISOString();
+    operation.payload = payload;
+    this.operations = this.operations.filter((item: SyncOperation) => !(item.entity_type === entityType && item.entity_id === record.id));
+    this.operations.push(operation);
+    this.enqueue(async () => this.persistOperation(operation));
+  }
+
+  async getAIRecord(id: string): Promise<IDERecord | undefined> {
+    const repository = new RdbAIResultRepository(this.requireStore(), false);
+    for (const draft of this.drafts) {
+      const records = await repository.list(draft.id, draft.aiMode);
+      const found = records.find((record: IDERecord) => record.id === id);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  async applyServerAIArtifact(payload: AIArtifactPayload): Promise<void> {
+    await this.applyServerAIRecord(payload, SyncEntityType.AI_ARTIFACT);
+  }
+
+  async applyServerReview(payload: ReviewResultPayload): Promise<void> {
+    await this.applyServerAIRecord(payload, SyncEntityType.REVIEW_RESULT);
+  }
+
+  async saveConflictAIRecord(record: IDERecord, conflict: ConflictRecord): Promise<void> {
+    await new RdbAIResultRepository(this.requireStore(), false).save(record, true);
+    this.enqueue(async () => this.persistConflict(conflict));
+  }
+
+  getDraftSourceCode(draftId: string, version: number): string | undefined {
+    const snapshot = this.sourceHistory.get(draftId)?.get(version);
+    if (snapshot !== undefined) return snapshot.code;
+    const draft = this.drafts.find((item: Draft) => item.id === draftId && !item.deleted);
+    return draft !== undefined && draft.version === version ? draft.code : undefined;
+  }
+
+  getDraftSourceSegments(draftId: string, version: number): IdeaSegment[] | undefined {
+    return this.sourceHistory.get(draftId)?.get(version)?.ideaSegments.map((segment: IdeaSegment) =>
+      new IdeaSegment(segment.id, segment.content, segment.position));
   }
 
   saveConflictDraft(draft: Draft, record: ConflictRecord): void {
@@ -296,12 +380,43 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     this.operations = loaded;
   }
 
+  private async loadSourceHistory(store: relationalStore.RdbStore): Promise<void> {
+    const resultSet = await store.querySql('SELECT draft_id, version, code, idea_segments_json FROM draft_source_history');
+    const loaded: Map<string, Map<number, DraftSourceSnapshot>> = new Map();
+    try {
+      if (resultSet.goToFirstRow()) do {
+        const draftId = readString(resultSet, 'draft_id');
+        const version = readNumber(resultSet, 'version');
+        const snapshot: DraftSourceSnapshot = { code: readString(resultSet, 'code'), ideaSegments: parseIdeaSegments(readString(resultSet, 'idea_segments_json')) };
+        const versions = loaded.get(draftId) ?? new Map<number, DraftSourceSnapshot>();
+        versions.set(version, snapshot); loaded.set(draftId, versions);
+      } while (resultSet.goToNextRow());
+    } finally { resultSet.close(); }
+    this.sourceHistory = loaded;
+  }
+
   private replaceDraft(draft: Draft): void {
     const snapshot = cloneDraft(draft);
     const index = this.drafts.findIndex((item: Draft) => item.id === snapshot.id);
     if (index >= 0) this.drafts[index] = snapshot;
     else this.drafts.push(snapshot);
+    if (snapshot.deleted) this.sourceHistory.delete(snapshot.id);
+    if (!snapshot.deleted && snapshot.version > 0) {
+      const versions = this.sourceHistory.get(snapshot.id) ?? new Map<number, DraftSourceSnapshot>();
+      versions.set(snapshot.version, { code: snapshot.code, ideaSegments: snapshot.ideaSegments.map((segment: IdeaSegment) =>
+        new IdeaSegment(segment.id, segment.content, segment.position)) });
+      this.sourceHistory.set(snapshot.id, versions);
+    }
     this.enqueue(async () => this.persistDraft(snapshot));
+  }
+
+  private async applyServerAIRecord(payload: AIArtifactPayload | ReviewResultPayload, entityType: string): Promise<void> {
+    const draft = this.drafts.find((item: Draft) => item.id === payload.draft_id && !item.deleted);
+    if (draft === undefined) throw new Error('AI_SOURCE_DRAFT_NOT_FOUND');
+    const source = this.sourceHistory.get(payload.draft_id)?.get(payload.source_draft_version);
+    const sourceDraft = source === undefined ? draft : cloneDraftWithSource(draft, source);
+    const record = syncPayloadToRecord(payload, entityType, sourceDraft);
+    await new RdbAIResultRepository(this.requireStore(), false).save(record, true);
   }
 
   private queueOperation(draft: Draft, operationType: SyncOperationType): void {
@@ -349,7 +464,15 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
         draft.version, draft.createdAt, draft.updatedAt, draft.deleted ? 1 : 0, draft.lastModifiedClientId,
         draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0, JSON.stringify(draft.ideaSegments)
       ]);
-    if (draft.deleted) await store.executeSql('DELETE FROM ai_results WHERE draft_id = ?', [draft.id]);
+    if (!draft.deleted && draft.version > 0) {
+      await store.executeSql('INSERT OR REPLACE INTO draft_source_history (draft_id, version, code, idea_segments_json) VALUES (?, ?, ?, ?)',
+        [draft.id, draft.version, draft.code, JSON.stringify(draft.ideaSegments)]);
+    }
+    if (draft.deleted) {
+      await store.executeSql('DELETE FROM ai_results WHERE draft_id = ?', [draft.id]);
+      await store.executeSql('DELETE FROM ai_result_history WHERE draft_id = ?', [draft.id]);
+      await store.executeSql('DELETE FROM draft_source_history WHERE draft_id = ?', [draft.id]);
+    }
   }
 
   private async persistOperation(operation: SyncOperation): Promise<void> {
@@ -371,8 +494,8 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
 
   private async persistConflict(record: ConflictRecord): Promise<void> {
     await this.requireStore().executeSql('INSERT OR REPLACE INTO conflicts (' +
-      'id, entity_id, local_copy_id, server_entity_json, created_at, resolved) VALUES (?, ?, ?, ?, ?, ?)',
-      [record.id, record.entity_id, record.local_copy_id, JSON.stringify(record.server_entity), record.created_at,
+      'id, entity_type, entity_id, local_copy_id, server_entity_json, created_at, resolved) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [record.id, record.entity_type || SyncEntityType.DRAFT, record.entity_id, record.local_copy_id, JSON.stringify(record.server_entity), record.created_at,
         record.resolved ? 1 : 0]);
   }
 
@@ -383,8 +506,88 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   }
 }
 
+async function ensureConflictEntityType(store: relationalStore.RdbStore): Promise<void> {
+  let columns: relationalStore.ResultSet;
+  try { columns = await store.querySql('PRAGMA table_info(conflicts)'); } catch (error) { return; }
+  let found = false;
+  try {
+    if (columns.goToFirstRow()) do {
+      if (columns.getString(columns.getColumnIndex('name')) === 'entity_type') found = true;
+    } while (columns.goToNextRow());
+  } finally { columns.close(); }
+  if (!found) await store.executeSql("ALTER TABLE conflicts ADD COLUMN entity_type TEXT NOT NULL DEFAULT 'draft'");
+}
+
 function readString(resultSet: relationalStore.ResultSet, column: string): string {
   return resultSet.getString(resultSet.getColumnIndex(column));
+}
+
+function recordToSyncPayload(record: IDERecord, clientId: string, entityType: string): AIArtifactPayload | ReviewResultPayload {
+  const value = JSON.parse(record.body) as Record<string, Object>;
+  if (entityType === SyncEntityType.REVIEW_RESULT) {
+    const payload = new ReviewResultPayload();
+    payload.id = record.id; payload.version = record.serverVersion; payload.server_sequence = record.serverSequence;
+    payload.created_at = record.createdAt.length > 0 ? record.createdAt : record.updatedAt; payload.updated_at = record.updatedAt; payload.deleted = false;
+    payload.last_modified_client_id = clientId; payload.draft_id = record.context.draftId;
+    payload.mode = record.context.mode; payload.source_draft_version = record.context.version;
+    payload.model_id = String(value['model_id']); payload.rule_version = String(value['rule_version']);
+    payload.review_kind = record.reviewKind; payload.diagnostics = value['diagnostics'] as ReviewDiagnosticPayload[];
+    payload.visibility = String(value['visibility']); payload.freshness = record.stale ? 'stale' : 'current';
+    return payload;
+  }
+  const payload = new AIArtifactPayload();
+  payload.id = record.id; payload.version = record.serverVersion; payload.server_sequence = record.serverSequence;
+  payload.created_at = record.updatedAt; payload.updated_at = record.updatedAt; payload.deleted = false;
+  payload.last_modified_client_id = clientId; payload.draft_id = record.context.draftId;
+  payload.mode = record.context.mode; payload.pseudocode = value['pseudocode'] as Object[];
+  payload.code_snippet = value['code_snippet'] as string | null; payload.code_mappings = value['code_mappings'] as Object[];
+  payload.assumptions = value['assumptions'] as string[]; payload.missing_information = value['missing_information'] as string[];
+  payload.risk_flags = value['risk_flags'] as string[]; payload.added_algorithm_steps = value['added_algorithm_steps'] as string[];
+  payload.source_draft_version = record.context.version; payload.model_id = String(value['model_id']);
+  payload.rule_version = String(value['rule_version']); payload.output_kind = String(value['output_kind']);
+  payload.visibility = String(value['visibility']); payload.template_id = value['template_id'] as string | null;
+  return payload;
+}
+
+function syncPayloadToRecord(payload: AIArtifactPayload | ReviewResultPayload, entityType: string, draft: Draft): IDERecord {
+  const record = new IDERecord();
+  record.id = payload.id; record.context.draftId = payload.draft_id; record.context.version = payload.source_draft_version;
+  record.context.file = 'main.cpp'; record.context.mode = parseMode(payload.mode); record.context.code = draft.code;
+  record.context.idea = draft.idea; record.context.problemContext = draft.title || '当前草稿';
+  record.context.segments = draft.ideaSegments.map((segment: IdeaSegment): AIRequestSegment => new AIRequestSegment(segment.id, segment.content));
+  record.context.syncStatus = draft.syncStatus; record.capability = entityType === SyncEntityType.REVIEW_RESULT ? IDECapability.REVIEW : IDECapability.TRANSFORM;
+  record.reviewKind = entityType === SyncEntityType.REVIEW_RESULT ? parseReviewKind((payload as ReviewResultPayload).review_kind) : ReviewKind.EXPLANATION;
+  record.state = IDEState.SUCCESS; record.serverVersion = payload.version; record.serverSequence = payload.server_sequence;
+  record.syncEntityType = entityType; record.createdAt = payload.created_at; record.updatedAt = payload.updated_at; record.restored = true;
+  if (entityType === SyncEntityType.REVIEW_RESULT) {
+    const review = payload as ReviewResultPayload;
+    record.body = JSON.stringify({ mode: review.mode, source_draft_version: review.source_draft_version, model_id: review.model_id,
+      rule_version: review.rule_version, review_kind: review.review_kind, output_kind: 'review', diagnostics: review.diagnostics,
+      visibility: review.visibility });
+    record.stale = review.freshness === 'stale';
+  } else {
+    const artifact = payload as AIArtifactPayload;
+    record.body = JSON.stringify({ mode: artifact.mode, pseudocode: artifact.pseudocode, code_snippet: artifact.code_snippet,
+      code_mappings: artifact.code_mappings, assumptions: artifact.assumptions, missing_information: artifact.missing_information,
+      risk_flags: artifact.risk_flags, added_algorithm_steps: artifact.added_algorithm_steps, source_draft_version: artifact.source_draft_version,
+      model_id: artifact.model_id, rule_version: artifact.rule_version, output_kind: artifact.output_kind, visibility: artifact.visibility,
+      template_id: artifact.template_id });
+    record.stale = false;
+  }
+  return record;
+}
+
+function parseMode(value: string): AIMode {
+  if (value === AIMode.FEASIBILITY_ANALYSIS) return AIMode.FEASIBILITY_ANALYSIS;
+  if (value === AIMode.PROGRESSIVE_HINT) return AIMode.PROGRESSIVE_HINT;
+  if (value === AIMode.FULL_SOLUTION) return AIMode.FULL_SOLUTION;
+  return AIMode.FAITHFUL_TRANSFORM;
+}
+
+function parseReviewKind(value: string): ReviewKind {
+  if (value === 'explanation') return ReviewKind.EXPLANATION;
+  if (value === 'complexity') return ReviewKind.COMPLEXITY;
+  return ReviewKind.RISK;
 }
 
 function readNumber(resultSet: relationalStore.ResultSet, column: string): number {
@@ -416,6 +619,14 @@ function cloneDraft(draft: Draft): Draft {
   snapshot.syncStatus = draft.syncStatus;
   snapshot.aiArtifacts = draft.aiArtifacts.map((artifact: AIArtifact) => artifact.clone());
   return snapshot;
+}
+
+function cloneDraftWithSource(draft: Draft, source: DraftSourceSnapshot): Draft {
+  const copy = cloneDraft(draft);
+  copy.code = source.code;
+  copy.ideaSegments = source.ideaSegments.map((segment: IdeaSegment) => new IdeaSegment(segment.id, segment.content, segment.position));
+  copy.idea = source.ideaSegments.map((segment: IdeaSegment) => segment.content).join('\n');
+  return copy;
 }
 
 function cloneOperation(source: SyncOperation): SyncOperation {

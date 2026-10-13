@@ -1,7 +1,7 @@
 import { Icon } from './Icon';
 import type { ReviewIssue } from '../code-review';
 import { rangeToOffsets } from '../ai-client.mjs';
-import type { AIResultRecord, AISessionState, FileId, IdeaSegment, Mode, ReviewKind } from '../types';
+import type { AIArtifact, AIResultRecord, AISessionState, FileId, IdeaSegment, Mode, ReviewKind } from '../types';
 
 interface InspectorPanelProps {
   hidden: boolean;
@@ -20,11 +20,18 @@ interface InspectorPanelProps {
   onCancel: () => void;
   onToggleResult: (id: string, hidden: boolean) => void;
   onRetryStorage: () => void;
+  artifact: AIArtifact | null;
+  artifactHistory: AIArtifact[];
+  artifactBusy: boolean;
+  artifactMessage: string;
+  onArtifact: () => void;
+  onToggleArtifact: (artifact: AIArtifact) => void;
 }
 
 export function InspectorPanel({
   hidden, onHide, onShow, issues, onJumpToLine, aiState, mode, activeFile, canAcceptCompletion,
   onReview, onCompletion, onAcceptCompletion, onRejectCompletion, onCancel, onToggleResult, onRetryStorage,
+  artifact, artifactHistory, artifactBusy, artifactMessage, onArtifact, onToggleArtifact,
 }: InspectorPanelProps) {
   const errors = issues.filter((issue) => issue.severity === 'error').length;
   const canRequest = mode === 'faithful_transform' && activeFile === 'main.cpp';
@@ -95,30 +102,48 @@ export function InspectorPanel({
             ))}
           </div>
         </section>
+        <section className="inspect-section ai-artifact-history">
+          <div className="inspect-title"><span>忠实转换结果</span><span>跨端同步</span></div>
+          <p className="ai-help">结果进入独立 AI artifact 同步实体；旧来源保留为历史，只读。</p>
+          <button type="button" className="outline-button" onClick={onArtifact} disabled={artifactBusy || !canRequest}>请求忠实转换</button>
+          {artifactMessage && <p className="ai-help" role="status">{artifactMessage}</p>}
+          {artifactHistory.map((item) => (
+            <article className={item.id === artifact?.id && getArtifactFreshness(item, artifact) === 'current' ? 'ai-result' : 'ai-result stale'} key={item.id}>
+              <div className="ai-result-heading"><strong>{item.id === artifact?.id ? '当前结果' : '历史结果'}</strong><button type="button" className="quiet-button" onClick={() => onToggleArtifact(item)}>{item.visibility === 'hidden' ? '显示结果' : '隐藏结果'}</button></div>
+              {item.visibility !== 'hidden' && <>
+                <p className="ai-provenance">草稿 v{item.source_draft_version} · {item.mode} · {item.model_id}</p>
+                {item.pseudocode.map((step) => <div className="ai-diagnostic" key={step.id}><strong>{step.step}</strong><p>来源：{step.source_refs.join(', ')}</p></div>)}
+              </>}
+            </article>
+          ))}
+        </section>
         <section className="inspect-section completion-section">
           <div className="inspect-title"><span>忠实模式局部补全</span><span>预览后写入</span></div>
           <p className="ai-help">仅补充当前思路。接受后仍需保存，不自动上传。</p>
           <button type="button" className="outline-button" onClick={onCompletion} disabled={!canRequest}>请求局部补全</button>
-          {completion && (
-            <article className={completion.stale ? 'ai-result stale' : 'ai-result'} aria-label="补全结果">
-              <ResultHeading record={completion} title="补全预览" onToggle={onToggleResult} />
-              {!completion.hidden && <>
-                <ResultStatus record={completion} />
-                {completion.result?.output_kind === 'completion' && <>
-                  <p>替换范围：{completion.result.replaced_range.start_line}:{completion.result.replaced_range.start_char + 1}
-                    {' → '}{completion.result.replaced_range.end_line}:{completion.result.replaced_range.end_char + 1}（列从 1 开始）</p>
-                  <p>替换前</p>
-                  <pre aria-label="替换前代码">{originalFragment(completion) || '（光标处插入，不删除原文）'}</pre>
-                  <p>建议片段</p>
-                  <pre aria-label="建议代码">{completion.result.suggestion_text}</pre>
-                  <div className="review-actions">
-                    <button type="button" className="outline-button" disabled={!canAcceptCompletion} onClick={onAcceptCompletion}>接受并写入 main.cpp</button>
-                    <button type="button" className="outline-button" disabled={completion.state !== 'success'} onClick={onRejectCompletion}>拒绝补全</button>
-                  </div>
+          {aiState.completionHistory.map(record => {
+            const isCurrentRecord = record.id === completion?.id;
+            return (
+              <article className={record.stale ? 'ai-result stale' : 'ai-result'} aria-label={record.stale ? '历史补全结果' : '补全结果'} key={record.id}>
+                <ResultHeading record={record} title={record.stale ? '补全历史' : '补全预览'} onToggle={onToggleResult} />
+                {!record.hidden && <>
+                  <ResultStatus record={record} />
+                  {record.result?.output_kind === 'completion' && <>
+                    <p>替换范围：{record.result.replaced_range.start_line}:{record.result.replaced_range.start_char + 1}
+                      {' → '}{record.result.replaced_range.end_line}:{record.result.replaced_range.end_char + 1}（列从 1 开始）</p>
+                    <p>替换前</p>
+                    <pre aria-label="替换前代码">{originalFragment(record) || '（光标处插入，不删除原文）'}</pre>
+                    <p>建议片段</p>
+                    <pre aria-label="建议代码">{record.result.suggestion_text}</pre>
+                    {isCurrentRecord && <div className="review-actions">
+                      <button type="button" className="outline-button" disabled={!canAcceptCompletion} onClick={onAcceptCompletion}>接受并写入 main.cpp</button>
+                      <button type="button" className="outline-button" disabled={record.state !== 'success' || record.stale} onClick={onRejectCompletion}>拒绝补全</button>
+                    </div>}
+                  </>}
                 </>}
-              </>}
-            </article>
-          )}
+              </article>
+            );
+          })}
         </section>
       </aside>
       {hidden && (
@@ -134,6 +159,10 @@ export function InspectorPanel({
       )}
     </>
   );
+}
+
+function getArtifactFreshness(artifact: AIArtifact, current: AIArtifact | null): 'current' | 'stale' {
+  return current?.id === artifact.id ? 'current' : 'stale';
 }
 
 function reviewLabel(kind: ReviewKind): string {

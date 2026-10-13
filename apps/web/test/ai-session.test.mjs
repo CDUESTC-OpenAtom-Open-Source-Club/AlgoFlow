@@ -28,6 +28,27 @@ test('reviews append same-kind messages while persistence keeps the latest slot'
   assert.equal(session.getSnapshot().reviews.every(r => r.isTestData), true);
 });
 
+test('successful review exposes a persisted entity bridge for sync adapters', async () => {
+  const repo = repository(); const session = new AISession(clientFor([]), repo); let persisted;
+  session.setPersistedResultHandler((record) => { persisted = record; });
+  session.setContext(context());
+  await session.requestReview('risk');
+  assert.equal(persisted?.capability, 'review');
+  assert.equal(persisted?.result?.output_kind, 'review');
+  assert.equal(persisted?.sourceDraftVersion, 3);
+});
+
+test('restored completion remains the current historical record but requires a fresh request to accept', () => {
+  const req = { mode: 'faithful_transform', draft_id: 'draft-test', draft_version: 3, rule_version: '1.0.0',
+    code: context().code, visibility: 'visible', cursor: { line: 3, char: 0 } };
+  const record = resultRecord({ capability: 'completion', reviewKind: undefined, result: completionResult(req), sourceCursor: req.cursor });
+  const repo = repository(); repo.records.push(record);
+  const session = new AISession(clientFor([]), repo); session.setContext(context());
+  assert.equal(session.getSnapshot().completion?.stale, false);
+  assert.equal(session.getSnapshot().completion?.restored, true);
+  assert.equal(session.canAcceptCompletion(), false);
+});
+
 test('new request cancels the previous generation and ignores a late success', async () => {
   const first = deferred(); const calls = []; const client = { requestReview: async (request, { signal }) => { calls.push(signal); if (calls.length === 1) return first.promise; return { result: reviewResult(request), isTestData: false }; }, requestCompletion: async () => { throw new Error('unused'); } };
   const session = new AISession(client, repository()); session.setContext(context());
@@ -71,7 +92,7 @@ test('recovered results are read-only and hidden state is local', () => {
   const repo = repository(); repo.records.push(resultRecord({ hidden: true }));
   const session = new AISession({ requestReview: async () => { throw new Error(); }, requestCompletion: async () => { throw new Error(); } }, repo);
   session.setContext(context());
-  assert.equal(session.getSnapshot().reviews[0].hidden, true); assert.equal(session.getSnapshot().reviews[0].stale, true);
+  assert.equal(session.getSnapshot().reviews[0].hidden, true); assert.equal(session.getSnapshot().reviews[0].stale, false);
 });
 
 for (const [label, update] of Object.entries({ code: { code: 'new code' }, idea: { idea: 'new idea' },

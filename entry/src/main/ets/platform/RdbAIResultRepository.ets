@@ -7,43 +7,58 @@ import { DEBUG } from 'BuildProfile';
 export class RdbAIResultRepository implements AIResultRepository {
   private store: relationalStore.RdbStore;
   private allowTestData: boolean;
-  constructor(store: relationalStore.RdbStore, allowTestData: boolean) {
-    this.store = store; this.allowTestData = DEBUG && allowTestData;
+  private onLatest?: (record: IDERecord) => void;
+  constructor(store: relationalStore.RdbStore, allowTestData: boolean, onLatest?: (record: IDERecord) => void) {
+    this.store = store; this.allowTestData = DEBUG && allowTestData; this.onLatest = onLatest;
   }
   async list(draftId: string, mode: AIMode): Promise<IDERecord[]> {
-    const rows = await this.store.querySql('SELECT record_json FROM ai_results WHERE draft_id = ? AND mode = ? AND (is_test = 0 OR ? = 1) ORDER BY is_test ASC, updated_at', [draftId, mode, this.allowTestData ? 1 : 0]);
     const records: IDERecord[] = [];
-    try {
-      if (rows.goToFirstRow()) do {
-        const record = decodeAIRecord(rows.getString(0));
-        if (record.isTestData && !this.allowTestData) continue;
-        if (record.context.draftId !== draftId || record.context.mode !== mode) throw new Error('AI 缓存来源不匹配');
-        const index = records.findIndex(item => displaySlot(item) === displaySlot(record));
-        if (index >= 0) {
-          if (records[index].isTestData && !record.isTestData) records[index] = record;
-          continue;
-        }
-        record.stale = true;
-        if (record.state === IDEState.LOADING) { record.state = IDEState.CANCELLED; record.message = '上次请求已结束，请重新发起'; }
-        records.push(record);
-      } while (rows.goToNextRow());
-    } finally { rows.close(); }
-    return records;
+    await this.readRows('SELECT record_json FROM ai_results WHERE draft_id = ? AND mode = ? AND (is_test = 0 OR ? = 1) ORDER BY is_test ASC, updated_at',
+      [draftId, mode, this.allowTestData ? 1 : 0], records);
+    await this.readRows('SELECT record_json FROM ai_result_history WHERE draft_id = ? AND mode = ? AND (is_test = 0 OR ? = 1) ORDER BY is_test ASC, updated_at',
+      [draftId, mode, this.allowTestData ? 1 : 0], records);
+    const unique = new Map<string, IDERecord>();
+    records.forEach((record: IDERecord) => {
+      if (record.isTestData && !this.allowTestData) return;
+      if (record.context.draftId !== draftId || record.context.mode !== mode) throw new Error('AI 缓存来源不匹配');
+      const existing = unique.get(record.id);
+      if (existing === undefined || (!record.isTestData && existing.isTestData)) unique.set(record.id, record);
+    });
+    return Array.from(unique.values()).sort(compareRecords).map((record: IDERecord) => {
+      record.stale = true;
+      if (record.state === IDEState.LOADING) { record.state = IDEState.CANCELLED; record.message = '上次请求已结束，请重新发起'; }
+      return record;
+    });
   }
   async save(record: IDERecord, latest: boolean): Promise<void> {
     if (record.isTestData && !this.allowTestData) throw new Error('当前配置禁止保存测试数据');
     const json = JSON.stringify(record); decodeAIRecord(json);
     const slot = resultSlot(record);
     if (latest) {
+      await this.store.executeSql('INSERT OR IGNORE INTO ai_result_history (draft_id, mode, slot, is_test, result_id, updated_at, record_json) ' +
+        'SELECT draft_id, mode, slot, is_test, result_id, updated_at, record_json FROM ai_results WHERE draft_id = ? AND mode = ? AND slot = ? AND is_test = ?',
+        [record.context.draftId, record.context.mode, slot, record.isTestData ? 1 : 0]);
       await this.store.executeSql('INSERT OR REPLACE INTO ai_results (draft_id, mode, slot, is_test, result_id, updated_at, record_json) SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND deleted = 0)',
         [record.context.draftId, record.context.mode, slot, record.isTestData ? 1 : 0, record.id, record.updatedAt, json, record.context.draftId]);
     } else {
       await this.store.executeSql('UPDATE ai_results SET record_json = ? WHERE draft_id = ? AND mode = ? AND slot = ? AND is_test = ? AND result_id = ?',
         [json, record.context.draftId, record.context.mode, slot, record.isTestData ? 1 : 0, record.id]);
+      await this.store.executeSql('UPDATE ai_result_history SET record_json = ?, updated_at = ? WHERE result_id = ?',
+        [json, record.updatedAt, record.id]);
+    }
+    if (latest && !record.restored && record.state === IDEState.SUCCESS && (record.capability === IDECapability.REVIEW || record.capability === IDECapability.TRANSFORM)) {
+      this.onLatest?.(record);
     }
   }
   async removeDraft(draftId: string): Promise<void> {
     await this.store.executeSql('DELETE FROM ai_results WHERE draft_id = ?', [draftId]);
+    await this.store.executeSql('DELETE FROM ai_result_history WHERE draft_id = ?', [draftId]);
+  }
+  private async readRows(sql: string, args: Array<string | number>, records: IDERecord[]): Promise<void> {
+    const rows = await this.store.querySql(sql, args);
+    try {
+      if (rows.goToFirstRow()) do { records.push(decodeAIRecord(rows.getString(0))); } while (rows.goToNextRow());
+    } finally { rows.close(); }
   }
 }
 export function resultSlot(record: IDERecord): string {
@@ -54,6 +69,11 @@ function storageSlot(record: IDERecord): string {
 }
 function displaySlot(record: IDERecord): string {
   return record.capability === IDECapability.COMPLETION ? resultSlot(record) : storageSlot(record);
+}
+function compareRecords(left: IDERecord, right: IDERecord): number {
+  return Number(left.isTestData) - Number(right.isTestData) || left.context.version - right.context.version ||
+    left.createdAt.localeCompare(right.createdAt) || left.serverSequence - right.serverSequence ||
+    left.serverVersion - right.serverVersion || left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id);
 }
 export function decodeAIRecord(json: string): IDERecord {
   const record = JSON.parse(json) as IDERecord;
@@ -67,5 +87,11 @@ export function decodeAIRecord(json: string): IDERecord {
     !['explanation', 'risk', 'complexity'].includes(record.reviewKind) ||
     !['loading', 'success', 'error', 'cancelled', 'accepted', 'rejected'].includes(record.state)) throw new Error('AI 缓存损坏，请保留数据并重试');
   if (record.body.length > 0) parseIDEResult(record.body, record);
+  if (record.serverVersion === undefined) record.serverVersion = 0;
+  if (record.serverSequence === undefined) record.serverSequence = 0;
+  if (record.createdAt === undefined) record.createdAt = record.updatedAt;
+  if (record.syncEntityType === undefined) record.syncEntityType = '';
+  if (record.restored === undefined) record.restored = false;
+  if (record.context.syncStatus === undefined) record.context.syncStatus = 'synced';
   return record;
 }

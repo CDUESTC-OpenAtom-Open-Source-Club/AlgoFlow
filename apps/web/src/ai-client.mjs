@@ -66,8 +66,11 @@ export class WebAIClient {
   }
 
   /** @param {Record<string, unknown>} request @param {{signal?: AbortSignal}} [options] */
+  /** @param {import('./types').AITransformRequest} request @param {{signal?: AbortSignal}} [options] */
   requestTransform(request, options = {}) {
-    return this.#request('/requests', request, options);
+    return this.#request('/requests', request, options).then(response => ({
+      result: parseAIArtifactResult(response.result, request), isTestData: response.isTestData,
+    }));
   }
 
   /** @param {string} path @param {object} body @param {{signal?: AbortSignal}} [options] */
@@ -103,6 +106,44 @@ export class WebAIClient {
   }
 }
 
+/** @param {import('./types').Draft} draft @param {import('./types').Documents} documents @param {import('./types').Mode} mode */
+export function buildAIRequest(draft, documents, mode) {
+  return /** @type {import('./types').AITransformRequest} */ ({
+    mode, draft_id: draft.id, draft_version: draft.version, language: draft.language,
+    rule_version: '1.0.0', problem_context: documents['idea.md'] || draft.title,
+    idea_segments: draft.idea_segments ?? [], code: documents['main.cpp'], output_kind: 'pseudocode', visibility: 'visible',
+  });
+}
+
+/** @param {unknown} value @param {import('./types').AITransformRequest} request */
+export function parseAIArtifactResult(value, request) {
+  const artifact = objectValue(value);
+  const required = ['mode', 'pseudocode', 'code_snippet', 'code_mappings', 'assumptions', 'missing_information',
+    'risk_flags', 'added_algorithm_steps', 'source_draft_version', 'model_id', 'rule_version', 'output_kind', 'visibility', 'template_id'];
+  exactKeys(artifact, required);
+  if (artifact.mode !== request.mode || artifact.source_draft_version !== request.draft_version ||
+    artifact.rule_version !== request.rule_version || artifact.output_kind !== request.output_kind || artifact.visibility !== request.visibility ||
+    !Array.isArray(artifact.pseudocode) || artifact.pseudocode.length === 0 || !Array.isArray(artifact.code_mappings) ||
+    !Array.isArray(artifact.assumptions) || !Array.isArray(artifact.missing_information) || !Array.isArray(artifact.risk_flags) ||
+    !Array.isArray(artifact.added_algorithm_steps)) throw invalidArtifact();
+  return /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (artifact));
+}
+
+/** @param {unknown} response @param {import('./types').Draft} draft @param {string} clientId @param {string[]} sourceIds @param {string} ruleVersion */
+export function artifactFromGateway(response, draft, clientId, sourceIds, ruleVersion = '1.0.0') {
+  const source = objectValue(response);
+  const entity = /** @type {import('./types').AIArtifact} */ ({
+    ...source, id: crypto.randomUUID(), version: 0, server_sequence: 0,
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString(), deleted: false,
+    last_modified_client_id: clientId, draft_id: draft.id, source_draft_version: draft.version,
+  });
+  if (entity.mode !== draft.ai_mode || entity.rule_version !== ruleVersion || entity.output_kind !== 'pseudocode' ||
+    entity.visibility !== 'visible' || entity.pseudocode.some((step) => !Array.isArray(step.source_refs) || step.source_refs.some((ref) => !sourceIds.includes(ref)))) {
+    throw new Error('INVALID_AI_ARTIFACT');
+  }
+  return /** @type {import('./types').AIArtifact} */ (entity);
+}
+
 /** Legacy client port retained for the persisted artifact/review tests. */
 export class LocalAIClient extends WebAIClient {
   /** @param {import('./types').AIReviewRequest} request @param {{ signal?: AbortSignal }} [options] */
@@ -110,7 +151,7 @@ export class LocalAIClient extends WebAIClient {
     return (await this.requestReview(request, options)).result;
   }
 
-  /** @param {Record<string, unknown>} request @param {{ signal?: AbortSignal }} [options] */
+  /** @param {import('./types').AITransformRequest} request @param {{ signal?: AbortSignal }} [options] */
   async generate(request, options = {}) {
     return (await this.requestTransform(request, options)).result;
   }

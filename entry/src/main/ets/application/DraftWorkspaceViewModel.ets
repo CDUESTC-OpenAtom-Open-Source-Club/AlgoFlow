@@ -53,6 +53,7 @@ export class DraftWorkspaceViewModel {
     context.file = file; context.mode = draft.aiMode; context.code = draft.code; context.idea = draft.idea;
     context.problemContext = draft.title || '当前草稿';
     context.segments = draft.ideaSegments.map(segment => new AIRequestSegment(segment.id, segment.content));
+    context.syncStatus = draft.syncStatus;
     this.aiSession?.setContext(context);
   }
 
@@ -66,6 +67,7 @@ export class DraftWorkspaceViewModel {
       const result = await new PhoneSyncService(this.syncRepository).synchronize();
       await this.repository.flush();
       this.selectAIContext(this.aiDraft, this.aiFile);
+      await this.aiSession?.reload();
       return result;
     } finally { this.syncing = false; }
   }

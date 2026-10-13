@@ -1,5 +1,6 @@
-import { Draft, SyncStatus } from './Models';
-import { ConflictRecord, SyncOperation } from './SyncModels';
+import { Draft, IdeaSegment, SyncStatus } from './Models';
+import { AIArtifactPayload, ConflictRecord, DraftPayload, ReviewResultPayload, SyncOperation } from './SyncModels';
+import { IDERecord } from './IDEAIModels';
 
 export interface SyncRepository {
   getClientId(): string;
@@ -15,4 +16,11 @@ export interface SyncRepository {
   applyServerDraft(draft: Draft): void;
   saveConflictDraft(draft: Draft, record: ConflictRecord): void;
   setDraftSyncStatus(id: string, status: SyncStatus): void;
+  queueAIRecord(record: IDERecord): void;
+  getAIRecord(id: string): Promise<IDERecord | undefined>;
+  applyServerAIArtifact(payload: AIArtifactPayload): Promise<void>;
+  applyServerReview(payload: ReviewResultPayload): Promise<void>;
+  saveConflictAIRecord(record: IDERecord, conflict: ConflictRecord): Promise<void>;
+  getDraftSourceCode(draftId: string, version: number): string | undefined;
+  getDraftSourceSegments(draftId: string, version: number): IdeaSegment[] | undefined;
 }

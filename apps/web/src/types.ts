@@ -50,6 +50,10 @@ export interface AIReviewRequest extends AISourceRequest {
   review_kind: ReviewKind;
 }
 
+export interface AITransformRequest extends AISourceRequest {
+  output_kind: 'pseudocode';
+}
+
 export interface AICompletionRequest extends AISourceRequest {
   output_kind: 'completion';
   cursor: AICursor;
@@ -65,6 +69,8 @@ export interface AIContext {
   idea: string;
   idea_segments?: IdeaSegment[];
   problemContext: string;
+  /** A missing value keeps compatibility with callers that predate sync gating. */
+  syncStatus?: SyncStatus;
 }
 
 export interface AIResponse<T> {
@@ -124,6 +130,7 @@ export interface AIResultRecord {
   isTestData: boolean;
   hidden: boolean;
   stale: boolean;
+  restored?: boolean;
   requestGeneration: number;
   sourceDraftVersion: number;
   sourceFile: FileId;
@@ -133,6 +140,9 @@ export interface AIResultRecord {
   sourceSegments: IdeaSegment[];
   sourceCursor: AICursor | null;
   updatedAt: string;
+  createdAt?: string;
+  serverVersion?: number;
+  serverSequence?: number;
 }
 
 export interface AIArtifact {
@@ -183,7 +193,37 @@ export interface ReviewResult {
   freshness: ReviewFreshness;
 }
 
-export interface DraftVersionSnapshot { draft_id: string; version: number; code: string; }
+export interface DraftVersionSnapshot {
+  draft_id: string;
+  version: number;
+  code: string;
+  idea_segments?: IdeaSegment[];
+}
+
+export interface AIArtifact {
+  id: string;
+  version: number;
+  server_sequence: number;
+  created_at: string;
+  updated_at: string;
+  deleted: boolean;
+  last_modified_client_id: string;
+  draft_id: string;
+  mode: Mode;
+  pseudocode: { id: string; step: string; source_refs: string[] }[];
+  code_snippet: string | null;
+  code_mappings: { step_id: string; start_line: number; end_line: number }[];
+  assumptions: string[];
+  missing_information: string[];
+  risk_flags: string[];
+  added_algorithm_steps: string[];
+  source_draft_version: number;
+  model_id: string;
+  rule_version: string;
+  output_kind: 'pseudocode' | 'code_snippet';
+  visibility: 'visible' | 'hidden';
+  template_id: string | null;
+}
 
 export interface AIResultRepository {
   listForDraft(draftId: string, mode: Mode): AIResultRecord[];
@@ -196,6 +236,7 @@ export interface AIResultRepository {
 export interface AISessionState {
   reviews: AIResultRecord[];
   completion: AIResultRecord | null;
+  completionHistory: AIResultRecord[];
   segments: IdeaSegment[];
   storageError: string;
 }

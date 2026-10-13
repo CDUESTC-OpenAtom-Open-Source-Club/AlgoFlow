@@ -1,6 +1,7 @@
 import { SyncRepository } from '../domain/SyncRepository';
 import { Draft, SyncStatus } from '../domain/Models';
-import { ConflictRecord, DraftPayload, PullChange, SyncResultStatus, payloadToDraft } from '../domain/SyncModels';
+import { AIArtifactPayload, ConflictRecord, DraftPayload, PullChange, ReviewResultPayload, SyncEntityType, SyncResultStatus, payloadToDraft } from '../domain/SyncModels';
+import { IDERecord } from '../domain/IDEAIModels';
 import { HttpSyncClient } from './HttpSyncClient';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -36,7 +37,7 @@ export class PhoneSyncService {
     const pending = this.repository.listPendingOperations();
     hilog.info(DOMAIN, TAG, '[AlgoFlow] Sync run started. pending=%{public}s cursor=%{public}s',
       pending.length.toString(), safeLogValue(this.repository.getCursor()));
-    for (const operation of pending) this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.SYNCING);
+    for (const operation of pending) if (entityType(operation.entity_type) === SyncEntityType.DRAFT) this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.SYNCING);
     const client = new HttpSyncClient(this.repository.getBaseUrl());
     let hadConflict = false;
     for (const operation of pending) {
@@ -56,7 +57,11 @@ export class PhoneSyncService {
             this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.FAILED);
             return new SyncRunResult(SyncRunStatus.FAILED, '服务器未返回冲突版本');
           }
-          this.recordConflict(operation.entity_id, operation.payload, result.server_entity);
+          if (entityType(operation.entity_type) === SyncEntityType.DRAFT) {
+            this.recordConflict(operation.entity_id, operation.payload as DraftPayload, result.server_entity as DraftPayload);
+          } else {
+            await this.recordAIConflict(operation.entity_type, operation.entity_id, result.server_entity);
+          }
           this.repository.removeOperation(operation.operation_id);
           hadConflict = true;
           continue;
@@ -66,7 +71,13 @@ export class PhoneSyncService {
           return new SyncRunResult(SyncRunStatus.FAILED, result.error_code ?? '同步操作被拒绝');
         }
         const serverPayload = result.server_entity ?? operation.payload;
-        this.repository.applyServerDraft(payloadToDraft(serverPayload));
+        if (entityType(operation.entity_type) === SyncEntityType.AI_ARTIFACT) {
+          await this.repository.applyServerAIArtifact(serverPayload as AIArtifactPayload);
+        } else if (entityType(operation.entity_type) === SyncEntityType.REVIEW_RESULT) {
+          await this.repository.applyServerReview(serverPayload as ReviewResultPayload);
+        } else {
+          this.repository.applyServerDraft(payloadToDraft(serverPayload as DraftPayload));
+        }
         this.repository.removeOperation(operation.operation_id);
       } catch (error) {
         this.markPendingFailed();
@@ -80,7 +91,7 @@ export class PhoneSyncService {
 
     try {
       const pull = await client.pull(this.repository.getCursor());
-      this.applyPulledChanges(pull.changes);
+      await this.applyPulledChanges(pull.changes);
       this.repository.setCursor(pull.next_cursor);
     } catch (error) {
       this.markPendingFailed();
@@ -98,11 +109,22 @@ export class PhoneSyncService {
       '同步完成');
   }
 
-  private applyPulledChanges(changes: PullChange[]): void {
+  private async applyPulledChanges(changes: PullChange[]): Promise<void> {
     let applied = 0;
     let skipped = 0;
     for (const change of changes) {
-      if (change.entity_type !== 'draft') {
+      if (entityType(change.entity_type) === SyncEntityType.AI_ARTIFACT || entityType(change.entity_type) === SyncEntityType.REVIEW_RESULT) {
+        const remote = change.entity as AIArtifactPayload | ReviewResultPayload;
+        if (remote.last_modified_client_id === this.repository.getClientId()) { skipped += 1; continue; }
+        const local = await this.repository.getAIRecord(remote.id);
+        if (this.repository.hasPendingOperation(remote.id) || (local !== undefined && remote.version < local.serverVersion)) { skipped += 1; continue; }
+        if (entityType(change.entity_type) === SyncEntityType.AI_ARTIFACT) await this.repository.applyServerAIArtifact(remote as AIArtifactPayload);
+        else await this.repository.applyServerReview(remote as ReviewResultPayload);
+        applied += 1;
+        continue;
+      }
+      const type = entityType(change.entity_type);
+      if (type !== SyncEntityType.DRAFT) {
         skipped += 1;
         continue;
       }
@@ -151,11 +173,30 @@ export class PhoneSyncService {
 
   private markPendingFailed(): void {
     for (const operation of this.repository.listPendingOperations()) {
-      this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.FAILED);
+      if (entityType(operation.entity_type) === SyncEntityType.DRAFT) this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.FAILED);
     }
+  }
+
+  private async recordAIConflict(entityType: string, entityId: string, serverEntity: Object | null | undefined): Promise<void> {
+    if (serverEntity === undefined || serverEntity === null) throw new Error('服务器未返回 AI 结果冲突版本');
+    const local = await this.repository.getAIRecord(entityId);
+    if (local === undefined) throw new Error('AI_CONFLICT_COPY_NOT_FOUND');
+    const copy = JSON.parse(JSON.stringify(local)) as IDERecord;
+    copy.id = `${local.id}-conflict-${util.generateRandomUUID()}`;
+    copy.serverVersion = 0; copy.serverSequence = 0; copy.restored = false;
+    const record = new ConflictRecord(); record.id = util.generateRandomUUID(); record.entity_type = entityType;
+    record.entity_id = entityId; record.local_copy_id = copy.id; record.server_entity = serverEntity as AIArtifactPayload | ReviewResultPayload;
+    record.created_at = new Date().toISOString();
+    if (entityType === SyncEntityType.AI_ARTIFACT) await this.repository.applyServerAIArtifact(serverEntity as AIArtifactPayload);
+    else await this.repository.applyServerReview(serverEntity as ReviewResultPayload);
+    await this.repository.saveConflictAIRecord(copy, record);
   }
 }
 
 function safeLogValue(value: string): string {
   return value.replace(/[^a-zA-Z0-9._:-]/g, '_').substring(0, 96);
+}
+
+function entityType(value: string | undefined): string {
+  return value === undefined || value.length === 0 ? SyncEntityType.DRAFT : value;
 }

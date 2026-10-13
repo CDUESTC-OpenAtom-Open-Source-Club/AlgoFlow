@@ -1,5 +1,65 @@
 import { AIMode, Draft, IdeaSegment, SyncStatus } from './Models';
 
+export class SourceRangePayload {
+  start_line: number = 1;
+  start_char: number = 0;
+  end_line: number = 1;
+  end_char: number = 0;
+}
+
+export class ReviewDiagnosticPayload {
+  id: string = '';
+  level: string = 'info';
+  range: SourceRangePayload | null = null;
+  problem: string = '';
+  basis: string = '';
+  suggestion: string = '';
+}
+
+export class ReviewResultPayload {
+  id: string = '';
+  version: number = 0;
+  server_sequence: number = 0;
+  created_at: string = '';
+  updated_at: string = '';
+  deleted: boolean = false;
+  last_modified_client_id: string = '';
+  draft_id: string = '';
+  mode: string = AIMode.FAITHFUL_TRANSFORM;
+  source_draft_version: number = 0;
+  model_id: string = '';
+  rule_version: string = '';
+  review_kind: string = 'risk';
+  diagnostics: ReviewDiagnosticPayload[] = [];
+  visibility: string = 'visible';
+  freshness: string = 'current';
+}
+
+export class AIArtifactPayload {
+  id: string = '';
+  version: number = 0;
+  server_sequence: number = 0;
+  created_at: string = '';
+  updated_at: string = '';
+  deleted: boolean = false;
+  last_modified_client_id: string = '';
+  draft_id: string = '';
+  mode: string = AIMode.FAITHFUL_TRANSFORM;
+  pseudocode: Object[] = [];
+  code_snippet: string | null = null;
+  code_mappings: Object[] = [];
+  assumptions: string[] = [];
+  missing_information: string[] = [];
+  risk_flags: string[] = [];
+  added_algorithm_steps: string[] = [];
+  source_draft_version: number = 0;
+  model_id: string = '';
+  rule_version: string = '';
+  output_kind: string = 'pseudocode';
+  visibility: string = 'visible';
+  template_id: string | null = null;
+}
+
 export enum SyncEntityType {
   DRAFT = 'draft',
   CODE_DOCUMENT = 'code_document',
@@ -53,21 +113,21 @@ export class SyncOperation {
   base_version: number = 0;
   client_id: string = '';
   occurred_at: string = '';
-  payload: DraftPayload = new DraftPayload();
+  payload: DraftPayload | AIArtifactPayload | ReviewResultPayload = new DraftPayload();
 }
 
 export class PushResult {
   operation_id: string = '';
   status: string = SyncResultStatus.REJECTED;
   version?: number;
-  server_entity?: DraftPayload | null;
+  server_entity?: DraftPayload | AIArtifactPayload | ReviewResultPayload | null;
   error_code?: string;
 }
 
 export class PullChange {
   cursor: string = '0';
   entity_type: string = SyncEntityType.DRAFT;
-  entity: DraftPayload = new DraftPayload();
+  entity: DraftPayload | AIArtifactPayload | ReviewResultPayload = new DraftPayload();
 }
 
 export class PullResult {
@@ -77,9 +137,10 @@ export class PullResult {
 
 export class ConflictRecord {
   id: string = '';
+  entity_type: string = SyncEntityType.DRAFT;
   entity_id: string = '';
   local_copy_id: string = '';
-  server_entity: DraftPayload = new DraftPayload();
+  server_entity: DraftPayload | AIArtifactPayload | ReviewResultPayload = new DraftPayload();
   created_at: string = '';
   resolved: boolean = false;
 }
