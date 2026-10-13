@@ -225,31 +225,6 @@ export interface AIArtifact {
   template_id: string | null;
 }
 
-export type ReviewFreshness = 'current' | 'stale';
-export type DiagnosticLevel = 'error' | 'warning' | 'info' | 'hint';
-export interface SourceRange { start_line: number; start_char: number; end_line: number; end_char: number; }
-export interface ReviewDiagnostic { id: string; level: DiagnosticLevel; range: SourceRange | null; problem: string; basis: string; suggestion: string; }
-export interface ReviewResult {
-  id: string;
-  version: number;
-  server_sequence: number;
-  created_at: string;
-  updated_at: string;
-  deleted: boolean;
-  last_modified_client_id: string;
-  draft_id: string;
-  mode: Mode;
-  source_draft_version: number;
-  model_id: string;
-  rule_version: string;
-  review_kind: ReviewKind;
-  diagnostics: ReviewDiagnostic[];
-  visibility: 'visible' | 'hidden';
-  freshness: ReviewFreshness;
-}
-
-export interface DraftVersionSnapshot { draft_id: string; version: number; code: string; }
-
 export interface AIResultRepository {
   listForDraft(draftId: string, mode: Mode): AIResultRecord[];
   save(record: AIResultRecord): void;
