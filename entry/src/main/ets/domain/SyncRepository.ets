@@ -7,6 +7,8 @@ export interface SyncRepository {
   getDraft(id: string): Draft | undefined;
   getCursor(): string;
   setCursor(cursor: string): void;
+  commitCursor(cursor: string): Promise<void>;
+  flush(): Promise<void>;
   getBaseUrl(): string;
   setBaseUrl(baseUrl: string): void;
   listPendingOperations(): SyncOperation[];

@@ -276,6 +276,108 @@ test('RDB migration transaction control (stub, not real RDB)', async () => {
   let rolled = false; const store = { version: 1, beginTransaction() {}, commit() {}, rollBack() { rolled = true; }, async executeSql() { throw Error('full'); } };
   await assert.rejects(new RdbDraftRepository({}).migrate(store)); assert.equal(store.version, 1); assert.equal(rolled, true);
 });
+test('migration accepts the PR23 v2 artifact-column variant without replacing ordinary tables', async () => {
+  const { migrateWorkspaceStore } = load('platform/RdbDraftRepository');
+  const sql = [];
+  const store = {
+    version: 2, beginTransaction() {}, commit() {}, rollBack() {},
+    async executeSql(statement) { sql.push(statement); },
+    async querySql(statement) {
+      if (statement.startsWith('PRAGMA table_info(')) return { goToFirstRow() { return false; }, goToNextRow() { return false; }, close() {} };
+      assert.equal(statement, 'PRAGMA table_info(conflicts)');
+      let index = -1;
+      const rows = [{ name: 'id' }, { name: 'entity_id' }, { name: 'local_copy_id' }];
+      return { goToFirstRow() { index = 0; return true; }, goToNextRow() { index++; return index < rows.length; },
+        getColumnIndex() { return 0; }, getString() { return rows[index].name; }, close() {} };
+    }
+  };
+  await migrateWorkspaceStore(store);
+  assert.equal(sql.some(statement => statement.includes('CREATE TABLE IF NOT EXISTS ai_results')), true);
+  assert.equal(sql.some(statement => statement.includes('CREATE TABLE IF NOT EXISTS ai_result_history')), true);
+  assert.equal(sql.some(statement => statement.includes('CREATE TABLE IF NOT EXISTS draft_source_history')), true);
+  assert.equal(sql.some(statement => statement.includes('ALTER TABLE conflicts ADD COLUMN entity_type')), true);
+  assert.equal(sql.some(statement => /DROP TABLE|DELETE FROM drafts|ALTER TABLE drafts/i.test(statement)), false);
+});
+test('draft writes keep legacy PR23 embedded AI artifacts until an explicit conversion is available', async () => {
+  const { RdbDraftRepository } = load('platform/RdbDraftRepository');
+  const { Draft } = load('domain/Models');
+  const legacy = '[{"mode":"faithful_transform","pseudocode":[{"id":"step-1","step":"Keep source result","source_refs":["idea-1"]}]}]';
+  const sql = [];
+  const rows = { goToFirstRow() { return true; }, getColumnIndex() { return 0; }, getString() { return legacy; }, close() {} };
+  const repo = new RdbDraftRepository({});
+  repo.store = { version: 2, async executeSql(statement, args) { sql.push([statement, args]); }, async querySql() { return rows; } };
+  const draft = new Draft('legacy-draft', 'legacy'); draft.code = 'int value = 1;';
+  repo.applyServerDraft(draft); await repo.flush();
+  const insert = sql.find(([statement]) => statement.includes('INSERT OR REPLACE INTO drafts'));
+  assert.match(insert[0], /ai_artifacts_json/);
+  assert.equal(insert[1].includes(legacy), true);
+});
+test('draft restore decodes PR23 embedded AI artifacts for the existing AI result view', async () => {
+  const { RdbDraftRepository } = load('platform/RdbDraftRepository');
+  const legacy = JSON.stringify([{ id: 'artifact-old', version: 0, server_sequence: 0,
+    created_at: '2026-10-01T00:00:00.000Z', updated_at: '2026-10-02T00:00:00.000Z', deleted: false,
+    last_modified_client_id: 'phone-old', draft_id: 'legacy-draft', mode: 'faithful_transform',
+    pseudocode: [{ id: 'step-1', step: 'Keep source result', source_refs: ['idea-1'] }],
+    code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [], added_algorithm_steps: [],
+    source_draft_version: 4, model_id: 'legacy-model', rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null }]);
+  const values = { id: 'legacy-draft', title: 'legacy', workspace_id: 'workspace-test', idea: 'Keep source result',
+    code: 'int value = 1;', short_code: '', rewrite: '', version: 4, created_at: '2026-10-01T00:00:00.000Z',
+    updated_at: '2026-10-02T00:00:00.000Z', deleted: 0, last_modified_client_id: 'phone-old', sync_status: 'synced',
+    ai_mode: 'faithful_transform', artifact_hidden: 1, ai_artifacts_json: legacy,
+    idea_segments_json: '[{"id":"idea-1","content":"Keep source result","position":0}]' };
+  const columns = Object.keys(values); let read = false;
+  const rows = { goToFirstRow() { read = true; return true; }, goToNextRow() { read = false; return false; },
+    getColumnIndex(name) { return columns.indexOf(name); }, getString(index) { return String(values[columns[index]]); },
+    getLong(index) { return Number(values[columns[index]]); }, close() {} };
+  const repo = new RdbDraftRepository({});
+  await repo.loadDrafts({ async querySql() { return rows; } });
+  const draft = repo.get('legacy-draft');
+  assert.equal(read, false);
+  assert.equal(draft.artifactHidden, true);
+  assert.equal(draft.aiArtifacts.length, 1);
+  assert.equal(draft.aiArtifacts[0].pseudocode[0].sourceRefs[0], 'idea-1');
+});
+test('phone pull batch leaves its cursor unchanged when queued RDB writes fail', async () => {
+  const { PhoneSyncService } = load('platform/PhoneSyncService');
+  const { HttpSyncClient } = load('platform/HttpSyncClient');
+  const applied = []; let cursor = '4'; let commitCalls = 0;
+  const repository = { listPendingOperations: () => [], markInFlight() {}, getBaseUrl: () => 'http://sync', getCursor: () => cursor,
+    getClientId: () => 'phone', getDraft: () => undefined, setDraftSyncStatus() {}, hasPendingOperation: () => false,
+    removeOperation() {}, applyServerDraft(draft) { applied.push(draft); }, setCursor() {},
+    async flush() { throw Error('disk full'); }, async commitCursor(next) { commitCalls++; cursor = next; } };
+  const oldPull = HttpSyncClient.prototype.pull;
+  HttpSyncClient.prototype.pull = async () => ({ changes: [{ entity_type: 'draft', entity: {
+    id: 'pulled', version: 1, code: 'remote', last_modified_client_id: 'web'
+  } }], next_cursor: '5' });
+  try {
+    const result = await new PhoneSyncService(repository).synchronize();
+    assert.equal(result.status, 'failed'); assert.equal(applied.length, 1);
+    assert.equal(cursor, '4'); assert.equal(commitCalls, 0);
+  } finally { HttpSyncClient.prototype.pull = oldPull; }
+});
+test('RDB cursor changes in memory only after durable cursor write succeeds', async () => {
+  const { RdbDraftRepository } = load('platform/RdbDraftRepository');
+  let fail = true;
+  const repo = new RdbDraftRepository({}); repo.store = { version: 2, async executeSql() { if (fail) throw Error('disk full'); } };
+  repo.cursor = '4';
+  await assert.rejects(repo.commitCursor('5'), /disk full/); assert.equal(repo.getCursor(), '4');
+  fail = false; await repo.commitCursor('5'); assert.equal(repo.getCursor(), '5');
+});
+test('RDB AI result save rolls back a partial write and can be retried', async () => {
+  const record = recordFor(request, 'completion'); record.body = JSON.stringify(artifact);
+  const calls = []; let fail = true; let rolledBack = 0; let committed = 0;
+  const store = {
+    beginTransaction() { calls.push('begin'); }, commit() { committed++; calls.push('commit'); }, rollBack() { rolledBack++; calls.push('rollback'); },
+    async executeSql(sql) { calls.push(sql); if (fail && sql.startsWith('INSERT OR REPLACE INTO ai_results')) throw Error('disk full'); },
+    async querySql() { return { goToFirstRow() { return true; }, close() {} }; }
+  };
+  const { RdbAIResultRepository } = load('platform/RdbAIResultRepository');
+  const repo = new RdbAIResultRepository(store, false);
+  await assert.rejects(repo.save(record, true), /disk full/);
+  assert.equal(rolledBack, 1); assert.equal(committed, 0);
+  fail = false; await repo.save(record, true);
+  assert.equal(committed, 1); assert.equal(rolledBack, 1);
+});
 test('migration preparation fixture preserves every v1 table and field', async () => {
   const { migrateWorkspaceStore } = load('platform/RdbDraftRepository');
   const sql = [];
@@ -285,7 +387,7 @@ test('migration preparation fixture preserves every v1 table and field', async (
   for (const table of ['drafts', 'sync_operations', 'sync_state', 'conflicts']) {
     assert.equal(sql.some(statement => statement.includes(table)), false, `v1->v2 must not recreate ${table}`);
   }
-  assert.equal(sql.filter(statement => statement.includes('CREATE TABLE ai_results')).length, 1);
+  assert.equal(sql.filter(statement => statement.includes('CREATE TABLE IF NOT EXISTS ai_results')).length, 1);
   const v1Fixture = {
     draft: { id: 'test-draft', workspace_id: 'workspace-test', title: '迁移样例', idea: '保留用户思路', code: 'int value = 1;', short_code: 'value += 1;', rewrite: '// rewrite', version: 4 },
     operation: { operation_id: 'operation-v1', entity_id: 'test-draft', base_version: 3, payload_json: '{"code":"int value = 1;"}' },
@@ -494,6 +596,7 @@ test('phone sync preserves server version and creates a local conflict copy', as
   const repository = {
     listPendingOperations: () => [operation], markInFlight() {}, getBaseUrl: () => 'http://sync', getCursor: () => '0',
     getClientId: () => 'phone', getDraft: () => undefined, setCursor() {}, setDraftSyncStatus() {}, hasPendingOperation: () => false,
+    flush: async () => {}, commitCursor: async () => {},
     removeOperation(id) { removed = id; }, applyServerDraft(draft) { applied.push(draft); },
     saveConflictDraft(copy, record) { conflictCopy = copy; conflictRecord = record; }
   };
@@ -535,6 +638,7 @@ test('Node ArkTS loader: PhoneSyncService orchestration retains an independent f
   const repository = {
     listPendingOperations: () => operations.slice(), markInFlight() {}, getBaseUrl: () => 'http://sync', getCursor: () => repository.cursor,
     getClientId: () => 'phone-a', getDraft: () => undefined, setCursor(cursor) { repository.cursor = cursor; }, cursor: '0',
+    commitCursor: async (cursor) => { repository.cursor = cursor; }, flush: async () => {},
     setDraftSyncStatus() {}, hasPendingOperation: (id) => operations.some((operation) => operation.entity_id === id),
     removeOperation(id) { const index = operations.findIndex((operation) => operation.operation_id === id); if (index >= 0) operations.splice(index, 1); },
     applyServerDraft() {}, saveConflictDraft() {}, queueAIRecord() {}, getAIRecord: async (id) => records.get(id),
@@ -563,6 +667,7 @@ test('phone sync ignores an older remote change during pull', async () => {
   const repository = {
     listPendingOperations: () => [], markInFlight() {}, getBaseUrl: () => 'http://sync', getCursor: () => '2',
     getClientId: () => 'phone', getDraft: () => local, setCursor(cursor) { this.cursor = cursor; }, cursor: '2',
+    commitCursor(cursor) { this.cursor = cursor; return Promise.resolve(); }, flush() { return Promise.resolve(); },
     setDraftSyncStatus() {}, hasPendingOperation: () => false, removeOperation() {}, applyServerDraft() { this.applied = true; },
     saveConflictDraft() {}
   };

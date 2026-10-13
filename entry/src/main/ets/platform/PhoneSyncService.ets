@@ -92,7 +92,8 @@ export class PhoneSyncService {
     try {
       const pull = await client.pull(this.repository.getCursor());
       await this.applyPulledChanges(pull.changes);
-      this.repository.setCursor(pull.next_cursor);
+      await this.repository.flush();
+      await this.repository.commitCursor(pull.next_cursor);
     } catch (error) {
       this.markPendingFailed();
       const message = error instanceof Error ? error.message : '拉取变更失败';

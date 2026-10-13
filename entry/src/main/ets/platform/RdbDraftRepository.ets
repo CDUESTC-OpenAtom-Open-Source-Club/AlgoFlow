@@ -3,7 +3,7 @@ import { relationalStore } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { DraftRepository } from '../domain/DraftRepository';
-import { AIArtifact, AIMode, AIRequestSegment, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIOutputKind, AIMode, AIRequestSegment, AIVisibility, CodeMapping, Draft, IdeaSegment, PseudocodeStep, SyncStatus } from '../domain/Models';
 import { AIArtifactPayload, ConflictRecord, DraftPayload, ReviewDiagnosticPayload, ReviewResultPayload, SyncOperation, SyncOperationType, SyncEntityType,
   draftToPayload, payloadToDraft } from '../domain/SyncModels';
 import { SyncRepository } from '../domain/SyncRepository';
@@ -15,6 +15,7 @@ const TAG = 'AlgoFlow';
 const DATABASE_VERSION = 2;
 interface DraftSourceSnapshot { code: string; ideaSegments: IdeaSegment[]; }
 export async function migrateWorkspaceStore(store: relationalStore.RdbStore): Promise<void> {
+    let upgradedToCurrent = false;
     if (store.version > DATABASE_VERSION) {
       throw new Error(`Unsupported database version ${store.version}`);
     }
@@ -49,18 +50,11 @@ export async function migrateWorkspaceStore(store: relationalStore.RdbStore): Pr
     if (store.version === 1) {
       store.beginTransaction();
       try {
-        await store.executeSql('CREATE TABLE ai_results (' +
-          'draft_id TEXT NOT NULL, mode TEXT NOT NULL, slot TEXT NOT NULL, is_test INTEGER NOT NULL, ' +
-          'result_id TEXT NOT NULL, updated_at TEXT NOT NULL, record_json TEXT NOT NULL, ' +
-          'PRIMARY KEY (draft_id, mode, slot, is_test))');
-        await store.executeSql('CREATE TABLE IF NOT EXISTS ai_result_history (' +
-          'draft_id TEXT NOT NULL, mode TEXT NOT NULL, slot TEXT NOT NULL, is_test INTEGER NOT NULL, ' +
-          'result_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, record_json TEXT NOT NULL)');
-        await store.executeSql('CREATE TABLE IF NOT EXISTS draft_source_history (' +
-          'draft_id TEXT NOT NULL, version INTEGER NOT NULL, code TEXT NOT NULL, idea_segments_json TEXT NOT NULL, ' +
-          'PRIMARY KEY (draft_id, version))');
+        await ensureAIResultTables(store);
+        await ensureDraftSourceHistory(store);
         await ensureConflictEntityType(store);
         store.version = 2;
+        upgradedToCurrent = true;
         store.commit();
       } catch (error) {
         store.rollBack();
@@ -68,26 +62,40 @@ export async function migrateWorkspaceStore(store: relationalStore.RdbStore): Pr
         throw new Error('AI 结果数据库升级失败，原工作区未删除');
       }
     }
-    // Existing v2 databases already have ai_results. Add history storage
-    // transactionally without changing the public database version or any
-    // Draft/sync table.
-    if (store.version === DATABASE_VERSION) {
+    // PR #23 shipped a v2 database that stored artifacts in drafts.ai_artifacts_json
+    // but did not have the independent result tables. Keep that column untouched
+    // and add the current tables in place so its ordinary workspace data remains usable.
+    if (store.version === DATABASE_VERSION && !upgradedToCurrent) {
       store.beginTransaction();
       try {
-        await store.executeSql('CREATE TABLE IF NOT EXISTS ai_result_history (' +
-          'draft_id TEXT NOT NULL, mode TEXT NOT NULL, slot TEXT NOT NULL, is_test INTEGER NOT NULL, ' +
-          'result_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, record_json TEXT NOT NULL)');
-        await store.executeSql('CREATE TABLE IF NOT EXISTS draft_source_history (' +
-          'draft_id TEXT NOT NULL, version INTEGER NOT NULL, code TEXT NOT NULL, idea_segments_json TEXT NOT NULL, ' +
-          'PRIMARY KEY (draft_id, version))');
+        await ensureAIResultTables(store);
+        await ensureDraftSourceHistory(store);
         await ensureConflictEntityType(store);
         store.commit();
       } catch (error) {
         store.rollBack();
-        throw new Error('AI 历史结果表升级失败，原工作区未删除');
+        throw new Error('AI 结果数据库兼容升级失败，原工作区未删除');
       }
     }
   }
+
+async function ensureAIResultTables(store: relationalStore.RdbStore): Promise<void> {
+  await ensureTable(store, 'ai_results', 'CREATE TABLE IF NOT EXISTS ai_results (' +
+          'draft_id TEXT NOT NULL, mode TEXT NOT NULL, slot TEXT NOT NULL, is_test INTEGER NOT NULL, ' +
+          'result_id TEXT NOT NULL, updated_at TEXT NOT NULL, record_json TEXT NOT NULL, ' +
+          'PRIMARY KEY (draft_id, mode, slot, is_test))',
+    ['draft_id', 'mode', 'slot', 'is_test', 'result_id', 'updated_at', 'record_json']);
+  await ensureTable(store, 'ai_result_history', 'CREATE TABLE IF NOT EXISTS ai_result_history (' +
+          'draft_id TEXT NOT NULL, mode TEXT NOT NULL, slot TEXT NOT NULL, is_test INTEGER NOT NULL, ' +
+          'result_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, record_json TEXT NOT NULL)',
+    ['draft_id', 'mode', 'slot', 'is_test', 'result_id', 'updated_at', 'record_json']);
+}
+
+async function ensureDraftSourceHistory(store: relationalStore.RdbStore): Promise<void> {
+  await ensureTable(store, 'draft_source_history', 'CREATE TABLE IF NOT EXISTS draft_source_history (' +
+          'draft_id TEXT NOT NULL, version INTEGER NOT NULL, code TEXT NOT NULL, idea_segments_json TEXT NOT NULL, ' +
+          'PRIMARY KEY (draft_id, version))', ['draft_id', 'version', 'code', 'idea_segments_json']);
+}
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8787';
 const DEFAULT_AI_BASE_URL = 'http://127.0.0.1:8788';
 const STORE_CONFIG: relationalStore.StoreConfig = {
@@ -110,6 +118,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   private baseUrl: string = DEFAULT_BASE_URL;
   private aiBaseUrl: string = DEFAULT_AI_BASE_URL;
   private writeChain: Promise<void> = Promise.resolve();
+  private writeErrors: Error[] = [];
 
   constructor(context: common.Context, existingStore?: relationalStore.RdbStore) {
     this.context = context;
@@ -165,6 +174,10 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
 
   async flush(): Promise<void> {
     await this.writeChain;
+    if (this.writeErrors.length > 0) {
+      const messages = this.writeErrors.splice(0).map((error: Error) => error.message);
+      throw new Error(messages.join('; '));
+    }
   }
 
   aiResults(allowTestData: boolean = false): AIResultRepository {
@@ -186,6 +199,15 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   setCursor(cursor: string): void {
     this.cursor = cursor;
     this.enqueue(async () => this.persistState('cursor', cursor));
+  }
+
+  async commitCursor(cursor: string): Promise<void> {
+    await this.flush();
+    this.enqueue(async () => {
+      await this.persistState('cursor', cursor);
+      this.cursor = cursor;
+    });
+    await this.flush();
   }
 
   setBaseUrl(baseUrl: string): void {
@@ -331,6 +353,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
           draft.syncStatus = parseSyncStatus(readString(resultSet, 'sync_status'));
           draft.aiMode = parseAIMode(readString(resultSet, 'ai_mode'));
           draft.artifactHidden = readNumber(resultSet, 'artifact_hidden') === 1;
+          draft.aiArtifacts = readLegacyArtifacts(resultSet);
           draft.ideaSegments = parseIdeaSegments(readString(resultSet, 'idea_segments_json'));
           loaded.push(draft);
         } while (resultSet.goToNextRow());
@@ -448,30 +471,54 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   }
 
   private enqueue(action: () => Promise<void>): void {
-    this.writeChain = this.writeChain.then(action).catch((error: Error) => {
+    this.writeChain = this.writeChain.catch(() => undefined).then(async () => {
+      await action();
+    }).catch((error: Error) => {
       hilog.error(DOMAIN, TAG, '[AlgoFlow] RDB write failed. Cause: %{public}s', error.message);
-      throw error;
+      this.writeErrors.push(error);
     });
   }
 
   private async persistDraft(draft: Draft): Promise<void> {
     const store = this.requireStore();
-    await store.executeSql('INSERT OR REPLACE INTO drafts (' +
-      'id, workspace_id, title, idea, code, short_code, rewrite, version, created_at, updated_at, deleted, ' +
-      'last_modified_client_id, sync_status, ai_mode, artifact_hidden, idea_segments_json) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
-        draft.id, draft.workspaceId, draft.title, draft.idea, draft.code, draft.shortCode, draft.rewrite,
-        draft.version, draft.createdAt, draft.updatedAt, draft.deleted ? 1 : 0, draft.lastModifiedClientId,
-        draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0, JSON.stringify(draft.ideaSegments)
-      ]);
-    if (!draft.deleted && draft.version > 0) {
+    const transactional = typeof store.beginTransaction === 'function';
+    if (transactional) store.beginTransaction();
+    try {
+      const legacyArtifacts = await readLegacyArtifactJson(store, draft.id);
+      if (legacyArtifacts === undefined) {
+      await store.executeSql('INSERT OR REPLACE INTO drafts (' +
+        'id, workspace_id, title, idea, code, short_code, rewrite, version, created_at, updated_at, deleted, ' +
+        'last_modified_client_id, sync_status, ai_mode, artifact_hidden, idea_segments_json) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+          draft.id, draft.workspaceId, draft.title, draft.idea, draft.code, draft.shortCode, draft.rewrite,
+          draft.version, draft.createdAt, draft.updatedAt, draft.deleted ? 1 : 0, draft.lastModifiedClientId,
+          draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0, JSON.stringify(draft.ideaSegments)
+        ]);
+      } else {
+      // PR #23 v2 used this column for embedded artifacts. Preserve its raw
+      // value until an explicit, reviewed conversion path is available.
+      await store.executeSql('INSERT OR REPLACE INTO drafts (' +
+        'id, workspace_id, title, idea, code, short_code, rewrite, version, created_at, updated_at, deleted, ' +
+        'last_modified_client_id, sync_status, ai_mode, artifact_hidden, ai_artifacts_json, idea_segments_json) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+          draft.id, draft.workspaceId, draft.title, draft.idea, draft.code, draft.shortCode, draft.rewrite,
+          draft.version, draft.createdAt, draft.updatedAt, draft.deleted ? 1 : 0, draft.lastModifiedClientId,
+          draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0, legacyArtifacts, JSON.stringify(draft.ideaSegments)
+        ]);
+      }
+      if (!draft.deleted && draft.version > 0) {
       await store.executeSql('INSERT OR REPLACE INTO draft_source_history (draft_id, version, code, idea_segments_json) VALUES (?, ?, ?, ?)',
         [draft.id, draft.version, draft.code, JSON.stringify(draft.ideaSegments)]);
-    }
-    if (draft.deleted) {
+      }
+      if (draft.deleted) {
       await store.executeSql('DELETE FROM ai_results WHERE draft_id = ?', [draft.id]);
       await store.executeSql('DELETE FROM ai_result_history WHERE draft_id = ?', [draft.id]);
       await store.executeSql('DELETE FROM draft_source_history WHERE draft_id = ?', [draft.id]);
+      }
+      if (transactional) store.commit();
+    } catch (error) {
+      if (transactional) store.rollBack();
+      throw new Error(error instanceof Error ? error.message : '草稿写入失败');
     }
   }
 
@@ -507,8 +554,8 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
 }
 
 async function ensureConflictEntityType(store: relationalStore.RdbStore): Promise<void> {
-  let columns: relationalStore.ResultSet;
-  try { columns = await store.querySql('PRAGMA table_info(conflicts)'); } catch (error) { return; }
+  if (typeof store.querySql !== 'function') return;
+  const columns = await store.querySql('PRAGMA table_info(conflicts)');
   let found = false;
   try {
     if (columns.goToFirstRow()) do {
@@ -518,8 +565,84 @@ async function ensureConflictEntityType(store: relationalStore.RdbStore): Promis
   if (!found) await store.executeSql("ALTER TABLE conflicts ADD COLUMN entity_type TEXT NOT NULL DEFAULT 'draft'");
 }
 
+async function ensureTable(store: relationalStore.RdbStore, table: string, createSql: string, requiredColumns: string[]): Promise<void> {
+  if (typeof store.querySql === 'function') {
+    const rows = await store.querySql(`PRAGMA table_info(${table})`);
+    const columns: string[] = [];
+    try {
+      if (rows.goToFirstRow()) do {
+        columns.push(rows.getString(rows.getColumnIndex('name')));
+      } while (rows.goToNextRow());
+    } finally { rows.close(); }
+    if (columns.length > 0) {
+      if (!requiredColumns.every((column: string) => columns.includes(column))) {
+        throw new Error(`Unsupported ${table} schema`);
+      }
+      return;
+    }
+  }
+  await store.executeSql(createSql);
+}
+
+async function readLegacyArtifactJson(store: relationalStore.RdbStore, draftId: string): Promise<string | undefined> {
+  if (typeof store.querySql !== 'function') return undefined;
+  let rows: relationalStore.ResultSet;
+  try { rows = await store.querySql('SELECT ai_artifacts_json FROM drafts WHERE id = ?', [draftId]); }
+  catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (!/no such column|unknown column|not found/i.test(message)) throw new Error(message || '读取旧 AI 结果失败');
+    return undefined;
+  }
+  try {
+    if (!rows.goToFirstRow()) return undefined;
+    return rows.getString(rows.getColumnIndex('ai_artifacts_json'));
+  } finally { rows.close(); }
+}
+
 function readString(resultSet: relationalStore.ResultSet, column: string): string {
   return resultSet.getString(resultSet.getColumnIndex(column));
+}
+
+function readLegacyArtifacts(resultSet: relationalStore.ResultSet): AIArtifact[] {
+  let column = -1;
+  try { column = resultSet.getColumnIndex('ai_artifacts_json'); } catch (error) { return []; }
+  if (column < 0) return [];
+  const raw = resultSet.getString(column);
+  if (raw.length === 0) return [];
+  const values = JSON.parse(raw) as Array<Record<string, Object>>;
+  if (!Array.isArray(values)) throw new Error('旧 AI 结果格式损坏，请保留数据库并重试');
+  const artifacts: AIArtifact[] = [];
+  for (const value of values) {
+    if (value === null || typeof value !== 'object' || typeof value['mode'] !== 'string' ||
+      typeof value['source_draft_version'] !== 'number' || !Number.isInteger(value['source_draft_version']) ||
+      typeof value['model_id'] !== 'string' || typeof value['rule_version'] !== 'string' ||
+      !Array.isArray(value['pseudocode']) || !Array.isArray(value['code_mappings'])) {
+      throw new Error('旧 AI 结果契约无效，请保留数据库并重试');
+    }
+    if (![AIMode.FAITHFUL_TRANSFORM, AIMode.FEASIBILITY_ANALYSIS, AIMode.PROGRESSIVE_HINT, AIMode.FULL_SOLUTION].includes(value['mode'] as AIMode)) {
+      throw new Error('旧 AI 结果契约无效，请保留数据库并重试');
+    }
+    const mode = parseAIMode(String(value['mode']));
+    if (value['output_kind'] !== AIOutputKind.PSEUDOCODE && value['output_kind'] !== AIOutputKind.CODE_SNIPPET ||
+      value['visibility'] !== AIVisibility.VISIBLE && value['visibility'] !== AIVisibility.HIDDEN) {
+      throw new Error('旧 AI 结果契约无效，请保留数据库并重试');
+    }
+    const outputKind = value['output_kind'] as AIOutputKind;
+    const visibility = value['visibility'] as AIVisibility;
+    const artifact = new AIArtifact(mode, outputKind, Number(value['source_draft_version']), String(value['model_id']), String(value['rule_version']), visibility);
+    const steps = Array.isArray(value['pseudocode']) ? value['pseudocode'] as Array<Record<string, Object>> : [];
+    artifact.pseudocode = steps.map((entry: Record<string, Object>) => new PseudocodeStep(String(entry['id']), String(entry['step']), (entry['source_refs'] as string[]) ?? []));
+    artifact.codeSnippet = value['code_snippet'] as string | null;
+    const mappings = Array.isArray(value['code_mappings']) ? value['code_mappings'] as Array<Record<string, Object>> : [];
+    artifact.codeMappings = mappings.map((entry: Record<string, Object>) => new CodeMapping(String(entry['step_id']), Number(entry['start_line']), Number(entry['end_line'])));
+    artifact.assumptions = (value['assumptions'] as string[]) ?? [];
+    artifact.missingInformation = (value['missing_information'] as string[]) ?? [];
+    artifact.riskFlags = (value['risk_flags'] as string[]) ?? [];
+    artifact.addedAlgorithmSteps = (value['added_algorithm_steps'] as string[]) ?? [];
+    artifact.templateId = value['template_id'] as string | null;
+    artifacts.push(artifact);
+  }
+  return artifacts;
 }
 
 function recordToSyncPayload(record: IDERecord, clientId: string, entityType: string): AIArtifactPayload | ReviewResultPayload {
