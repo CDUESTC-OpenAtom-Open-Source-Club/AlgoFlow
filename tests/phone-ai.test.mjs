@@ -208,12 +208,15 @@ test('accepted main.cpp completion leaves short code isolated and context switch
 });
 test('accepted completion updates the local draft without starting synchronization', async () => {
   const { Draft, IdeaSegment } = load('domain/Models');
+  const { RdbDraftRepository } = load('platform/RdbDraftRepository');
   const draft = new Draft('local-only', 'Sort intervals');
   draft.idea = 'Sort intervals'; draft.code = request.code; draft.ideaSegments = [new IdeaSegment('idea-1', 'Sort intervals', 0)];
-  let saves = 0;
-  const repository = { get: () => draft, save() { saves++; } };
+  const repository = new RdbDraftRepository({});
+  repository.store = { version: 2, async executeSql() {} };
+  repository.clientId = 'phone-client';
+  repository.applyServerDraft(draft);
   let syncCalls = 0;
-  const syncRepository = { listPendingOperations() { syncCalls++; return []; } };
+  const syncRepository = { ...repository, listPendingOperations() { syncCalls++; return repository.listPendingOperations(); } };
   const viewModel = new (load('application/DraftWorkspaceViewModel').DraftWorkspaceViewModel)(repository, syncRepository, { cancel() {} });
   const f = fixture(); const context = recordFor(request).context;
   await f.session.setContext(context);
@@ -221,9 +224,28 @@ test('accepted completion updates the local draft without starting synchronizati
   const work = f.session.request('completion', 'explanation', request.cursor); f.pending[0](reply()); await work;
   const record = f.session.records[0];
   assert.equal(f.session.accept(record.id, value => viewModel.update(draft.id, draft.title, draft.idea, value, draft.shortCode, draft.rewrite)), true);
-  assert.equal(saves, 1);
+  assert.equal(repository.listPendingOperations().length, 1);
+  assert.equal(repository.listPendingOperations()[0].entity_type, 'draft');
+  assert.equal(repository.listPendingOperations()[0].payload.code, repository.getDraft(draft.id).code);
   assert.equal(syncCalls, 0);
-  assert.notEqual(draft.code, request.code);
+  assert.notEqual(repository.getDraft(draft.id).code, request.code);
+});
+
+test('unaccepted mobile completion is stored locally without creating an AI sync operation', async () => {
+  const { RdbDraftRepository } = load('platform/RdbDraftRepository');
+  const calls = [];
+  const repository = new RdbDraftRepository({});
+  repository.clientId = 'phone-client';
+  repository.store = { version: 2, async executeSql(sql) { calls.push(sql); } };
+  const record = recordFor(request);
+  record.state = M.IDEState.SUCCESS;
+  record.body = JSON.stringify(artifact);
+  record.updatedAt = new Date().toISOString();
+  record.createdAt = record.updatedAt;
+  await repository.aiResults(false).save(record, true);
+  assert.equal(calls.some(sql => sql.includes('INSERT OR REPLACE INTO ai_results')), true);
+  assert.equal(repository.listPendingOperations().length, 0);
+  assert.equal(calls.some(sql => sql.includes('sync_operations')), false);
 });
 test('review slots, hidden old message, AI-only persistence and retry', async () => {
   const f = fixture(); await f.session.setContext(recordFor(request).context);
