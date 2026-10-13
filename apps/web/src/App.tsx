@@ -380,9 +380,11 @@ export function App() {
           mode={mode}
           activeFile={activeFile}
           canAcceptCompletion={aiSession.canAcceptCompletion()}
+          canWithdrawCompletion={aiSession.canWithdrawCompletion()}
           onReview={(kind) => { void aiSession.requestReview(kind); }}
           onCompletion={() => { void aiSession.requestCompletion(toCursor(cursorPosition.line, cursorPosition.column)); }}
           onAcceptCompletion={() => { aiSession.acceptCompletion(change => editorApply.current?.(change) ?? false); }}
+          onWithdrawCompletion={() => { aiSession.withdrawCompletion(change => editorApply.current?.(change) ?? false); }}
           onRejectCompletion={() => aiSession.rejectCompletion()}
           onCancel={() => aiSession.cancel()}
           onToggleResult={(id, hidden) => aiSession.setHidden(id, hidden)}

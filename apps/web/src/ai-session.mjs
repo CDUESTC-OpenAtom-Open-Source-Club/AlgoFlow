@@ -11,6 +11,8 @@ export class AISession {
   confirmedRecords = new Set();
   /** @type {{controller: AbortController, generation: number} | null} */
   active = null;
+  /** @type {{before: string, after: string, draftId: string, draftVersion: number, fileId: string, mode: string, idea: string, problemContext: string} | null} */
+  acceptedCompletion = null;
   /** @type {Set<() => void>} */
   listeners = new Set();
   /** @type {(record: import('./types').AIResultRecord) => void} */
@@ -129,9 +131,22 @@ export class AISession {
       const result = parseCompletionResult(record.result, {
         ...sourceRequest(record), output_kind: 'completion', cursor: record.sourceCursor,
       });
+      const { from, to } = rangeToOffsets(record.sourceCode, result.replaced_range);
+      const separator = record.sourceCode.includes('\r\n') ? '\r\n' : '\n';
+      const insert = result.suggestion_text.split(/\r\n|\n|\r/).join(separator);
+      const after = record.sourceCode.slice(0, from) + insert + record.sourceCode.slice(to);
       if (!apply({ id: record.id, sourceCode: record.sourceCode, range: result.replaced_range, insert: result.suggestion_text })) {
         throw new Error('编辑器内容已变化，请重新请求补全');
       }
+      const context = this.context;
+      if (!context) throw new Error('编辑器上下文已清除');
+      /** @type {import('./types').AIContext} */
+      const acceptedContext = context.code === after ? context : { ...context, code: after, syncStatus: /** @type {const} */ ('local_only') };
+      this.context = acceptedContext;
+      this.acceptedCompletion = {
+        before: record.sourceCode, after, draftId: acceptedContext.draftId, draftVersion: acceptedContext.draftVersion,
+        fileId: acceptedContext.fileId, mode: acceptedContext.mode, idea: acceptedContext.idea, problemContext: acceptedContext.problemContext,
+      };
       // onChange may already have invalidated the old source; the accepted
       // record remains read-only and cannot be applied a second time.
       const updated = { ...record, state: /** @type {const} */ ('accepted'), stale: true };
@@ -146,6 +161,32 @@ export class AISession {
       this.#emit();
       return false;
     }
+  }
+
+  canWithdrawCompletion() {
+    const accepted = this.acceptedCompletion;
+    const context = this.context;
+    const record = this.state.completion;
+    return !!(accepted && record?.state === 'accepted' && context && context.code === accepted.after &&
+      context.draftId === accepted.draftId && context.draftVersion === accepted.draftVersion &&
+      context.fileId === accepted.fileId && context.fileId === 'main.cpp' && context.mode === accepted.mode &&
+      context.idea === accepted.idea && context.problemContext === accepted.problemContext &&
+      (context.syncStatus === undefined || context.syncStatus === 'local_only'));
+  }
+
+  /** Apply the inverse as a normal editor transaction. @param {import('./types').ApplyAIEditorChange} apply */
+  withdrawCompletion(apply) {
+    if (!this.canWithdrawCompletion() || !this.context || !this.acceptedCompletion) return false;
+    const accepted = this.acceptedCompletion;
+    const lines = accepted.after.split(/\r\n|\n|\r/);
+    const lastLine = lines[lines.length - 1] ?? '';
+    const range = { start_line: 1, start_char: 0, end_line: lines.length, end_char: lastLine.length };
+    try {
+      if (!apply({ id: 'withdraw-completion', sourceCode: accepted.after, range, insert: accepted.before })) return false;
+      this.acceptedCompletion = null;
+      if (this.context?.code !== accepted.before) this.setContext({ ...this.context, code: accepted.before, syncStatus: 'local_only' });
+      return true;
+    } catch { return false; }
   }
 
   /** @param {string} draftId */
@@ -227,7 +268,7 @@ export class AISession {
       this.#markHistorical(updated);
       this.confirmedRecords.add(record.id);
       this.#persist(updated, true);
-      this.onPersistedResult(updated);
+      if (kind !== 'completion') this.onPersistedResult(updated);
     } catch (error) {
       if (!this.#isCurrent(active)) return;
       const code = error instanceof AIClientError ? error.code : 'NETWORK_ERROR';
@@ -257,6 +298,7 @@ export class AISession {
   /** @param {boolean} markResults */
   #invalidate(markResults) {
     this.generation += 1;
+    this.acceptedCompletion = null;
     this.active?.controller.abort();
     this.active = null;
     for (const record of this.#records()) {

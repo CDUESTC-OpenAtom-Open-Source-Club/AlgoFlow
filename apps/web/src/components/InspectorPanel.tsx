@@ -16,6 +16,8 @@ interface InspectorPanelProps {
   onReview: (kind: ReviewKind) => void;
   onCompletion: () => void;
   onAcceptCompletion: () => void;
+  canWithdrawCompletion: boolean;
+  onWithdrawCompletion: () => void;
   onRejectCompletion: () => void;
   onCancel: () => void;
   onToggleResult: (id: string, hidden: boolean) => void;
@@ -31,7 +33,7 @@ interface InspectorPanelProps {
 export function InspectorPanel({
   hidden, onHide, onShow, issues, onJumpToLine, aiState, mode, activeFile, canAcceptCompletion,
   onReview, onCompletion, onAcceptCompletion, onRejectCompletion, onCancel, onToggleResult, onRetryStorage,
-  artifact, artifactHistory, artifactBusy, artifactMessage, onArtifact, onToggleArtifact,
+  artifact, artifactHistory, artifactBusy, artifactMessage, onArtifact, onToggleArtifact, canWithdrawCompletion, onWithdrawCompletion,
 }: InspectorPanelProps) {
   const errors = issues.filter((issue) => issue.severity === 'error').length;
   const canRequest = mode === 'faithful_transform' && activeFile === 'main.cpp';
@@ -137,6 +139,7 @@ export function InspectorPanel({
                     <pre aria-label="建议代码">{record.result.suggestion_text}</pre>
                     {isCurrentRecord && <div className="review-actions">
                       <button type="button" className="outline-button" disabled={!canAcceptCompletion} onClick={onAcceptCompletion}>接受并写入 main.cpp</button>
+                      {record.state === 'accepted' && <button type="button" className="outline-button" disabled={!canWithdrawCompletion} onClick={onWithdrawCompletion}>撤回本次补全</button>}
                       <button type="button" className="outline-button" disabled={record.state !== 'success' || record.stale} onClick={onRejectCompletion}>拒绝补全</button>
                     </div>}
                   </>}

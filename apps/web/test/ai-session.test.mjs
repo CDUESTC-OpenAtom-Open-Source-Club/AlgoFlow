@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AIClientError } from '../src/ai-client.mjs';
+import { AIClientError, rangeToOffsets } from '../src/ai-client.mjs';
 import { AISession } from '../src/ai-session.mjs';
 import { completionResult, context, deferred, reviewResult, resultRecord } from './ai-fixtures.mjs';
 
@@ -132,4 +132,61 @@ test('acceptance applies exactly once and hide/reject never write code', async (
   await session.requestCompletion({ line: 3, char: 0 }); session.rejectCompletion();
   assert.equal(session.acceptCompletion(apply), false);
   assert.equal(writes, 1);
+});
+
+test('completion stays out of the sync bridge and can be explicitly withdrawn while its context is unchanged', async () => {
+  const repo = repository(); const session = new AISession(clientFor([]), repo); const bridged = [];
+  session.setPersistedResultHandler(record => bridged.push(record));
+  session.setContext(context({ syncStatus: 'synced' }));
+  await session.requestCompletion({ line: 3, char: 0 });
+  assert.equal(bridged.length, 0);
+  assert.equal(repo.records.some(record => record.capability === 'completion'), true);
+
+  const before = context().code;
+  let editorCode = before;
+  const apply = (change) => {
+    if (editorCode !== change.sourceCode) return false;
+    const { from, to } = rangeToOffsets(editorCode, change.range);
+    editorCode = editorCode.slice(0, from) + change.insert + editorCode.slice(to);
+    session.setContext(context({ code: editorCode, syncStatus: 'local_only' }));
+    return true;
+  };
+  assert.equal(session.acceptCompletion(apply), true);
+  assert.notEqual(editorCode, before);
+  assert.equal(session.canWithdrawCompletion(), true);
+  assert.equal(session.withdrawCompletion(apply), true);
+  assert.equal(editorCode, before);
+  assert.equal(session.canWithdrawCompletion(), false);
+  assert.equal(bridged.length, 0);
+});
+
+test('completion withdrawal is permanently invalidated by a later edit or sync context change', async () => {
+  const session = new AISession(clientFor([]), repository());
+  let editorCode = context().code;
+  const apply = (change) => {
+    if (editorCode !== change.sourceCode) return false;
+    const lines = editorCode.split(/\r\n|\n|\r/);
+    const to = lines.slice(0, change.range.end_line - 1).reduce((sum, line) => sum + line.length + 1, 0) + change.range.end_char;
+    const from = lines.slice(0, change.range.start_line - 1).reduce((sum, line) => sum + line.length + 1, 0) + change.range.start_char;
+    editorCode = editorCode.slice(0, from) + change.insert + editorCode.slice(to);
+    session.setContext(context({ code: editorCode, syncStatus: 'local_only' }));
+    return true;
+  };
+  session.setContext(context({ syncStatus: 'synced' }));
+  await session.requestCompletion({ line: 3, char: 0 });
+  assert.equal(session.acceptCompletion(apply), true);
+  assert.equal(session.canWithdrawCompletion(), true);
+  editorCode = `${editorCode}\n// later edit`;
+  session.setContext(context({ code: editorCode, syncStatus: 'local_only' }));
+  const afterEdit = editorCode;
+  assert.equal(session.canWithdrawCompletion(), false);
+  assert.equal(session.withdrawCompletion(apply), false);
+  assert.equal(editorCode, afterEdit);
+
+  session.setContext(context({ code: editorCode, syncStatus: 'synced' }));
+  await session.requestCompletion({ line: 3, char: 0 });
+  assert.equal(session.acceptCompletion(apply), true);
+  session.setContext(context({ code: editorCode, syncStatus: 'syncing' }));
+  assert.equal(session.canWithdrawCompletion(), false);
+  assert.equal(session.withdrawCompletion(apply), false);
 });
