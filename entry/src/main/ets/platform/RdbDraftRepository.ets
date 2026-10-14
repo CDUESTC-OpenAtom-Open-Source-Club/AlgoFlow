@@ -8,7 +8,7 @@ import { AIArtifactPayload, ConflictRecord, DraftPayload, ReviewDiagnosticPayloa
   draftToPayload, payloadToDraft } from '../domain/SyncModels';
 import { SyncRepository } from '../domain/SyncRepository';
 import { AIResultRepository, IDECapability, IDEContext, IDERecord, IDEState, ReviewKind } from '../domain/IDEAIModels';
-import { RdbAIResultRepository } from './RdbAIResultRepository';
+import { decodeAIRecord, RdbAIResultRepository } from './RdbAIResultRepository';
 
 const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
@@ -151,6 +151,7 @@ async function importLegacyArtifacts(store: relationalStore.RdbStore): Promise<v
         record.hidden = readNumber(rows, 'artifact_hidden') === 1 || artifact.visibility === AIVisibility.HIDDEN;
         record.restored = true; record.stale = true;
         record.context = new IDEContext(); record.context.draftId = draftId; record.context.version = artifact.sourceDraftVersion;
+        record.context.mode = artifact.mode;
         record.context.code = draft.code; record.context.idea = draft.idea; record.context.problemContext = draft.title;
         const sourceIds: string[] = [];
         artifact.pseudocode.forEach((step: PseudocodeStep) => step.sourceRefs.forEach((id: string) => {
@@ -178,6 +179,7 @@ async function importLegacyArtifacts(store: relationalStore.RdbStore): Promise<v
         body.visibility = artifact.visibility; body.template_id = artifact.templateId;
         record.body = JSON.stringify(body);
         const json = JSON.stringify(record);
+        decodeAIRecord(json);
         await store.executeSql('INSERT OR IGNORE INTO ai_results (draft_id, mode, slot, is_test, result_id, updated_at, record_json) VALUES (?, ?, ?, 0, ?, ?, ?)',
           [draftId, artifact.mode, 'transform', record.id, record.updatedAt, json]);
       }
@@ -343,10 +345,13 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
 
   async getAIRecord(id: string): Promise<IDERecord | undefined> {
     const repository = new RdbAIResultRepository(this.requireStore(), false);
+    const modes: AIMode[] = [AIMode.FAITHFUL_TRANSFORM, AIMode.FEASIBILITY_ANALYSIS, AIMode.PROGRESSIVE_HINT, AIMode.FULL_SOLUTION];
     for (const draft of this.drafts) {
-      const records = await repository.list(draft.id, draft.aiMode);
-      const found = records.find((record: IDERecord) => record.id === id);
-      if (found !== undefined) return found;
+      for (const mode of modes) {
+        const records = await repository.list(draft.id, mode);
+        const found = records.find((record: IDERecord) => record.id === id);
+        if (found !== undefined) return found;
+      }
     }
     return undefined;
   }

@@ -120,5 +120,53 @@ export default function aiStorageTest() {
         expect(writeFailed).assertTrue();
       } finally { await relationalStore.deleteRdbStore(context, name); }
     });
+    it('pr23_legacy_artifacts_import_idempotency_and_corrupt_rollback', 0, async () => {
+      const context = abilityDelegatorRegistry.getAbilityDelegator().getAppContext();
+      const name = `algoflow_pr23_migration_${Date.now()}.db`;
+      const store = await relationalStore.getRdbStore(context, { name: name, securityLevel: relationalStore.SecurityLevel.S1 });
+      try {
+        await store.executeSql('CREATE TABLE IF NOT EXISTS drafts (' +
+          'id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, title TEXT NOT NULL, idea TEXT NOT NULL, ' +
+          'code TEXT NOT NULL, short_code TEXT NOT NULL, rewrite TEXT NOT NULL, version INTEGER NOT NULL, ' +
+          'created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted INTEGER NOT NULL, ' +
+          'last_modified_client_id TEXT NOT NULL, sync_status TEXT NOT NULL, ai_mode TEXT NOT NULL, ' +
+          'artifact_hidden INTEGER NOT NULL, ai_artifacts_json TEXT NOT NULL, idea_segments_json TEXT NOT NULL)');
+        await store.executeSql('CREATE TABLE IF NOT EXISTS sync_operations (' +
+          'operation_id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, ' +
+          'operation_type TEXT NOT NULL, base_version INTEGER NOT NULL, client_id TEXT NOT NULL, ' +
+          'occurred_at TEXT NOT NULL, payload_json TEXT NOT NULL)');
+        await store.executeSql('CREATE TABLE IF NOT EXISTS sync_state (state_key TEXT PRIMARY KEY, state_value TEXT NOT NULL)');
+        await store.executeSql('CREATE TABLE IF NOT EXISTS conflicts (' +
+          'id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, local_copy_id TEXT NOT NULL, ' +
+          'server_entity_json TEXT NOT NULL, created_at TEXT NOT NULL, resolved INTEGER NOT NULL)');
+        store.version = 2;
+        const ideaSegments = '[{"id":"segment-1","content":"按右端点排序","position":0}]';
+        await store.executeSql("INSERT INTO drafts VALUES ('pr23-draft','workspace-pr23','PR23迁移','按右端点排序','int x = 0;','','',2,'2026-09-26T00:00:00.000Z','2026-09-26T00:01:00.000Z',0,'phone-pr23','local_only','feasibility_analysis',0,'{\"broken\":true}',?)", [ideaSegments]);
+        let corruptFailed = false;
+        try { await migrateWorkspaceStore(store); } catch (error) { corruptFailed = true; }
+        expect(corruptFailed).assertTrue();
+        expect(store.version).assertEqual(2);
+        const legacyArtifacts = '[{"mode":"faithful_transform","pseudocode":[{"id":"step_1","step":"Sort by right endpoint","source_refs":["segment-1"]}],"code_snippet":null,"code_mappings":[],"assumptions":[],"missing_information":[],"risk_flags":[],"added_algorithm_steps":[],"source_draft_version":2,"model_id":"legacy-model","rule_version":"1.0.0","output_kind":"pseudocode","visibility":"visible","template_id":null},{"mode":"feasibility_analysis","pseudocode":[{"id":"step_2","step":"Analyze greedy choice","source_refs":["segment-1"]}],"code_snippet":null,"code_mappings":[],"assumptions":[],"missing_information":[],"risk_flags":["greedy choice not proven"],"added_algorithm_steps":["Consider exchange argument"],"source_draft_version":2,"model_id":"legacy-model","rule_version":"1.0.0","output_kind":"pseudocode","visibility":"visible","template_id":null}]';
+        await store.executeSql("UPDATE drafts SET ai_artifacts_json = ? WHERE id = 'pr23-draft'", [legacyArtifacts]);
+        await migrateWorkspaceStore(store);
+        expect(store.version).assertEqual(3);
+        const repository = new RdbAIResultRepository(store, false);
+        const faithful = await repository.list('pr23-draft', AIMode.FAITHFUL_TRANSFORM);
+        expect(faithful.length).assertEqual(1);
+        expect(faithful[0].id).assertEqual('legacy-pr23-draft-0');
+        expect(faithful[0].context.mode).assertEqual(AIMode.FAITHFUL_TRANSFORM);
+        expect(faithful[0].restored).assertTrue();
+        const feasibility = await repository.list('pr23-draft', AIMode.FEASIBILITY_ANALYSIS);
+        expect(feasibility.length).assertEqual(1);
+        expect(feasibility[0].id).assertEqual('legacy-pr23-draft-1');
+        expect(feasibility[0].context.mode).assertEqual(AIMode.FEASIBILITY_ANALYSIS);
+        expect(feasibility[0].restored).assertTrue();
+        store.version = 2;
+        await migrateWorkspaceStore(store);
+        expect(store.version).assertEqual(3);
+        expect((await repository.list('pr23-draft', AIMode.FAITHFUL_TRANSFORM)).length).assertEqual(1);
+        expect((await repository.list('pr23-draft', AIMode.FEASIBILITY_ANALYSIS)).length).assertEqual(1);
+      } finally { await store.close(); await relationalStore.deleteRdbStore(context, name); }
+    });
   });
 }

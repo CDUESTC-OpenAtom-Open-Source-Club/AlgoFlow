@@ -337,6 +337,208 @@ test('draft restore decodes PR23 embedded AI artifacts for the existing AI resul
   assert.equal(draft.aiArtifacts.length, 1);
   assert.equal(draft.aiArtifacts[0].pseudocode[0].sourceRefs[0], 'idea-1');
 });
+test('PR23 v2 migration imports faithful and non-default mode artifacts into readable ai_results and is idempotent on re-run', async () => {
+  const { migrateWorkspaceStore } = load('platform/RdbDraftRepository');
+  const { RdbAIResultRepository } = load('platform/RdbAIResultRepository');
+  const { IDEAISession } = load('application/IDEAISession');
+  const { IDEContext } = load('domain/IDEAIModels');
+  const { AIRequestSegment } = load('domain/Models');
+  const legacyArtifacts = JSON.stringify([
+    {
+      mode: 'faithful_transform',
+      pseudocode: [{ id: 'step-1', step: 'Sort intervals by right endpoint', source_refs: ['idea-1'] }],
+      code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: [], source_draft_version: 4, model_id: 'legacy-model',
+      rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null
+    },
+    {
+      mode: 'feasibility_analysis',
+      pseudocode: [{ id: 'step-2', step: 'Analyze greedy choice property', source_refs: ['idea-1'] }],
+      code_snippet: null, code_mappings: [], assumptions: ['intervals non-empty'], missing_information: [],
+      risk_flags: ['greedy choice not proven'], added_algorithm_steps: ['Consider exchange argument'],
+      source_draft_version: 4, model_id: 'legacy-model', rule_version: '1.0.0',
+      output_kind: 'pseudocode', visibility: 'visible', template_id: null
+    },
+    {
+      mode: 'progressive_hint',
+      pseudocode: [{ id: 'step-3', step: 'Compare current start with last end', source_refs: ['idea-1'] }],
+      code_snippet: 'if (cur.left >= lastRight) {\n  lastRight = cur.right;\n}',
+      code_mappings: [{ step_id: 'step-3', start_line: 1, end_line: 3 }],
+      assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: ['Track last selected right endpoint'], source_draft_version: 4,
+      model_id: 'legacy-model', rule_version: '1.0.0', output_kind: 'code_snippet',
+      visibility: 'hidden', template_id: 'greedy-hint'
+    },
+    {
+      mode: 'full_solution',
+      pseudocode: [{ id: 'step-4', step: 'Complete interval scheduling pass', source_refs: ['idea-1'] }],
+      code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: ['Count all compatible intervals'], source_draft_version: 4,
+      model_id: 'legacy-model', rule_version: '1.0.0', output_kind: 'pseudocode',
+      visibility: 'visible', template_id: null
+    }
+  ]);
+  const draftRow = {
+    id: 'legacy-draft', title: 'Interval Scheduling', workspace_id: 'workspace-test',
+    idea: 'Keep source result', code: 'int value = 1;', short_code: '', rewrite: '', version: 4,
+    created_at: '2026-10-01T00:00:00.000Z', updated_at: '2026-10-02T00:00:00.000Z', deleted: 0,
+    last_modified_client_id: 'phone-old', sync_status: 'synced', ai_mode: 'feasibility_analysis',
+    artifact_hidden: 0, ai_artifacts_json: legacyArtifacts,
+    idea_segments_json: '[{"id":"idea-1","content":"Keep source result","position":0}]'
+  };
+  const makeResultSet = (items) => {
+    let idx = -1;
+    const cols = items.length > 0 ? Object.keys(items[0]) : [];
+    return {
+      goToFirstRow() { idx = 0; return items.length > 0; },
+      goToNextRow() { idx++; return idx < items.length; },
+      getColumnIndex(name) { return cols.indexOf(name); },
+      getString(colIdx) { return String(items[idx][cols[colIdx] ?? cols[0]]); },
+      getLong(colIdx) { return Number(items[idx][cols[colIdx] ?? cols[0]]); },
+      close() {}
+    };
+  };
+  let committedResults = new Map();
+  let workingResults = null;
+  let totalInsertAttempts = 0;
+  const store = {
+    version: 2,
+    beginTransaction() { workingResults = new Map(committedResults); },
+    commit() { if (workingResults) { committedResults = workingResults; workingResults = null; } },
+    rollBack() { workingResults = null; },
+    async executeSql(statement, args = []) {
+      const target = workingResults ?? committedResults;
+      if (statement.startsWith('INSERT OR IGNORE INTO ai_results')) {
+        totalInsertAttempts++;
+        const [draftId, mode, slot, resultId, updatedAt, recordJson] = args;
+        const key = `${draftId}:${mode}:${slot}:0`;
+        if (!target.has(key)) target.set(key, { draft_id: draftId, mode, slot, is_test: 0, result_id: resultId, updated_at: updatedAt, record_json: recordJson });
+      }
+    },
+    async querySql(statement, args = []) {
+      const target = workingResults ?? committedResults;
+      if (statement === 'PRAGMA table_info(drafts)') return makeResultSet([{ name: 'id' }, { name: 'ai_artifacts_json' }]);
+      if (statement === 'PRAGMA table_info(conflicts)') return makeResultSet([{ name: 'id' }, { name: 'entity_type' }]);
+      if (statement.startsWith('PRAGMA table_info(')) return makeResultSet([]);
+      if (statement === 'SELECT * FROM drafts') return makeResultSet([draftRow]);
+      if (statement.startsWith('SELECT record_json FROM ai_results WHERE draft_id = ? AND mode = ?')) {
+        const [draftId, mode, allowTest] = args;
+        const matched = [...target.values()].filter(row => row.draft_id === draftId && row.mode === mode && (row.is_test === 0 || allowTest === 1));
+        return makeResultSet(matched.map(row => ({ record_json: row.record_json })));
+      }
+      if (statement.startsWith('SELECT record_json FROM ai_result_history')) return makeResultSet([]);
+      return makeResultSet([]);
+    }
+  };
+  await migrateWorkspaceStore(store);
+  assert.equal(store.version, 3);
+  assert.equal(committedResults.size, 4);
+  const repository = new RdbAIResultRepository(store, false);
+  for (const [mode, expectedId, expectedHidden, expectedStep] of [
+    ['faithful_transform', 'legacy-legacy-draft-0', false, 'Sort intervals by right endpoint'],
+    ['feasibility_analysis', 'legacy-legacy-draft-1', false, 'Analyze greedy choice property'],
+    ['progressive_hint', 'legacy-legacy-draft-2', true, 'Compare current start with last end'],
+    ['full_solution', 'legacy-legacy-draft-3', false, 'Complete interval scheduling pass']
+  ]) {
+    const records = await repository.list('legacy-draft', mode);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].id, expectedId);
+    assert.equal(records[0].context.mode, mode);
+    assert.equal(records[0].restored, true);
+    assert.equal(records[0].stale, true);
+    assert.equal(records[0].hidden, expectedHidden);
+    const session = new IDEAISession({ async request() { throw Error('not called'); }, cancel() {} }, repository);
+    const ctx = new IDEContext();
+    ctx.draftId = 'legacy-draft'; ctx.version = 4; ctx.mode = mode; ctx.code = draftRow.code;
+    ctx.idea = draftRow.idea; ctx.problemContext = draftRow.title;
+    ctx.segments = [new AIRequestSegment('idea-1', 'Keep source result')];
+    await session.setContext(ctx);
+    assert.equal(session.storageError, '');
+    assert.equal(session.records.length, 1);
+    assert.match(session.result(session.records[0]).transformText, new RegExp(expectedStep));
+  }
+  const key = 'legacy-draft:feasibility_analysis:transform:0';
+  const modifiedRecord = JSON.parse(committedResults.get(key).record_json);
+  modifiedRecord.hidden = true;
+  committedResults.get(key).record_json = JSON.stringify(modifiedRecord);
+  store.version = 2;
+  await migrateWorkspaceStore(store);
+  assert.equal(store.version, 3);
+  assert.equal(committedResults.size, 4);
+  assert.equal(totalInsertAttempts, 8);
+  const afterRerun = await repository.list('legacy-draft', 'feasibility_analysis');
+  assert.equal(afterRerun.length, 1);
+  assert.equal(afterRerun[0].hidden, true);
+});
+test('PR23 v2 migration rolls back transaction and preserves version 2 when embedded ai_artifacts_json is corrupt or invalid', async () => {
+  const { migrateWorkspaceStore } = load('platform/RdbDraftRepository');
+  const makeResultSet = (items) => {
+    let idx = -1;
+    const cols = items.length > 0 ? Object.keys(items[0]) : [];
+    return {
+      goToFirstRow() { idx = 0; return items.length > 0; },
+      goToNextRow() { idx++; return idx < items.length; },
+      getColumnIndex(name) { return cols.indexOf(name); },
+      getString(colIdx) { return String(items[idx][cols[colIdx] ?? cols[0]]); },
+      getLong(colIdx) { return Number(items[idx][cols[colIdx] ?? cols[0]]); },
+      close() {}
+    };
+  };
+  const validDraft = {
+    id: 'draft-valid', title: 'Valid', workspace_id: 'workspace-test', idea: 'Idea', code: 'int a = 1;',
+    short_code: '', rewrite: '', version: 1, created_at: '2026-10-01T00:00:00.000Z',
+    updated_at: '2026-10-02T00:00:00.000Z', deleted: 0, last_modified_client_id: 'phone',
+    sync_status: 'synced', ai_mode: 'faithful_transform', artifact_hidden: 0,
+    ai_artifacts_json: JSON.stringify([{
+      mode: 'faithful_transform',
+      pseudocode: [{ id: 'step-1', step: 'Valid step', source_refs: ['idea-1'] }],
+      code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: [], source_draft_version: 1, model_id: 'legacy-model',
+      rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null
+    }]),
+    idea_segments_json: '[{"id":"idea-1","content":"Idea","position":0}]'
+  };
+  for (const badArtifactsJson of [
+    '{corrupt-json',
+    JSON.stringify([{
+      mode: 'faithful_transform',
+      pseudocode: [{ id: 'step-1', step: 'Illegal step addition', source_refs: ['idea-1'] }],
+      code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: ['Forbidden in faithful_transform'], source_draft_version: 1,
+      model_id: 'legacy-model', rule_version: '1.0.0', output_kind: 'pseudocode',
+      visibility: 'visible', template_id: null
+    }])
+  ]) {
+    const corruptDraft = { ...validDraft, id: 'draft-corrupt', ai_artifacts_json: badArtifactsJson };
+    let committedResults = new Map();
+    let workingResults = null;
+    let rolledBack = false;
+    const store = {
+      version: 2,
+      beginTransaction() { workingResults = new Map(committedResults); },
+      commit() { if (workingResults) { committedResults = workingResults; workingResults = null; } },
+      rollBack() { rolledBack = true; workingResults = null; },
+      async executeSql(statement, args = []) {
+        const target = workingResults ?? committedResults;
+        if (statement.startsWith('INSERT OR IGNORE INTO ai_results')) {
+          const [draftId, mode, slot, resultId, updatedAt, recordJson] = args;
+          target.set(`${draftId}:${mode}:${slot}:0`, { resultId, updatedAt, recordJson });
+        }
+      },
+      async querySql(statement) {
+        if (statement === 'PRAGMA table_info(drafts)') return makeResultSet([{ name: 'id' }, { name: 'ai_artifacts_json' }]);
+        if (statement === 'PRAGMA table_info(conflicts)') return makeResultSet([{ name: 'id' }, { name: 'entity_type' }]);
+        if (statement.startsWith('PRAGMA table_info(')) return makeResultSet([]);
+        if (statement === 'SELECT * FROM drafts') return makeResultSet([validDraft, corruptDraft]);
+        return makeResultSet([]);
+      }
+    };
+    await assert.rejects(() => migrateWorkspaceStore(store), /AI 结果数据库兼容升级失败，原工作区未删除/);
+    assert.equal(rolledBack, true);
+    assert.equal(store.version, 2);
+    assert.equal(committedResults.size, 0);
+  }
+});
 test('phone pull batch leaves its cursor unchanged when queued RDB writes fail', async () => {
   const { PhoneSyncService } = load('platform/PhoneSyncService');
   const { HttpSyncClient } = load('platform/HttpSyncClient');
