@@ -212,7 +212,7 @@ test('accepted completion updates the local draft without starting synchronizati
   const draft = new Draft('local-only', 'Sort intervals');
   draft.idea = 'Sort intervals'; draft.code = request.code; draft.ideaSegments = [new IdeaSegment('idea-1', 'Sort intervals', 0)];
   const repository = new RdbDraftRepository({});
-  repository.store = { version: 2, async executeSql() {} };
+  repository.store = { version: 3, async executeSql() {} };
   repository.clientId = 'phone-client';
   repository.applyServerDraft(draft);
   let syncCalls = 0;
@@ -236,7 +236,7 @@ test('unaccepted mobile completion is stored locally without creating an AI sync
   const calls = [];
   const repository = new RdbDraftRepository({});
   repository.clientId = 'phone-client';
-  repository.store = { version: 2, async executeSql(sql) { calls.push(sql); } };
+  repository.store = { version: 3, async executeSql(sql) { calls.push(sql); } };
   const record = recordFor(request);
   record.state = M.IDEState.SUCCESS;
   record.body = JSON.stringify(artifact);
@@ -266,11 +266,11 @@ test('review slots, hidden old message, AI-only persistence and retry', async ()
 });
 test('RDB migration transaction control (stub, not real RDB)', async () => {
   const { RdbDraftRepository } = load('platform/RdbDraftRepository');
-  for (const version of [0, 1, 2, 3]) {
+  for (const version of [0, 1, 2, 3, 4]) {
     const sql = []; const store = { version, beginTransaction() {}, commit() {}, rollBack() {}, async executeSql(s) { sql.push(s); } };
     const repo = new RdbDraftRepository({});
-    if (version === 3) await assert.rejects(repo.migrate(store));
-    else { await repo.migrate(store); assert.equal(store.version, 2); }
+    if (version === 4) await assert.rejects(repo.migrate(store));
+    else { await repo.migrate(store); assert.equal(store.version, 3); }
     assert.equal(sql.some(s => /DROP|DELETE/.test(s)), false);
   }
   let rolled = false; const store = { version: 1, beginTransaction() {}, commit() {}, rollBack() { rolled = true; }, async executeSql() { throw Error('full'); } };
@@ -305,7 +305,7 @@ test('draft writes keep legacy PR23 embedded AI artifacts until an explicit conv
   const sql = [];
   const rows = { goToFirstRow() { return true; }, getColumnIndex() { return 0; }, getString() { return legacy; }, close() {} };
   const repo = new RdbDraftRepository({});
-  repo.store = { version: 2, async executeSql(statement, args) { sql.push([statement, args]); }, async querySql() { return rows; } };
+  repo.store = { version: 3, async executeSql(statement, args) { sql.push([statement, args]); }, async querySql() { return rows; } };
   const draft = new Draft('legacy-draft', 'legacy'); draft.code = 'int value = 1;';
   repo.applyServerDraft(draft); await repo.flush();
   const insert = sql.find(([statement]) => statement.includes('INSERT OR REPLACE INTO drafts'));
@@ -358,7 +358,7 @@ test('phone pull batch leaves its cursor unchanged when queued RDB writes fail',
 test('RDB cursor changes in memory only after durable cursor write succeeds', async () => {
   const { RdbDraftRepository } = load('platform/RdbDraftRepository');
   let fail = true;
-  const repo = new RdbDraftRepository({}); repo.store = { version: 2, async executeSql() { if (fail) throw Error('disk full'); } };
+  const repo = new RdbDraftRepository({}); repo.store = { version: 3, async executeSql() { if (fail) throw Error('disk full'); } };
   repo.cursor = '4';
   await assert.rejects(repo.commitCursor('5'), /disk full/); assert.equal(repo.getCursor(), '4');
   fail = false; await repo.commitCursor('5'); assert.equal(repo.getCursor(), '5');
@@ -383,11 +383,11 @@ test('migration preparation fixture preserves every v1 table and field', async (
   const sql = [];
   const store = { version: 1, beginTransaction() {}, commit() {}, rollBack() {}, async executeSql(statement) { sql.push(statement); } };
   await migrateWorkspaceStore(store);
-  assert.equal(store.version, 2);
+  assert.equal(store.version, 3);
   for (const table of ['drafts', 'sync_operations', 'sync_state', 'conflicts']) {
     assert.equal(sql.some(statement => statement.includes(table)), false, `v1->v2 must not recreate ${table}`);
   }
-  assert.equal(sql.filter(statement => statement.includes('CREATE TABLE IF NOT EXISTS ai_results')).length, 1);
+  assert.equal(sql.filter(statement => statement.includes('CREATE TABLE IF NOT EXISTS ai_results')).length, 2);
   const v1Fixture = {
     draft: { id: 'test-draft', workspace_id: 'workspace-test', title: '迁移样例', idea: '保留用户思路', code: 'int value = 1;', short_code: 'value += 1;', rewrite: '// rewrite', version: 4 },
     operation: { operation_id: 'operation-v1', entity_id: 'test-draft', base_version: 3, payload_json: '{"code":"int value = 1;"}' },
@@ -403,7 +403,7 @@ test('AI Gateway URL uses the existing sync_state persistence', async () => {
   const { RdbDraftRepository } = load('platform/RdbDraftRepository');
   const calls = [];
   const repo = new RdbDraftRepository({});
-  repo.store = { version: 2, async executeSql(sql, args) { calls.push([sql, args]); },
+  repo.store = { version: 3, async executeSql(sql, args) { calls.push([sql, args]); },
     async querySql() {
       const rows = [{ key: 'ai_base_url', value: 'http://192.168.1.10:8788' }]; let index = -1;
       return { goToFirstRow() { index = 0; return true; }, goToNextRow() { index++; return index < rows.length; },
@@ -485,7 +485,7 @@ test('remote tombstone persists as a delete and clears only the AI result table'
   const { Draft } = load('domain/Models');
   const calls = [];
   const repo = new RdbDraftRepository({});
-  repo.store = { version: 2, async executeSql(sql, args) { calls.push([sql, args]); } };
+  repo.store = { version: 3, async executeSql(sql, args) { calls.push([sql, args]); } };
   const tombstone = new Draft('sync-delete', 'Deleted remotely');
   tombstone.deleted = true; tombstone.version = 4;
   repo.applyServerDraft(tombstone);
@@ -571,7 +571,7 @@ test('sync response preserves newer local edit and rotates operation identity', 
   const { PhoneSyncService } = load('platform/PhoneSyncService');
   const { HttpSyncClient } = load('platform/HttpSyncClient');
   const { Draft } = load('domain/Models');
-  const repo = new RdbDraftRepository({}); repo.store = { version: 2, async executeSql() {} }; repo.clientId = 'phone';
+  const repo = new RdbDraftRepository({}); repo.store = { version: 3, async executeSql() {} }; repo.clientId = 'phone';
   const draft = new Draft('d', 't'); draft.code = 'before'; repo.save(draft); await repo.flush();
   const original = repo.listPendingOperations()[0]; let finish;
   const oldPush = HttpSyncClient.prototype.push;

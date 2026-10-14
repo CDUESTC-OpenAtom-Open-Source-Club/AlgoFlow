@@ -16,10 +16,10 @@ export default function aiStorageTest() {
       let store = await relationalStore.getRdbStore(context, config);
       try {
         await migrateWorkspaceStore(store);
-        expect(store.version).assertEqual(2);
+        expect(store.version).assertEqual(3);
         // Recreate the exact v1 boundary while retaining all ordinary tables.
         await store.executeSql('DROP TABLE ai_results');
-        store.version = 1;
+        store.version = 2;
         const ideaSegments = '[{"id":"segment-1","content":"保留用户思路","position":0}]';
         const payload = '{"id":"test-draft","workspace_id":"workspace-test","version":4,"created_at":"2026-09-26T00:00:00.000Z","updated_at":"2026-09-26T00:01:00.000Z","deleted":false,"last_modified_client_id":"phone-test","title":"迁移样例","language":"cpp","idea":"保留用户思路","code":"int value = 1;","short_code":"value += 1;","rewrite":"// rewrite","ai_mode":"faithful_transform","artifact_hidden":false,"sync_status":"local_only","idea_segments":[{"id":"segment-1","content":"保留用户思路","position":0}]}';
         await store.executeSql("INSERT INTO sync_state VALUES ('cursor', '42')");
@@ -92,10 +92,10 @@ export default function aiStorageTest() {
         draftRepository.applyServerDraft(tombstone); await draftRepository.flush();
         await reopened.save(newer, true);
         expect((await reopened.list('test-draft', AIMode.FAITHFUL_TRANSFORM)).length).assertEqual(0);
-        store.version = 3;
+        store.version = 4;
         let high = false;
         try { await migrateWorkspaceStore(store); } catch (error) { high = true; }
-        expect(high).assertTrue(); expect(store.version).assertEqual(3);
+        expect(high).assertTrue(); expect(store.version).assertEqual(4);
       } finally { await store.close(); await relationalStore.deleteRdbStore(context, name); }
     });
     it('failed_upgrade_rolls_back_without_advancing_version', 0, async () => {
@@ -111,7 +111,7 @@ export default function aiStorageTest() {
         try { await migrateWorkspaceStore(store); } catch (error) { failed = true; }
         expect(failed).assertTrue(); expect(store.version).assertEqual(1);
         await store.executeSql('DROP INDEX ai_results');
-        await migrateWorkspaceStore(store); expect(store.version).assertEqual(2);
+        await migrateWorkspaceStore(store); expect(store.version).assertEqual(3);
         const repository = new RdbAIResultRepository(store, false);
         await store.close();
         let writeFailed = false;

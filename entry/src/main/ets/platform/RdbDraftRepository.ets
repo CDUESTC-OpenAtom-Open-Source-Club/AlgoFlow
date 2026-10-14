@@ -7,15 +7,32 @@ import { AIArtifact, AIOutputKind, AIMode, AIRequestSegment, AIVisibility, CodeM
 import { AIArtifactPayload, ConflictRecord, DraftPayload, ReviewDiagnosticPayload, ReviewResultPayload, SyncOperation, SyncOperationType, SyncEntityType,
   draftToPayload, payloadToDraft } from '../domain/SyncModels';
 import { SyncRepository } from '../domain/SyncRepository';
-import { AIResultRepository, IDECapability, IDERecord, IDEState, ReviewKind } from '../domain/IDEAIModels';
+import { AIResultRepository, IDECapability, IDEContext, IDERecord, IDEState, ReviewKind } from '../domain/IDEAIModels';
 import { RdbAIResultRepository } from './RdbAIResultRepository';
 
 const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
 interface DraftSourceSnapshot { code: string; ideaSegments: IdeaSegment[]; }
+class LegacyArtifactStepBody { id: string = ''; step: string = ''; source_refs: string[] = []; }
+class LegacyArtifactMappingBody { step_id: string = ''; start_line: number = 0; end_line: number = 0; }
+class LegacyArtifactBody {
+  mode: string = '';
+  pseudocode: LegacyArtifactStepBody[] = [];
+  code_snippet: string | null = null;
+  code_mappings: LegacyArtifactMappingBody[] = [];
+  assumptions: string[] = [];
+  missing_information: string[] = [];
+  risk_flags: string[] = [];
+  added_algorithm_steps: string[] = [];
+  source_draft_version: number = 0;
+  model_id: string = '';
+  rule_version: string = '';
+  output_kind: string = '';
+  visibility: string = '';
+  template_id: string | null = null;
+}
 export async function migrateWorkspaceStore(store: relationalStore.RdbStore): Promise<void> {
-    let upgradedToCurrent = false;
     if (store.version > DATABASE_VERSION) {
       throw new Error(`Unsupported database version ${store.version}`);
     }
@@ -54,7 +71,6 @@ export async function migrateWorkspaceStore(store: relationalStore.RdbStore): Pr
         await ensureDraftSourceHistory(store);
         await ensureConflictEntityType(store);
         store.version = 2;
-        upgradedToCurrent = true;
         store.commit();
       } catch (error) {
         store.rollBack();
@@ -62,18 +78,21 @@ export async function migrateWorkspaceStore(store: relationalStore.RdbStore): Pr
         throw new Error('AI 结果数据库升级失败，原工作区未删除');
       }
     }
-    // PR #23 shipped a v2 database that stored artifacts in drafts.ai_artifacts_json
-    // but did not have the independent result tables. Keep that column untouched
-    // and add the current tables in place so its ordinary workspace data remains usable.
-    if (store.version === DATABASE_VERSION && !upgradedToCurrent) {
+    // v2 may either have the independent result tables or the older embedded
+    // artifact column. Version 3 validates the tables and imports valid embedded
+    // results without rewriting Draft/sync rows.
+    if (store.version === 2) {
       store.beginTransaction();
       try {
         await ensureAIResultTables(store);
         await ensureDraftSourceHistory(store);
         await ensureConflictEntityType(store);
+        await importLegacyArtifacts(store);
+        store.version = 3;
         store.commit();
       } catch (error) {
         store.rollBack();
+        if (store.version === 3) store.version = 2;
         throw new Error('AI 结果数据库兼容升级失败，原工作区未删除');
       }
     }
@@ -95,6 +114,75 @@ async function ensureDraftSourceHistory(store: relationalStore.RdbStore): Promis
   await ensureTable(store, 'draft_source_history', 'CREATE TABLE IF NOT EXISTS draft_source_history (' +
           'draft_id TEXT NOT NULL, version INTEGER NOT NULL, code TEXT NOT NULL, idea_segments_json TEXT NOT NULL, ' +
           'PRIMARY KEY (draft_id, version))', ['draft_id', 'version', 'code', 'idea_segments_json']);
+}
+
+async function importLegacyArtifacts(store: relationalStore.RdbStore): Promise<void> {
+  if (typeof store.querySql !== 'function') return;
+  const schema = await store.querySql('PRAGMA table_info(drafts)');
+  let hasLegacyColumn = false;
+  try {
+    if (schema.goToFirstRow()) do {
+      if (schema.getString(schema.getColumnIndex('name')) === 'ai_artifacts_json') hasLegacyColumn = true;
+    } while (schema.goToNextRow());
+  } finally { schema.close(); }
+  if (!hasLegacyColumn) return;
+  let rows: relationalStore.ResultSet;
+  try { rows = await store.querySql('SELECT * FROM drafts'); }
+  catch (error) { throw new Error('读取旧草稿失败'); }
+  try {
+    if (!rows.goToFirstRow()) return;
+    do {
+      const draftId = readString(rows, 'id');
+      if (readNumber(rows, 'deleted') === 1) continue;
+      const column = rows.getColumnIndex('ai_artifacts_json');
+      if (column < 0) continue;
+      const raw = rows.getString(column);
+      if (raw.length === 0) continue;
+      const artifacts = readLegacyArtifacts(rows);
+      const draft = new Draft(draftId, readString(rows, 'title'));
+      draft.code = readString(rows, 'code'); draft.idea = readString(rows, 'idea');
+      draft.version = readNumber(rows, 'version'); draft.updatedAt = readString(rows, 'updated_at');
+      draft.ideaSegments = parseIdeaSegments(readString(rows, 'idea_segments_json'));
+      for (let index = 0; index < artifacts.length; index++) {
+        const artifact = artifacts[index];
+        const record = new IDERecord();
+        record.id = `legacy-${draftId}-${index}`; record.capability = IDECapability.TRANSFORM;
+        record.state = IDEState.SUCCESS; record.createdAt = draft.updatedAt; record.updatedAt = draft.updatedAt;
+        record.hidden = readNumber(rows, 'artifact_hidden') === 1 || artifact.visibility === AIVisibility.HIDDEN;
+        record.restored = true; record.stale = true;
+        record.context = new IDEContext(); record.context.draftId = draftId; record.context.version = artifact.sourceDraftVersion;
+        record.context.code = draft.code; record.context.idea = draft.idea; record.context.problemContext = draft.title;
+        const sourceIds: string[] = [];
+        artifact.pseudocode.forEach((step: PseudocodeStep) => step.sourceRefs.forEach((id: string) => {
+          if (!sourceIds.includes(id)) sourceIds.push(id);
+        }));
+        record.context.segments = sourceIds.map((id: string) => {
+          const segment = draft.ideaSegments.find((item: IdeaSegment) => item.id === id);
+          return new AIRequestSegment(id, segment?.content ?? '');
+        });
+        const body = new LegacyArtifactBody();
+        body.mode = artifact.mode;
+        body.pseudocode = artifact.pseudocode.map((step: PseudocodeStep) => {
+          const legacyStep = new LegacyArtifactStepBody(); legacyStep.id = step.id; legacyStep.step = step.step;
+          legacyStep.source_refs = step.sourceRefs.slice(); return legacyStep;
+        });
+        body.code_snippet = artifact.codeSnippet;
+        body.code_mappings = artifact.codeMappings.map((mapping: CodeMapping) => {
+          const legacyMapping = new LegacyArtifactMappingBody(); legacyMapping.step_id = mapping.stepId;
+          legacyMapping.start_line = mapping.startLine; legacyMapping.end_line = mapping.endLine; return legacyMapping;
+        });
+        body.assumptions = artifact.assumptions.slice(); body.missing_information = artifact.missingInformation.slice();
+        body.risk_flags = artifact.riskFlags.slice(); body.added_algorithm_steps = artifact.addedAlgorithmSteps.slice();
+        body.source_draft_version = artifact.sourceDraftVersion; body.model_id = artifact.modelId;
+        body.rule_version = artifact.ruleVersion; body.output_kind = artifact.outputKind;
+        body.visibility = artifact.visibility; body.template_id = artifact.templateId;
+        record.body = JSON.stringify(body);
+        const json = JSON.stringify(record);
+        await store.executeSql('INSERT OR IGNORE INTO ai_results (draft_id, mode, slot, is_test, result_id, updated_at, record_json) VALUES (?, ?, ?, 0, ?, ?, ?)',
+          [draftId, artifact.mode, 'transform', record.id, record.updatedAt, json]);
+      }
+    } while (rows.goToNextRow());
+  } finally { rows.close(); }
 }
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8787';
 const DEFAULT_AI_BASE_URL = 'http://127.0.0.1:8788';
@@ -615,7 +703,9 @@ function readLegacyArtifacts(resultSet: relationalStore.ResultSet): AIArtifact[]
   for (const value of values) {
     if (value === null || typeof value !== 'object' || typeof value['mode'] !== 'string' ||
       typeof value['source_draft_version'] !== 'number' || !Number.isInteger(value['source_draft_version']) ||
-      typeof value['model_id'] !== 'string' || typeof value['rule_version'] !== 'string' ||
+      typeof value['model_id'] !== 'string' || (value['model_id'] as string).length === 0 ||
+      typeof value['rule_version'] !== 'string' || (value['rule_version'] as string).length === 0 ||
+      (value['source_draft_version'] as number) < 0 ||
       !Array.isArray(value['pseudocode']) || !Array.isArray(value['code_mappings'])) {
       throw new Error('旧 AI 结果契约无效，请保留数据库并重试');
     }
@@ -629,12 +719,47 @@ function readLegacyArtifacts(resultSet: relationalStore.ResultSet): AIArtifact[]
     }
     const outputKind = value['output_kind'] as AIOutputKind;
     const visibility = value['visibility'] as AIVisibility;
+    if ((value['template_id'] !== null && typeof value['template_id'] !== 'string') ||
+      (typeof value['template_id'] === 'string' && (value['template_id'] as string).length === 0) ||
+      outputKind === AIOutputKind.CODE_SNIPPET && (typeof value['code_snippet'] !== 'string' || (value['code_snippet'] as string).length > 4000 || /\b(?:int|signed|auto|void)\s+main\s*\(/.test(value['code_snippet'] as string))) {
+      throw new Error('旧 AI 结果契约无效，请保留数据库并重试');
+    }
+    if ((value['code_snippet'] !== null && typeof value['code_snippet'] !== 'string') ||
+      (typeof value['code_snippet'] === 'string' && (value['code_snippet'] as string).length === 0 || typeof value['code_snippet'] === 'string' && (value['code_snippet'] as string).length > 4000) ||
+      (value['template_id'] !== null && typeof value['template_id'] !== 'string') ||
+      !isStringArray(value['assumptions']) || !isStringArray(value['missing_information']) ||
+      !isStringArray(value['risk_flags']) || !isStringArray(value['added_algorithm_steps']) ||
+      mode === AIMode.FAITHFUL_TRANSFORM && (value['added_algorithm_steps'] as Array<Object>).length > 0) {
+      throw new Error('旧 AI 结果契约无效，请保留数据库并重试');
+    }
     const artifact = new AIArtifact(mode, outputKind, Number(value['source_draft_version']), String(value['model_id']), String(value['rule_version']), visibility);
     const steps = Array.isArray(value['pseudocode']) ? value['pseudocode'] as Array<Record<string, Object>> : [];
-    artifact.pseudocode = steps.map((entry: Record<string, Object>) => new PseudocodeStep(String(entry['id']), String(entry['step']), (entry['source_refs'] as string[]) ?? []));
+    const stepIds = new Set<string>();
+    artifact.pseudocode = steps.map((entry: Record<string, Object>) => {
+      if (typeof entry['id'] !== 'string' || (entry['id'] as string).length === 0 || typeof entry['step'] !== 'string' || (entry['step'] as string).length === 0 ||
+        stepIds.has(entry['id'] as string) || !isStringArray(entry['source_refs']) || (entry['source_refs'] as Array<string>).length === 0) {
+        throw new Error('旧 AI 结果契约无效，请保留数据库并重试');
+      }
+      for (const sourceRef of entry['source_refs'] as Array<string>) {
+        if (sourceRef.length === 0) throw new Error('旧 AI 结果契约无效，请保留数据库并重试');
+      }
+      stepIds.add(entry['id'] as string);
+      return new PseudocodeStep(entry['id'] as string, entry['step'] as string, entry['source_refs'] as Array<string>);
+    });
     artifact.codeSnippet = value['code_snippet'] as string | null;
     const mappings = Array.isArray(value['code_mappings']) ? value['code_mappings'] as Array<Record<string, Object>> : [];
-    artifact.codeMappings = mappings.map((entry: Record<string, Object>) => new CodeMapping(String(entry['step_id']), Number(entry['start_line']), Number(entry['end_line'])));
+    if (outputKind === AIOutputKind.PSEUDOCODE && (artifact.codeSnippet !== null || mappings.length > 0) ||
+      outputKind === AIOutputKind.CODE_SNIPPET && (artifact.codeSnippet === null || mappings.length === 0)) {
+      throw new Error('旧 AI 结果契约无效，请保留数据库并重试');
+    }
+    artifact.codeMappings = mappings.map((entry: Record<string, Object>) => {
+      if (typeof entry['step_id'] !== 'string' || !stepIds.has(entry['step_id'] as string) ||
+        typeof entry['start_line'] !== 'number' || !Number.isInteger(entry['start_line']) || (entry['start_line'] as number) < 1 ||
+        typeof entry['end_line'] !== 'number' || !Number.isInteger(entry['end_line']) || (entry['end_line'] as number) < (entry['start_line'] as number)) {
+        throw new Error('旧 AI 结果契约无效，请保留数据库并重试');
+      }
+      return new CodeMapping(entry['step_id'] as string, entry['start_line'] as number, entry['end_line'] as number);
+    });
     artifact.assumptions = (value['assumptions'] as string[]) ?? [];
     artifact.missingInformation = (value['missing_information'] as string[]) ?? [];
     artifact.riskFlags = (value['risk_flags'] as string[]) ?? [];
@@ -643,6 +768,10 @@ function readLegacyArtifacts(resultSet: relationalStore.ResultSet): AIArtifact[]
     artifacts.push(artifact);
   }
   return artifacts;
+}
+
+function isStringArray(value: Object): boolean {
+  return Array.isArray(value) && (value as Array<Object>).every((item: Object) => typeof item === 'string');
 }
 
 function recordToSyncPayload(record: IDERecord, clientId: string, entityType: string): AIArtifactPayload | ReviewResultPayload {
