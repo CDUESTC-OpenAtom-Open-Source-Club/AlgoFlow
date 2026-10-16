@@ -376,6 +376,13 @@ test('PR23 v2 migration imports faithful and non-default mode artifacts into rea
       added_algorithm_steps: ['Count all compatible intervals'], source_draft_version: 4,
       model_id: 'legacy-model', rule_version: '1.0.0', output_kind: 'pseudocode',
       visibility: 'visible', template_id: null
+    },
+    {
+      mode: 'faithful_transform',
+      pseudocode: [{ id: 'step-5', step: 'Preserve later same-mode result', source_refs: ['idea-1'] }],
+      code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: [], source_draft_version: 4, model_id: 'legacy-model',
+      rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null
     }
   ]);
   const draftRow = {
@@ -399,20 +406,32 @@ test('PR23 v2 migration imports faithful and non-default mode artifacts into rea
     };
   };
   let committedResults = new Map();
+  let committedHistory = new Map();
   let workingResults = null;
+  let workingHistory = null;
   let totalInsertAttempts = 0;
   const store = {
     version: 2,
-    beginTransaction() { workingResults = new Map(committedResults); },
-    commit() { if (workingResults) { committedResults = workingResults; workingResults = null; } },
-    rollBack() { workingResults = null; },
+    beginTransaction() { workingResults = new Map(committedResults); workingHistory = new Map(committedHistory); },
+    commit() { if (workingResults) { committedResults = workingResults; committedHistory = workingHistory; workingResults = null; workingHistory = null; } },
+    rollBack() { workingResults = null; workingHistory = null; },
     async executeSql(statement, args = []) {
       const target = workingResults ?? committedResults;
-      if (statement.startsWith('INSERT OR IGNORE INTO ai_results')) {
+      const history = workingHistory ?? committedHistory;
+      if (statement.startsWith('INSERT OR IGNORE INTO ai_result_history') && statement.includes('SELECT')) {
+        const [draftId, mode, slot] = args;
+        const current = target.get(`${draftId}:${mode}:${slot}:0`);
+        if (current !== undefined) history.set(current.resultId, current);
+      } else if (statement.startsWith('INSERT OR IGNORE INTO ai_result_history')) {
+        const [draftId, mode, slot, resultId, updatedAt, recordJson] = args;
+        history.set(resultId, { draft_id: draftId, mode, slot, is_test: 0, resultId, updatedAt, recordJson });
+      } else if (statement.startsWith('INSERT OR IGNORE INTO ai_results') || statement.startsWith('INSERT OR REPLACE INTO ai_results')) {
         totalInsertAttempts++;
         const [draftId, mode, slot, resultId, updatedAt, recordJson] = args;
         const key = `${draftId}:${mode}:${slot}:0`;
-        if (!target.has(key)) target.set(key, { draft_id: draftId, mode, slot, is_test: 0, result_id: resultId, updated_at: updatedAt, record_json: recordJson });
+        if (statement.startsWith('INSERT OR REPLACE') || !target.has(key)) {
+          target.set(key, { draft_id: draftId, mode, slot, is_test: 0, resultId, updatedAt, recordJson });
+        }
       }
     },
     async querySql(statement, args = []) {
@@ -424,29 +443,44 @@ test('PR23 v2 migration imports faithful and non-default mode artifacts into rea
       if (statement.startsWith('SELECT record_json FROM ai_results WHERE draft_id = ? AND mode = ?')) {
         const [draftId, mode, allowTest] = args;
         const matched = [...target.values()].filter(row => row.draft_id === draftId && row.mode === mode && (row.is_test === 0 || allowTest === 1));
-        return makeResultSet(matched.map(row => ({ record_json: row.record_json })));
+        return makeResultSet(matched.map(row => ({ record_json: row.recordJson })));
       }
-      if (statement.startsWith('SELECT record_json FROM ai_result_history')) return makeResultSet([]);
+      if (statement.startsWith('SELECT record_json FROM ai_result_history')) {
+        const [draftId, mode, allowTest] = args;
+        const matched = [...(workingHistory ?? committedHistory).values()]
+          .filter(row => row.draft_id === draftId && row.mode === mode && (row.is_test === 0 || allowTest === 1));
+        return makeResultSet(matched.map(row => ({ record_json: row.recordJson })));
+      }
       return makeResultSet([]);
     }
   };
   await migrateWorkspaceStore(store);
   assert.equal(store.version, 3);
   assert.equal(committedResults.size, 4);
+  assert.equal(committedHistory.size, 5);
   const repository = new RdbAIResultRepository(store, false);
   for (const [mode, expectedId, expectedHidden, expectedStep] of [
-    ['faithful_transform', 'legacy-legacy-draft-0', false, 'Sort intervals by right endpoint'],
+    ['faithful_transform', 'legacy-legacy-draft-4', false, 'Preserve later same-mode result'],
     ['feasibility_analysis', 'legacy-legacy-draft-1', false, 'Analyze greedy choice property'],
     ['progressive_hint', 'legacy-legacy-draft-2', true, 'Compare current start with last end'],
     ['full_solution', 'legacy-legacy-draft-3', false, 'Complete interval scheduling pass']
   ]) {
     const records = await repository.list('legacy-draft', mode);
-    assert.equal(records.length, 1);
-    assert.equal(records[0].id, expectedId);
-    assert.equal(records[0].context.mode, mode);
-    assert.equal(records[0].restored, true);
-    assert.equal(records[0].stale, true);
-    assert.equal(records[0].hidden, expectedHidden);
+    const selected = records.find(record => record.id === expectedId);
+    assert.equal(selected !== undefined, true);
+    assert.equal(selected.context.mode, mode);
+    assert.equal(selected.restored, true);
+    assert.equal(selected.stale, true);
+    assert.equal(selected.hidden, expectedHidden);
+    if (mode === 'faithful_transform') {
+      assert.equal(records.length, 2);
+      assert.equal(records.some(record => record.id === 'legacy-legacy-draft-0'), true);
+      assert.equal(committedResults.get('legacy-draft:faithful_transform:transform:0').resultId, expectedId);
+      const oldRecord = JSON.parse(committedHistory.get('legacy-legacy-draft-0').recordJson);
+      assert.equal(oldRecord.body.includes('Sort intervals by right endpoint'), true);
+    } else {
+      assert.equal(records.length, 1);
+    }
     const session = new IDEAISession({ async request() { throw Error('not called'); }, cancel() {} }, repository);
     const ctx = new IDEContext();
     ctx.draftId = 'legacy-draft'; ctx.version = 4; ctx.mode = mode; ctx.code = draftRow.code;
@@ -454,26 +488,31 @@ test('PR23 v2 migration imports faithful and non-default mode artifacts into rea
     ctx.segments = [new AIRequestSegment('idea-1', 'Keep source result')];
     await session.setContext(ctx);
     assert.equal(session.storageError, '');
-    assert.equal(session.records.length, 1);
-    const text = session.result(session.records[0]).transformText;
-    assert.match(text, new RegExp(expectedStep));
+    assert.equal(session.records.length, mode === 'faithful_transform' ? 2 : 1);
+    const selectedMessage = session.records.find(record => session.result(record).transformText.includes(expectedStep));
+    assert.notEqual(selectedMessage, undefined);
+    const text = session.result(selectedMessage).transformText;
     if (mode === 'progressive_hint') {
       assert.match(text, /if \(cur\.left >= lastRight\)/);
       assert.match(text, /step-3: L1-L3/);
     }
   }
   const key = 'legacy-draft:feasibility_analysis:transform:0';
-  const modifiedRecord = JSON.parse(committedResults.get(key).record_json);
+  const modifiedRecord = JSON.parse(committedResults.get(key).recordJson);
   modifiedRecord.hidden = true;
-  committedResults.get(key).record_json = JSON.stringify(modifiedRecord);
+  committedResults.get(key).recordJson = JSON.stringify(modifiedRecord);
   store.version = 2;
   await migrateWorkspaceStore(store);
   assert.equal(store.version, 3);
   assert.equal(committedResults.size, 4);
+  assert.equal(committedHistory.size, 5);
   assert.equal(totalInsertAttempts, 8);
   const afterRerun = await repository.list('legacy-draft', 'feasibility_analysis');
   assert.equal(afterRerun.length, 1);
   assert.equal(afterRerun[0].hidden, true);
+  const faithfulAfterRerun = await repository.list('legacy-draft', 'faithful_transform');
+  assert.equal(faithfulAfterRerun.length, 2);
+  assert.equal(new Set(faithfulAfterRerun.map(record => record.id)).size, 2);
 });
 test('PR23 migration rolls back corrupt artifacts but isolates historical results with deleted sources', async () => {
   const { migrateWorkspaceStore } = load('platform/RdbDraftRepository');
@@ -532,7 +571,7 @@ test('PR23 migration rolls back corrupt artifacts but isolates historical result
       rollBack() { rolledBack = true; workingResults = null; },
       async executeSql(statement, args = []) {
         const target = workingResults ?? committedResults;
-        if (statement.startsWith('INSERT OR IGNORE INTO ai_results')) {
+        if (statement.startsWith('INSERT OR IGNORE INTO ai_results') || statement.startsWith('INSERT OR REPLACE INTO ai_results')) {
           const [draftId, mode, slot, resultId, updatedAt, recordJson] = args;
           target.set(`${draftId}:${mode}:${slot}:0`, { resultId, updatedAt, recordJson });
         }

@@ -144,6 +144,7 @@ async function importLegacyArtifacts(store: relationalStore.RdbStore): Promise<v
       draft.version = readNumber(rows, 'version'); draft.updatedAt = readString(rows, 'updated_at');
       draft.ideaSegments = parseIdeaSegments(readString(rows, 'idea_segments_json'));
       const currentSegments = new Map<string, IdeaSegment>(draft.ideaSegments.map((item: IdeaSegment) => [item.id, item]));
+      const latestRecords = new Map<string, Array<string | number>>();
       for (let index = 0; index < artifacts.length; index++) {
         const artifact = artifacts[index];
         const sourceIds: string[] = [];
@@ -185,8 +186,26 @@ async function importLegacyArtifacts(store: relationalStore.RdbStore): Promise<v
         record.body = JSON.stringify(body);
         const json = JSON.stringify(record);
         decodeAIRecord(json);
-        await store.executeSql('INSERT OR IGNORE INTO ai_results (draft_id, mode, slot, is_test, result_id, updated_at, record_json) VALUES (?, ?, ?, 0, ?, ?, ?)',
+        // Preserve any existing current result before replacing the slot. The
+        // legacy array may contain multiple results for one mode; history is
+        // keyed by result_id so none of them are silently discarded.
+        await store.executeSql('INSERT OR IGNORE INTO ai_result_history ' +
+          '(draft_id, mode, slot, is_test, result_id, updated_at, record_json) ' +
+          'SELECT draft_id, mode, slot, is_test, result_id, updated_at, record_json FROM ai_results ' +
+          'WHERE draft_id = ? AND mode = ? AND slot = ? AND is_test = 0',
+          [draftId, artifact.mode, 'transform']);
+        await store.executeSql('INSERT OR IGNORE INTO ai_result_history ' +
+          '(draft_id, mode, slot, is_test, result_id, updated_at, record_json) VALUES (?, ?, ?, 0, ?, ?, ?)',
           [draftId, artifact.mode, 'transform', record.id, record.updatedAt, json]);
+        latestRecords.set(artifact.mode, [draftId, artifact.mode, 'transform', record.id, record.updatedAt, json]);
+      }
+      // The legacy array is ordered oldest to newest. Populate the current
+      // slot only when it is empty; this keeps the newest legacy record as the
+      // current result on first migration without overwriting a later user
+      // edit or hidden state on an idempotent retry.
+      for (const values of latestRecords.values()) {
+        await store.executeSql('INSERT OR IGNORE INTO ai_results ' +
+          '(draft_id, mode, slot, is_test, result_id, updated_at, record_json) VALUES (?, ?, ?, 0, ?, ?, ?)', values);
       }
     } while (rows.goToNextRow());
   } finally { rows.close(); }

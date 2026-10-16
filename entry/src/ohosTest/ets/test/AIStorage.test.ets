@@ -177,17 +177,20 @@ export default function aiStorageTest() {
         expect(isolated[0].context.segments.length).assertEqual(1);
         expect(isolated[0].context.segments[0].id).assertEqual('missing-segment');
         await store.executeSql("DELETE FROM ai_results WHERE draft_id = 'pr23-draft'");
+        await store.executeSql("DELETE FROM ai_result_history WHERE draft_id = 'pr23-draft'");
         store.version = 2;
-        const legacyArtifacts = '[{"mode":"faithful_transform","pseudocode":[{"id":"step_1","step":"Sort by right endpoint","source_refs":["segment-1"]}],"code_snippet":null,"code_mappings":[],"assumptions":[],"missing_information":[],"risk_flags":[],"added_algorithm_steps":[],"source_draft_version":2,"model_id":"legacy-model","rule_version":"1.0.0","output_kind":"pseudocode","visibility":"visible","template_id":null},{"mode":"feasibility_analysis","pseudocode":[{"id":"step_2","step":"Analyze greedy choice","source_refs":["segment-1"]}],"code_snippet":null,"code_mappings":[],"assumptions":[],"missing_information":[],"risk_flags":["greedy choice not proven"],"added_algorithm_steps":["Consider exchange argument"],"source_draft_version":2,"model_id":"legacy-model","rule_version":"1.0.0","output_kind":"pseudocode","visibility":"visible","template_id":null},{"mode":"progressive_hint","pseudocode":[{"id":"step_3","step":"Check current interval","source_refs":["segment-1"]}],"code_snippet":"if (cur.left >= lastRight) { lastRight = cur.right; }","code_mappings":[{"step_id":"step_3","start_line":1,"end_line":1}],"assumptions":[],"missing_information":[],"risk_flags":[],"added_algorithm_steps":["Track last selected endpoint"],"source_draft_version":2,"model_id":"legacy-model","rule_version":"1.0.0","output_kind":"code_snippet","visibility":"hidden","template_id":null}]';
+        const legacyArtifacts = '[{"mode":"faithful_transform","pseudocode":[{"id":"step_1","step":"Sort by right endpoint","source_refs":["segment-1"]}],"code_snippet":null,"code_mappings":[],"assumptions":[],"missing_information":[],"risk_flags":[],"added_algorithm_steps":[],"source_draft_version":2,"model_id":"legacy-model","rule_version":"1.0.0","output_kind":"pseudocode","visibility":"visible","template_id":null},{"mode":"feasibility_analysis","pseudocode":[{"id":"step_2","step":"Analyze greedy choice","source_refs":["segment-1"]}],"code_snippet":null,"code_mappings":[],"assumptions":[],"missing_information":[],"risk_flags":["greedy choice not proven"],"added_algorithm_steps":["Consider exchange argument"],"source_draft_version":2,"model_id":"legacy-model","rule_version":"1.0.0","output_kind":"pseudocode","visibility":"visible","template_id":null},{"mode":"progressive_hint","pseudocode":[{"id":"step_3","step":"Check current interval","source_refs":["segment-1"]}],"code_snippet":"if (cur.left >= lastRight) { lastRight = cur.right; }","code_mappings":[{"step_id":"step_3","start_line":1,"end_line":1}],"assumptions":[],"missing_information":[],"risk_flags":[],"added_algorithm_steps":["Track last selected endpoint"],"source_draft_version":2,"model_id":"legacy-model","rule_version":"1.0.0","output_kind":"code_snippet","visibility":"hidden","template_id":null},{"mode":"faithful_transform","pseudocode":[{"id":"step_4","step":"Keep second same-mode artifact","source_refs":["segment-1"]}],"code_snippet":null,"code_mappings":[],"assumptions":[],"missing_information":[],"risk_flags":[],"added_algorithm_steps":[],"source_draft_version":2,"model_id":"legacy-model","rule_version":"1.0.0","output_kind":"pseudocode","visibility":"visible","template_id":null}]';
         await store.executeSql("UPDATE drafts SET ai_artifacts_json = ? WHERE id = 'pr23-draft'", [legacyArtifacts]);
         await migrateWorkspaceStore(store);
         expect(store.version).assertEqual(3);
         const repository = new RdbAIResultRepository(store, false);
         const faithful = await repository.list('pr23-draft', AIMode.FAITHFUL_TRANSFORM);
-        expect(faithful.length).assertEqual(1);
-        expect(faithful[0].id).assertEqual('legacy-pr23-draft-0');
-        expect(faithful[0].context.mode).assertEqual(AIMode.FAITHFUL_TRANSFORM);
-        expect(faithful[0].restored).assertTrue();
+        expect(faithful.length).assertEqual(2);
+        expect(faithful.some((item: IDERecord) => item.id === 'legacy-pr23-draft-0')).assertTrue();
+        expect(faithful.some((item: IDERecord) => item.id === 'legacy-pr23-draft-3')).assertTrue();
+        const currentFaithful = await store.querySql("SELECT result_id FROM ai_results WHERE draft_id = 'pr23-draft' AND mode = 'faithful_transform' AND slot = 'transform' AND is_test = 0");
+        try { expect(currentFaithful.goToFirstRow()).assertTrue(); expect(currentFaithful.getString(0)).assertEqual('legacy-pr23-draft-3'); }
+        finally { currentFaithful.close(); }
         const feasibility = await repository.list('pr23-draft', AIMode.FEASIBILITY_ANALYSIS);
         expect(feasibility.length).assertEqual(1);
         expect(feasibility[0].id).assertEqual('legacy-pr23-draft-1');
@@ -202,7 +205,7 @@ export default function aiStorageTest() {
         store.version = 2;
         await migrateWorkspaceStore(store);
         expect(store.version).assertEqual(3);
-        expect((await repository.list('pr23-draft', AIMode.FAITHFUL_TRANSFORM)).length).assertEqual(1);
+        expect((await repository.list('pr23-draft', AIMode.FAITHFUL_TRANSFORM)).length).assertEqual(2);
         expect((await repository.list('pr23-draft', AIMode.FEASIBILITY_ANALYSIS)).length).assertEqual(1);
         expect((await repository.list('pr23-draft', AIMode.PROGRESSIVE_HINT)).length).assertEqual(1);
       } finally { await store.close(); await relationalStore.deleteRdbStore(context, name); }

@@ -47,6 +47,7 @@ Hypium 结果、应用日志和 Gateway 取消日志分别保存。Node 替身�
 ## 2026-10-16 自动化执行记录
 
 - Node.js `v24.14.1` / Windows PowerShell：执行 `node --test --test-reporter=tap apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，**636/636 通过**。覆盖迁移、回滚、重复导入、损坏记录、契约向量、同步游标失败不推进和冲突副本。
+- PR #23 兼容迁移的重复结果回归：同一草稿/模式的多个 legacy artifact 全部保留在 `ai_result_history`，当前槽位只在为空时写入按旧数组顺序的最后一条；重复迁移不覆盖已有隐藏/编辑状态。
 - Web：在 `apps/web` 执行 `npm run build`，TypeScript 检查和 Vite 构建通过；保留既有大于 500 kB chunk 提示。
 - OpenHarmony：使用 DevEco Studio `6.0.0` / API `20` 工具链执行 `entry@ohosTest` Debug HAP 构建，`BUILD SUCCESSFUL`；工程没有 `signingConfigs`，因此产物未签名。
 - 模拟器：本机存在 `Mate 70 Pro`、HarmonyOS `6.0.0(20)`、x86 镜像，已执行 `Emulator.exe -hvd "Mate 70 Pro"`。启动日志报告 `HYPER_V_ERROR` / `can not read sn`，随后进程退出；`hdc list targets -v` 未出现 HarmonyOS 目标（仅有 `COM1 UART Ready unknown... hdc`）。因此未安装 HAP、未运行 Hypium/真实 RDB，模拟器部分自动化测试待具备 Hyper-V 或云手机后补做。
