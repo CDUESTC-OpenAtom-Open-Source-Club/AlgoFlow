@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canUseTestData, createIdeaSegments, rangeToOffsets, toCursor, WebAIClient } from '../src/ai-client.mjs';
+import { readFileSync } from 'node:fs';
+import { canUseTestData, createIdeaSegments, parseCompletionResult, parseReviewResult, rangeToOffsets, toCursor, WebAIClient } from '../src/ai-client.mjs';
+
+const reviewVectors = JSON.parse(readFileSync(new URL('../../../packages/contracts/vectors/ide-review-vectors.json', import.meta.url), 'utf8'));
+const completionVectors = JSON.parse(readFileSync(new URL('../../../packages/contracts/vectors/ide-completion-vectors.json', import.meta.url), 'utf8'));
 
 const request = {
   mode: 'faithful_transform', draft_id: 'draft-test', draft_version: 1,
@@ -108,4 +112,60 @@ test('range conversion rejects invalid and inverted coordinates', () => {
     { start_line: 1, start_char: 1, end_line: 1, end_char: 0 },
     { start_line: 1.5, start_char: 0, end_line: 2, end_char: 0 },
   ]) assert.throws(() => rangeToOffsets('ab\ncd', range));
+});
+
+test('web client validates shared review and completion result vectors including invalid enums and legacy payloads', () => {
+  for (const vector of reviewVectors.results) {
+    if (vector.valid) assert.doesNotThrow(() => parseReviewResult(vector.result), vector.name);
+    else assert.throws(() => parseReviewResult(vector.result), vector.name);
+  }
+  for (const vector of reviewVectors.against_request) {
+    if (vector.valid) assert.doesNotThrow(() => parseReviewResult(vector.result, vector.request), vector.name);
+    else assert.throws(() => parseReviewResult(vector.result, vector.request), vector.name);
+  }
+  for (const vector of completionVectors.results) {
+    if (vector.valid) assert.doesNotThrow(() => parseCompletionResult(vector.result), vector.name);
+    else assert.throws(() => parseCompletionResult(vector.result), vector.name);
+  }
+  for (const vector of completionVectors.against_request) {
+    if (vector.valid) assert.doesNotThrow(() => parseCompletionResult(vector.result, vector.request), vector.name);
+    else assert.throws(() => parseCompletionResult(vector.result, vector.request), vector.name);
+  }
+});
+
+test('web client enforces shared review and completion test response markers', async () => {
+  for (const vector of reviewVectors.test_data_responses) {
+    const client = new WebAIClient('http://example.test', {
+      allowTestData: vector.allow_test_data,
+      fetchImpl: async () => new Response(JSON.stringify(result), { status: 200, headers: vector.headers }),
+    });
+    if (vector.accepted) {
+      const response = await client.requestReview(request);
+      assert.equal(response.isTestData, vector.is_test_data, vector.name);
+    } else {
+      await assert.rejects(
+        client.requestReview(request),
+        (error) => error.code === vector.expected_error_code && error.isTestData === vector.is_test_data,
+        vector.name,
+      );
+    }
+  }
+  for (const vector of completionVectors.test_data_responses) {
+    const completionRequest = completionVectors.requests[0].request;
+    const completionResult = completionVectors.results[0].result;
+    const client = new WebAIClient('http://example.test', {
+      allowTestData: vector.allow_test_data,
+      fetchImpl: async () => new Response(JSON.stringify(completionResult), { status: 200, headers: vector.headers }),
+    });
+    if (vector.accepted) {
+      const response = await client.requestCompletion(completionRequest);
+      assert.equal(response.isTestData, vector.is_test_data, vector.name);
+    } else {
+      await assert.rejects(
+        client.requestCompletion(completionRequest),
+        (error) => error.code === vector.expected_error_code && error.isTestData === vector.is_test_data,
+        vector.name,
+      );
+    }
+  }
 });

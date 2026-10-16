@@ -55,6 +55,63 @@
         "code": "void choose(vector<Interval>& intervals) {}",
         "visibility": "visible"
       }
+    },
+    {
+      "name": "completion request with invalid mode enum",
+      "valid": false,
+      "request": {
+        "mode": "legacy_mode",
+        "output_kind": "completion",
+        "draft_id": "draft-1",
+        "draft_version": 3,
+        "language": "cpp",
+        "rule_version": "1.0.0",
+        "problem_context": "Given intervals, choose a non-overlapping subset.",
+        "idea_segments": [
+          { "id": "idea_segment_1", "content": "Sort by right endpoint." }
+        ],
+        "code": "void choose(vector<Interval>& intervals) {}",
+        "cursor": { "line": 1, "char": 0 },
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "completion request with legacy output_kind",
+      "valid": false,
+      "request": {
+        "mode": "faithful_transform",
+        "output_kind": "code_snippet",
+        "draft_id": "draft-1",
+        "draft_version": 3,
+        "language": "cpp",
+        "rule_version": "1.0.0",
+        "problem_context": "Given intervals, choose a non-overlapping subset.",
+        "idea_segments": [
+          { "id": "idea_segment_1", "content": "Sort by right endpoint." }
+        ],
+        "code": "void choose(vector<Interval>& intervals) {}",
+        "cursor": { "line": 1, "char": 0 },
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "completion request with invalid visibility enum",
+      "valid": false,
+      "request": {
+        "mode": "faithful_transform",
+        "output_kind": "completion",
+        "draft_id": "draft-1",
+        "draft_version": 3,
+        "language": "cpp",
+        "rule_version": "1.0.0",
+        "problem_context": "Given intervals, choose a non-overlapping subset.",
+        "idea_segments": [
+          { "id": "idea_segment_1", "content": "Sort by right endpoint." }
+        ],
+        "code": "void choose(vector<Interval>& intervals) {}",
+        "cursor": { "line": 1, "char": 0 },
+        "visibility": "classified"
+      }
     }
   ],
   "results": [
@@ -149,6 +206,70 @@
         "rule_version": "1.0.0",
         "replaced_range": { "start_line": 3, "start_char": 2, "end_line": 3, "end_char": 2 },
         "suggestion_text": "sort(intervals.begin(), intervals.end(), byRight);",
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "completion with invalid mode enum",
+      "valid": false,
+      "result": {
+        "mode": "unknown_mode",
+        "output_kind": "completion",
+        "draft_id": "draft-1",
+        "source_draft_version": 3,
+        "model_id": "provider-disabled",
+        "rule_version": "1.0.0",
+        "replaced_range": { "start_line": 3, "start_char": 2, "end_line": 3, "end_char": 2 },
+        "suggestion_text": "sort(intervals.begin(), intervals.end(), byRight);",
+        "source_refs": ["idea_segment_1"],
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "completion with legacy code_snippet output_kind",
+      "valid": false,
+      "result": {
+        "mode": "faithful_transform",
+        "output_kind": "code_snippet",
+        "draft_id": "draft-1",
+        "source_draft_version": 3,
+        "model_id": "provider-disabled",
+        "rule_version": "1.0.0",
+        "replaced_range": { "start_line": 3, "start_char": 2, "end_line": 3, "end_char": 2 },
+        "suggestion_text": "sort(intervals.begin(), intervals.end(), byRight);",
+        "source_refs": ["idea_segment_1"],
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "completion with invalid visibility enum",
+      "valid": false,
+      "result": {
+        "mode": "faithful_transform",
+        "output_kind": "completion",
+        "draft_id": "draft-1",
+        "source_draft_version": 3,
+        "model_id": "provider-disabled",
+        "rule_version": "1.0.0",
+        "replaced_range": { "start_line": 3, "start_char": 2, "end_line": 3, "end_char": 2 },
+        "suggestion_text": "sort(intervals.begin(), intervals.end(), byRight);",
+        "source_refs": ["idea_segment_1"],
+        "visibility": "private"
+      }
+    },
+    {
+      "name": "completion with negative legacy source_draft_version",
+      "valid": false,
+      "result": {
+        "mode": "faithful_transform",
+        "output_kind": "completion",
+        "draft_id": "draft-1",
+        "source_draft_version": -1,
+        "model_id": "provider-disabled",
+        "rule_version": "1.0.0",
+        "replaced_range": { "start_line": 3, "start_char": 2, "end_line": 3, "end_char": 2 },
+        "suggestion_text": "sort(intervals.begin(), intervals.end(), byRight);",
+        "source_refs": ["idea_segment_1"],
         "visibility": "visible"
       }
     }
@@ -481,6 +602,61 @@
         "source_refs": ["idea_segment_1"],
         "visibility": "visible"
       }
+    },
+    {
+      "name": "completion source_refs must exist in request idea_segments",
+      "valid": false,
+      "request": {
+        "mode": "faithful_transform",
+        "output_kind": "completion",
+        "draft_id": "draft-1",
+        "draft_version": 3,
+        "language": "cpp",
+        "rule_version": "1.0.0",
+        "problem_context": "Given intervals, choose a non-overlapping subset.",
+        "idea_segments": [
+          { "id": "idea_segment_1", "content": "Sort intervals by right endpoint." }
+        ],
+        "code": "void choose() {\n}\n",
+        "cursor": { "line": 2, "char": 0 },
+        "visibility": "visible"
+      },
+      "result": {
+        "mode": "faithful_transform",
+        "output_kind": "completion",
+        "draft_id": "draft-1",
+        "source_draft_version": 3,
+        "model_id": "provider-disabled",
+        "rule_version": "1.0.0",
+        "replaced_range": { "start_line": 2, "start_char": 0, "end_line": 2, "end_char": 0 },
+        "suggestion_text": "return;",
+        "source_refs": ["missing_segment"],
+        "visibility": "visible"
+      }
+    }
+  ],
+  "test_data_responses": [
+    {
+      "name": "marked test completion response is rejected when test data is disabled",
+      "allow_test_data": false,
+      "headers": { "X-AlgoFlow-Test-Data": "true" },
+      "accepted": false,
+      "is_test_data": true,
+      "expected_error_code": "AI_NOT_ENABLED"
+    },
+    {
+      "name": "marked test completion response is accepted and isolated when test data is enabled",
+      "allow_test_data": true,
+      "headers": { "X-AlgoFlow-Test-Data": "true" },
+      "accepted": true,
+      "is_test_data": true
+    },
+    {
+      "name": "unmarked completion response is accepted as normal non-test data",
+      "allow_test_data": false,
+      "headers": {},
+      "accepted": true,
+      "is_test_data": false
     }
   ]
 }

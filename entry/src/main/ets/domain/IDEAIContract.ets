@@ -32,21 +32,26 @@ export function parseIDEResult(body: string, record: IDERecord): IDEResult {
     });
     if (outputKind === 'pseudocode') {
       requireValue(value['code_snippet'] === null && array(value['code_mappings']).length === 0);
-    } else {
-      const snippet = text(value['code_snippet']);
-      requireValue(snippet.length <= 4000 && !/\b(?:int|signed|auto|void)\s+main\s*\(/.test(snippet));
-      const mappings = array(value['code_mappings']);
-      requireValue(mappings.length > 0);
-      mappings.forEach(item => {
-        const mapping = object(item); exact(mapping, ['step_id', 'start_line', 'end_line']);
-        requireValue(stepIds.includes(text(mapping['step_id'])));
-        const startLine = integer(mapping['start_line'], 1);
-        const endLine = integer(mapping['end_line'], 1);
-        requireValue(endLine >= startLine);
-      });
+      for (const key of ['assumptions', 'missing_information', 'risk_flags']) strings(value[key]);
+      result.transformText = steps.join('\n\n') || '（无伪代码步骤）'; return result;
     }
+    const snippet = text(value['code_snippet']);
+    requireValue(snippet.length <= 4000 && !/\b(?:int|signed|auto|void)\s+main\s*\(/.test(snippet));
+    const mappings = array(value['code_mappings']);
+    requireValue(mappings.length > 0);
+    const mappedLines = mappings.map(item => {
+      const mapping = object(item); exact(mapping, ['step_id', 'start_line', 'end_line']);
+      const stepId = text(mapping['step_id']);
+      requireValue(stepIds.includes(stepId));
+      const startLine = integer(mapping['start_line'], 1);
+      const endLine = integer(mapping['end_line'], 1);
+      requireValue(endLine >= startLine);
+      return `${stepId}: L${startLine}-L${endLine}`;
+    });
     for (const key of ['assumptions', 'missing_information', 'risk_flags']) strings(value[key]);
-    result.transformText = steps.join('\n\n') || '（无伪代码步骤）'; return result;
+    const stepText = steps.join('\n\n') || '（无伪代码步骤）';
+    result.transformText = `${stepText}\n\n代码片段：\n${snippet}\n映射：${mappedLines.join(', ')}`;
+    return result;
   }
   requireValue(text(value['draft_id']) === record.context.draftId);
   if (record.capability === IDECapability.REVIEW) {

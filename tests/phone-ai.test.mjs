@@ -455,7 +455,12 @@ test('PR23 v2 migration imports faithful and non-default mode artifacts into rea
     await session.setContext(ctx);
     assert.equal(session.storageError, '');
     assert.equal(session.records.length, 1);
-    assert.match(session.result(session.records[0]).transformText, new RegExp(expectedStep));
+    const text = session.result(session.records[0]).transformText;
+    assert.match(text, new RegExp(expectedStep));
+    if (mode === 'progressive_hint') {
+      assert.match(text, /if \(cur\.left >= lastRight\)/);
+      assert.match(text, /step-3: L1-L3/);
+    }
   }
   const key = 'legacy-draft:feasibility_analysis:transform:0';
   const modifiedRecord = JSON.parse(committedResults.get(key).record_json);
@@ -470,7 +475,7 @@ test('PR23 v2 migration imports faithful and non-default mode artifacts into rea
   assert.equal(afterRerun.length, 1);
   assert.equal(afterRerun[0].hidden, true);
 });
-test('PR23 v2 migration rolls back transaction and preserves version 2 when embedded ai_artifacts_json is corrupt or invalid', async () => {
+test('PR23 migration rolls back corrupt artifacts but isolates historical results with deleted sources', async () => {
   const { migrateWorkspaceStore } = load('platform/RdbDraftRepository');
   const makeResultSet = (items) => {
     let idx = -1;
@@ -507,6 +512,13 @@ test('PR23 v2 migration rolls back transaction and preserves version 2 when embe
       added_algorithm_steps: ['Forbidden in faithful_transform'], source_draft_version: 1,
       model_id: 'legacy-model', rule_version: '1.0.0', output_kind: 'pseudocode',
       visibility: 'visible', template_id: null
+    }]),
+    JSON.stringify([{
+      mode: 'faithful_transform',
+      pseudocode: [{ id: 'step-1', step: 'Unknown source', source_refs: ['missing-segment'] }],
+      code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: [], source_draft_version: 1, model_id: 'legacy-model',
+      rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null
     }])
   ]) {
     const corruptDraft = { ...validDraft, id: 'draft-corrupt', ai_artifacts_json: badArtifactsJson };
@@ -533,10 +545,20 @@ test('PR23 v2 migration rolls back transaction and preserves version 2 when embe
         return makeResultSet([]);
       }
     };
-    await assert.rejects(() => migrateWorkspaceStore(store), /AI 结果数据库兼容升级失败，原工作区未删除/);
-    assert.equal(rolledBack, true);
-    assert.equal(store.version, 2);
-    assert.equal(committedResults.size, 0);
+    if (badArtifactsJson.includes('missing-segment')) {
+      await migrateWorkspaceStore(store);
+      assert.equal(rolledBack, false);
+      assert.equal(store.version, 3);
+      assert.equal(committedResults.size, 2);
+      const record = JSON.parse([...committedResults.values()].find((item) => item.recordJson.includes('missing-segment')).recordJson);
+      assert.equal(record.hidden, true);
+      assert.deepEqual(record.context.segments, [{ id: 'missing-segment', content: '' }]);
+    } else {
+      await assert.rejects(() => migrateWorkspaceStore(store), /AI 结果数据库兼容升级失败，原工作区未删除/);
+      assert.equal(rolledBack, true);
+      assert.equal(store.version, 2);
+      assert.equal(committedResults.size, 0);
+    }
   }
 });
 test('phone pull batch leaves its cursor unchanged when queued RDB writes fail', async () => {

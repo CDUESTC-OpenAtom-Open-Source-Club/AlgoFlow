@@ -143,22 +143,27 @@ async function importLegacyArtifacts(store: relationalStore.RdbStore): Promise<v
       draft.code = readString(rows, 'code'); draft.idea = readString(rows, 'idea');
       draft.version = readNumber(rows, 'version'); draft.updatedAt = readString(rows, 'updated_at');
       draft.ideaSegments = parseIdeaSegments(readString(rows, 'idea_segments_json'));
+      const currentSegments = new Map<string, IdeaSegment>(draft.ideaSegments.map((item: IdeaSegment) => [item.id, item]));
       for (let index = 0; index < artifacts.length; index++) {
         const artifact = artifacts[index];
-        const record = new IDERecord();
-        record.id = `legacy-${draftId}-${index}`; record.capability = IDECapability.TRANSFORM;
-        record.state = IDEState.SUCCESS; record.createdAt = draft.updatedAt; record.updatedAt = draft.updatedAt;
-        record.hidden = readNumber(rows, 'artifact_hidden') === 1 || artifact.visibility === AIVisibility.HIDDEN;
-        record.restored = true; record.stale = true;
-        record.context = new IDEContext(); record.context.draftId = draftId; record.context.version = artifact.sourceDraftVersion;
-        record.context.mode = artifact.mode;
-        record.context.code = draft.code; record.context.idea = draft.idea; record.context.problemContext = draft.title;
         const sourceIds: string[] = [];
         artifact.pseudocode.forEach((step: PseudocodeStep) => step.sourceRefs.forEach((id: string) => {
           if (!sourceIds.includes(id)) sourceIds.push(id);
         }));
+        const hasMissingSource = sourceIds.some((id: string) => !currentSegments.has(id));
+        const record = new IDERecord();
+        record.id = `legacy-${draftId}-${index}`; record.capability = IDECapability.TRANSFORM;
+        record.state = IDEState.SUCCESS; record.createdAt = draft.updatedAt; record.updatedAt = draft.updatedAt;
+        // A valid historical result may reference a segment removed from the
+        // current draft. Keep it isolated and readable instead of blocking the
+        // whole workspace migration when no source snapshot is available.
+        record.hidden = readNumber(rows, 'artifact_hidden') === 1 || artifact.visibility === AIVisibility.HIDDEN || hasMissingSource;
+        record.restored = true; record.stale = true;
+        record.context = new IDEContext(); record.context.draftId = draftId; record.context.version = artifact.sourceDraftVersion;
+        record.context.mode = artifact.mode;
+        record.context.code = draft.code; record.context.idea = draft.idea; record.context.problemContext = draft.title;
         record.context.segments = sourceIds.map((id: string) => {
-          const segment = draft.ideaSegments.find((item: IdeaSegment) => item.id === id);
+          const segment = currentSegments.get(id);
           return new AIRequestSegment(id, segment?.content ?? '');
         });
         const body = new LegacyArtifactBody();
@@ -446,8 +451,10 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
           draft.syncStatus = parseSyncStatus(readString(resultSet, 'sync_status'));
           draft.aiMode = parseAIMode(readString(resultSet, 'ai_mode'));
           draft.artifactHidden = readNumber(resultSet, 'artifact_hidden') === 1;
-          draft.aiArtifacts = readLegacyArtifacts(resultSet);
           draft.ideaSegments = parseIdeaSegments(readString(resultSet, 'idea_segments_json'));
+          const segmentIds = new Set<string>(draft.ideaSegments.map((item: IdeaSegment) => item.id));
+          draft.aiArtifacts = readLegacyArtifacts(resultSet).filter((artifact: AIArtifact) =>
+            artifact.pseudocode.every((step: PseudocodeStep) => step.sourceRefs.every((id: string) => segmentIds.has(id))));
           loaded.push(draft);
         } while (resultSet.goToNextRow());
       }
@@ -578,27 +585,9 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     if (transactional) store.beginTransaction();
     try {
       const legacyArtifacts = await readLegacyArtifactJson(store, draft.id);
-      if (legacyArtifacts === undefined) {
-      await store.executeSql('INSERT OR REPLACE INTO drafts (' +
-        'id, workspace_id, title, idea, code, short_code, rewrite, version, created_at, updated_at, deleted, ' +
-        'last_modified_client_id, sync_status, ai_mode, artifact_hidden, idea_segments_json) ' +
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
-          draft.id, draft.workspaceId, draft.title, draft.idea, draft.code, draft.shortCode, draft.rewrite,
-          draft.version, draft.createdAt, draft.updatedAt, draft.deleted ? 1 : 0, draft.lastModifiedClientId,
-          draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0, JSON.stringify(draft.ideaSegments)
-        ]);
-      } else {
-      // PR #23 v2 used this column for embedded artifacts. Preserve its raw
-      // value until an explicit, reviewed conversion path is available.
-      await store.executeSql('INSERT OR REPLACE INTO drafts (' +
-        'id, workspace_id, title, idea, code, short_code, rewrite, version, created_at, updated_at, deleted, ' +
-        'last_modified_client_id, sync_status, ai_mode, artifact_hidden, ai_artifacts_json, idea_segments_json) ' +
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [
-          draft.id, draft.workspaceId, draft.title, draft.idea, draft.code, draft.shortCode, draft.rewrite,
-          draft.version, draft.createdAt, draft.updatedAt, draft.deleted ? 1 : 0, draft.lastModifiedClientId,
-          draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0, legacyArtifacts, JSON.stringify(draft.ideaSegments)
-        ]);
-      }
+      // PR #23 v2 used an embedded artifact column. Preserve that raw value
+      // until an explicit, reviewed conversion path is available.
+      await persistDraftRow(store, draft, legacyArtifacts);
       if (!draft.deleted && draft.version > 0) {
       await store.executeSql('INSERT OR REPLACE INTO draft_source_history (draft_id, version, code, idea_segments_json) VALUES (?, ?, ?, ?)',
         [draft.id, draft.version, draft.code, JSON.stringify(draft.ideaSegments)]);
@@ -690,6 +679,23 @@ async function readLegacyArtifactJson(store: relationalStore.RdbStore, draftId: 
     if (!rows.goToFirstRow()) return undefined;
     return rows.getString(rows.getColumnIndex('ai_artifacts_json'));
   } finally { rows.close(); }
+}
+
+async function persistDraftRow(store: relationalStore.RdbStore, draft: Draft, legacyArtifacts: string | undefined): Promise<void> {
+  const values = [draft.id, draft.workspaceId, draft.title, draft.idea, draft.code, draft.shortCode, draft.rewrite,
+    draft.version, draft.createdAt, draft.updatedAt, draft.deleted ? 1 : 0, draft.lastModifiedClientId,
+    draft.syncStatus, draft.aiMode, draft.artifactHidden ? 1 : 0];
+  if (legacyArtifacts === undefined) {
+    await store.executeSql('INSERT OR REPLACE INTO drafts (' +
+      'id, workspace_id, title, idea, code, short_code, rewrite, version, created_at, updated_at, deleted, ' +
+      'last_modified_client_id, sync_status, ai_mode, artifact_hidden, idea_segments_json) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', values.concat([JSON.stringify(draft.ideaSegments)]));
+    return;
+  }
+  await store.executeSql('INSERT OR REPLACE INTO drafts (' +
+    'id, workspace_id, title, idea, code, short_code, rewrite, version, created_at, updated_at, deleted, ' +
+    'last_modified_client_id, sync_status, ai_mode, artifact_hidden, ai_artifacts_json, idea_segments_json) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', values.concat([legacyArtifacts, JSON.stringify(draft.ideaSegments)]));
 }
 
 function readString(resultSet: relationalStore.ResultSet, column: string): string {
