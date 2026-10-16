@@ -44,6 +44,14 @@ hdc list targets
 
 Hypium 结果、应用日志和 Gateway 取消日志分别保存。Node 替身测试、HAP 构建和 Previewer 只能作为准备证据，不能代替真实 RDB 或手机输入/滚动/接受/撤回/进程重启结果。完成 T4 前不得将阶段五或 issue #5 标为整体完成。
 
+## 2026-10-16 自动化执行记录
+
+- Node.js `v24.14.1` / Windows PowerShell：执行 `node --test --test-reporter=tap apps/web/test/*.test.mjs services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs tests/phone-ai.test.mjs`，**636/636 通过**。覆盖迁移、回滚、重复导入、损坏记录、契约向量、同步游标失败不推进和冲突副本。
+- Web：在 `apps/web` 执行 `npm run build`，TypeScript 检查和 Vite 构建通过；保留既有大于 500 kB chunk 提示。
+- OpenHarmony：使用 DevEco Studio `6.0.0` / API `20` 工具链执行 `entry@ohosTest` Debug HAP 构建，`BUILD SUCCESSFUL`；工程没有 `signingConfigs`，因此产物未签名。
+- 模拟器：本机存在 `Mate 70 Pro`、HarmonyOS `6.0.0(20)`、x86 镜像，已执行 `Emulator.exe -hvd "Mate 70 Pro"`。启动日志报告 `HYPER_V_ERROR` / `can not read sn`，随后进程退出；`hdc list targets -v` 未出现 HarmonyOS 目标（仅有 `COM1 UART Ready unknown... hdc`）。因此未安装 HAP、未运行 Hypium/真实 RDB，模拟器部分自动化测试待具备 Hyper-V 或云手机后补做。
+- 额外静态检查：`node --check services/ai-gateway/src/server.mjs` 和 `git diff --check` 通过。
+
 ## 当前状态
 
-本文件、`AIStorage.test.ets`、`tests/phone-ai.test.mjs` 和本地联调手册构成 T4 准备包。真实设备安装、RDB 执行和原生交互仍为“未执行”，不配置正式签名，不部署云服务。
+迁移、回滚、幂等、损坏数据、契约向量、同步游标/冲突逻辑、Node/Web/ArkTS 编译和 HAP 构建已完成并有本地证据。OpenHarmony 模拟器已尝试但受主机 Hyper-V 阻断；真实 RDB、HAP 安装、Hypium、输入/滚动、进程重启和原生交互仍未执行。不配置正式签名，不部署云服务。
