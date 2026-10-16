@@ -340,5 +340,85 @@
       "visibility": "hidden",
       "template_id": null
     }
+  },
+  {
+    "name": "artifact rejects invalid mode enum",
+    "valid": false,
+    "artifact": {
+      "mode": "unknown_mode",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": null,
+      "code_mappings": [],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "template_id": null
+    }
+  },
+  {
+    "name": "artifact rejects invalid output_kind enum",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": null,
+      "code_mappings": [],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "review",
+      "visibility": "visible",
+      "template_id": null
+    }
+  },
+  {
+    "name": "artifact rejects invalid visibility enum",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": null,
+      "code_mappings": [],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": 1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "classified",
+      "template_id": null
+    }
+  },
+  {
+    "name": "artifact rejects negative legacy source_draft_version",
+    "valid": false,
+    "artifact": {
+      "mode": "faithful_transform",
+      "pseudocode": [{ "id": "step_1", "step": "Sort by right endpoint", "source_refs": ["idea_segment_1"] }],
+      "code_snippet": null,
+      "code_mappings": [],
+      "assumptions": [],
+      "missing_information": [],
+      "risk_flags": [],
+      "added_algorithm_steps": [],
+      "source_draft_version": -1,
+      "model_id": "example",
+      "rule_version": "1.0.0",
+      "output_kind": "pseudocode",
+      "visibility": "visible",
+      "template_id": null
+    }
   }
 ]

@@ -32,27 +32,52 @@ export class RdbAIResultRepository implements AIResultRepository {
   }
   async save(record: IDERecord, latest: boolean): Promise<void> {
     if (record.isTestData && !this.allowTestData) throw new Error('当前配置禁止保存测试数据');
-    const json = JSON.stringify(record); decodeAIRecord(json);
+    const normalized = normalizeRecordForStorage(record);
+    const json = JSON.stringify(normalized); decodeAIRecord(json);
     const slot = resultSlot(record);
-    if (latest) {
-      await this.store.executeSql('INSERT OR IGNORE INTO ai_result_history (draft_id, mode, slot, is_test, result_id, updated_at, record_json) ' +
-        'SELECT draft_id, mode, slot, is_test, result_id, updated_at, record_json FROM ai_results WHERE draft_id = ? AND mode = ? AND slot = ? AND is_test = ?',
-        [record.context.draftId, record.context.mode, slot, record.isTestData ? 1 : 0]);
-      await this.store.executeSql('INSERT OR REPLACE INTO ai_results (draft_id, mode, slot, is_test, result_id, updated_at, record_json) SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND deleted = 0)',
-        [record.context.draftId, record.context.mode, slot, record.isTestData ? 1 : 0, record.id, record.updatedAt, json, record.context.draftId]);
-    } else {
-      await this.store.executeSql('UPDATE ai_results SET record_json = ? WHERE draft_id = ? AND mode = ? AND slot = ? AND is_test = ? AND result_id = ?',
-        [json, record.context.draftId, record.context.mode, slot, record.isTestData ? 1 : 0, record.id]);
-      await this.store.executeSql('UPDATE ai_result_history SET record_json = ?, updated_at = ? WHERE result_id = ?',
-        [json, record.updatedAt, record.id]);
+    const transactional = typeof this.store.beginTransaction === 'function';
+    let draftExists = true;
+    if (transactional) this.store.beginTransaction();
+    try {
+      if (latest) {
+        if (typeof this.store.querySql === 'function') {
+          const existingDraft = await this.store.querySql('SELECT id FROM drafts WHERE id = ? AND deleted = 0', [record.context.draftId]);
+          try { draftExists = existingDraft.goToFirstRow(); } finally { existingDraft.close(); }
+        }
+        if (draftExists) {
+          await this.store.executeSql('INSERT OR IGNORE INTO ai_result_history (draft_id, mode, slot, is_test, result_id, updated_at, record_json) ' +
+            'SELECT draft_id, mode, slot, is_test, result_id, updated_at, record_json FROM ai_results WHERE draft_id = ? AND mode = ? AND slot = ? AND is_test = ?',
+            [record.context.draftId, record.context.mode, slot, record.isTestData ? 1 : 0]);
+          await this.store.executeSql('INSERT OR REPLACE INTO ai_results (draft_id, mode, slot, is_test, result_id, updated_at, record_json) SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM drafts WHERE id = ? AND deleted = 0)',
+            [record.context.draftId, record.context.mode, slot, record.isTestData ? 1 : 0, record.id, record.updatedAt, json, record.context.draftId]);
+        }
+      } else {
+        await this.store.executeSql('UPDATE ai_results SET record_json = ? WHERE draft_id = ? AND mode = ? AND slot = ? AND is_test = ? AND result_id = ?',
+          [json, record.context.draftId, record.context.mode, slot, record.isTestData ? 1 : 0, record.id]);
+        await this.store.executeSql('UPDATE ai_result_history SET record_json = ?, updated_at = ? WHERE result_id = ?',
+          [json, record.updatedAt, record.id]);
+      }
+      if (transactional) this.store.commit();
+    } catch (error) {
+      if (transactional) this.store.rollBack();
+      throw new Error(error instanceof Error ? error.message : 'AI 结果写入失败');
     }
+    if (!draftExists) return;
     if (latest && !record.restored && record.state === IDEState.SUCCESS && (record.capability === IDECapability.REVIEW || record.capability === IDECapability.TRANSFORM)) {
       this.onLatest?.(record);
     }
   }
   async removeDraft(draftId: string): Promise<void> {
-    await this.store.executeSql('DELETE FROM ai_results WHERE draft_id = ?', [draftId]);
-    await this.store.executeSql('DELETE FROM ai_result_history WHERE draft_id = ?', [draftId]);
+    const transactional = typeof this.store.beginTransaction === 'function';
+    if (transactional) this.store.beginTransaction();
+    try {
+      await this.store.executeSql('DELETE FROM ai_results WHERE draft_id = ?', [draftId]);
+      await this.store.executeSql('DELETE FROM ai_result_history WHERE draft_id = ?', [draftId]);
+      if (transactional) this.store.commit();
+    } catch (error) {
+      if (transactional) this.store.rollBack();
+      throw new Error(error instanceof Error ? error.message : 'AI 结果清理失败');
+    }
   }
   private async readRows(sql: string, args: Array<string | number>, records: IDERecord[]): Promise<void> {
     const rows = await this.store.querySql(sql, args);
@@ -60,6 +85,16 @@ export class RdbAIResultRepository implements AIResultRepository {
       if (rows.goToFirstRow()) do { records.push(decodeAIRecord(rows.getString(0))); } while (rows.goToNextRow());
     } finally { rows.close(); }
   }
+}
+function normalizeRecordForStorage(source: IDERecord): IDERecord {
+  const record = JSON.parse(JSON.stringify(source)) as IDERecord;
+  if (record.serverVersion === undefined) record.serverVersion = 0;
+  if (record.serverSequence === undefined) record.serverSequence = 0;
+  if (record.createdAt === undefined || record.createdAt.length === 0) record.createdAt = record.updatedAt;
+  if (record.syncEntityType === undefined) record.syncEntityType = '';
+  if (record.restored === undefined) record.restored = false;
+  if (record.context.syncStatus === undefined) record.context.syncStatus = 'synced';
+  return record;
 }
 export function resultSlot(record: IDERecord): string {
   return record.capability === IDECapability.REVIEW ? `review:${record.reviewKind}` : record.capability;

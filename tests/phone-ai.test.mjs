@@ -212,7 +212,7 @@ test('accepted completion updates the local draft without starting synchronizati
   const draft = new Draft('local-only', 'Sort intervals');
   draft.idea = 'Sort intervals'; draft.code = request.code; draft.ideaSegments = [new IdeaSegment('idea-1', 'Sort intervals', 0)];
   const repository = new RdbDraftRepository({});
-  repository.store = { version: 2, async executeSql() {} };
+  repository.store = { version: 3, async executeSql() {} };
   repository.clientId = 'phone-client';
   repository.applyServerDraft(draft);
   let syncCalls = 0;
@@ -236,7 +236,7 @@ test('unaccepted mobile completion is stored locally without creating an AI sync
   const calls = [];
   const repository = new RdbDraftRepository({});
   repository.clientId = 'phone-client';
-  repository.store = { version: 2, async executeSql(sql) { calls.push(sql); } };
+  repository.store = { version: 3, async executeSql(sql) { calls.push(sql); } };
   const record = recordFor(request);
   record.state = M.IDEState.SUCCESS;
   record.body = JSON.stringify(artifact);
@@ -266,26 +266,391 @@ test('review slots, hidden old message, AI-only persistence and retry', async ()
 });
 test('RDB migration transaction control (stub, not real RDB)', async () => {
   const { RdbDraftRepository } = load('platform/RdbDraftRepository');
-  for (const version of [0, 1, 2, 3]) {
+  for (const version of [0, 1, 2, 3, 4]) {
     const sql = []; const store = { version, beginTransaction() {}, commit() {}, rollBack() {}, async executeSql(s) { sql.push(s); } };
     const repo = new RdbDraftRepository({});
-    if (version === 3) await assert.rejects(repo.migrate(store));
-    else { await repo.migrate(store); assert.equal(store.version, 2); }
+    if (version === 4) await assert.rejects(repo.migrate(store));
+    else { await repo.migrate(store); assert.equal(store.version, 3); }
     assert.equal(sql.some(s => /DROP|DELETE/.test(s)), false);
   }
   let rolled = false; const store = { version: 1, beginTransaction() {}, commit() {}, rollBack() { rolled = true; }, async executeSql() { throw Error('full'); } };
   await assert.rejects(new RdbDraftRepository({}).migrate(store)); assert.equal(store.version, 1); assert.equal(rolled, true);
+});
+test('migration accepts the PR23 v2 artifact-column variant without replacing ordinary tables', async () => {
+  const { migrateWorkspaceStore } = load('platform/RdbDraftRepository');
+  const sql = [];
+  const store = {
+    version: 2, beginTransaction() {}, commit() {}, rollBack() {},
+    async executeSql(statement) { sql.push(statement); },
+    async querySql(statement) {
+      if (statement.startsWith('PRAGMA table_info(')) return { goToFirstRow() { return false; }, goToNextRow() { return false; }, close() {} };
+      assert.equal(statement, 'PRAGMA table_info(conflicts)');
+      let index = -1;
+      const rows = [{ name: 'id' }, { name: 'entity_id' }, { name: 'local_copy_id' }];
+      return { goToFirstRow() { index = 0; return true; }, goToNextRow() { index++; return index < rows.length; },
+        getColumnIndex() { return 0; }, getString() { return rows[index].name; }, close() {} };
+    }
+  };
+  await migrateWorkspaceStore(store);
+  assert.equal(sql.some(statement => statement.includes('CREATE TABLE IF NOT EXISTS ai_results')), true);
+  assert.equal(sql.some(statement => statement.includes('CREATE TABLE IF NOT EXISTS ai_result_history')), true);
+  assert.equal(sql.some(statement => statement.includes('CREATE TABLE IF NOT EXISTS draft_source_history')), true);
+  assert.equal(sql.some(statement => statement.includes('ALTER TABLE conflicts ADD COLUMN entity_type')), true);
+  assert.equal(sql.some(statement => /DROP TABLE|DELETE FROM drafts|ALTER TABLE drafts/i.test(statement)), false);
+});
+test('draft writes keep legacy PR23 embedded AI artifacts until an explicit conversion is available', async () => {
+  const { RdbDraftRepository } = load('platform/RdbDraftRepository');
+  const { Draft } = load('domain/Models');
+  const legacy = '[{"mode":"faithful_transform","pseudocode":[{"id":"step-1","step":"Keep source result","source_refs":["idea-1"]}]}]';
+  const sql = [];
+  const rows = { goToFirstRow() { return true; }, getColumnIndex() { return 0; }, getString() { return legacy; }, close() {} };
+  const repo = new RdbDraftRepository({});
+  repo.store = { version: 3, async executeSql(statement, args) { sql.push([statement, args]); }, async querySql() { return rows; } };
+  const draft = new Draft('legacy-draft', 'legacy'); draft.code = 'int value = 1;';
+  repo.applyServerDraft(draft); await repo.flush();
+  const insert = sql.find(([statement]) => statement.includes('INSERT OR REPLACE INTO drafts'));
+  assert.match(insert[0], /ai_artifacts_json/);
+  assert.equal(insert[1].includes(legacy), true);
+});
+test('draft restore decodes PR23 embedded AI artifacts for the existing AI result view', async () => {
+  const { RdbDraftRepository } = load('platform/RdbDraftRepository');
+  const legacy = JSON.stringify([{ id: 'artifact-old', version: 0, server_sequence: 0,
+    created_at: '2026-10-01T00:00:00.000Z', updated_at: '2026-10-02T00:00:00.000Z', deleted: false,
+    last_modified_client_id: 'phone-old', draft_id: 'legacy-draft', mode: 'faithful_transform',
+    pseudocode: [{ id: 'step-1', step: 'Keep source result', source_refs: ['idea-1'] }],
+    code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [], added_algorithm_steps: [],
+    source_draft_version: 4, model_id: 'legacy-model', rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null }]);
+  const values = { id: 'legacy-draft', title: 'legacy', workspace_id: 'workspace-test', idea: 'Keep source result',
+    code: 'int value = 1;', short_code: '', rewrite: '', version: 4, created_at: '2026-10-01T00:00:00.000Z',
+    updated_at: '2026-10-02T00:00:00.000Z', deleted: 0, last_modified_client_id: 'phone-old', sync_status: 'synced',
+    ai_mode: 'faithful_transform', artifact_hidden: 1, ai_artifacts_json: legacy,
+    idea_segments_json: '[{"id":"idea-1","content":"Keep source result","position":0}]' };
+  const columns = Object.keys(values); let read = false;
+  const rows = { goToFirstRow() { read = true; return true; }, goToNextRow() { read = false; return false; },
+    getColumnIndex(name) { return columns.indexOf(name); }, getString(index) { return String(values[columns[index]]); },
+    getLong(index) { return Number(values[columns[index]]); }, close() {} };
+  const repo = new RdbDraftRepository({});
+  await repo.loadDrafts({ async querySql() { return rows; } });
+  const draft = repo.get('legacy-draft');
+  assert.equal(read, false);
+  assert.equal(draft.artifactHidden, true);
+  assert.equal(draft.aiArtifacts.length, 1);
+  assert.equal(draft.aiArtifacts[0].pseudocode[0].sourceRefs[0], 'idea-1');
+});
+test('PR23 v2 migration imports faithful and non-default mode artifacts into readable ai_results and is idempotent on re-run', async () => {
+  const { migrateWorkspaceStore } = load('platform/RdbDraftRepository');
+  const { RdbAIResultRepository } = load('platform/RdbAIResultRepository');
+  const { IDEAISession } = load('application/IDEAISession');
+  const { IDEContext } = load('domain/IDEAIModels');
+  const { AIRequestSegment } = load('domain/Models');
+  const legacyArtifacts = JSON.stringify([
+    {
+      mode: 'faithful_transform',
+      pseudocode: [{ id: 'step-1', step: 'Sort intervals by right endpoint', source_refs: ['idea-1'] }],
+      code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: [], source_draft_version: 4, model_id: 'legacy-model',
+      rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null
+    },
+    {
+      mode: 'feasibility_analysis',
+      pseudocode: [{ id: 'step-2', step: 'Analyze greedy choice property', source_refs: ['idea-1'] }],
+      code_snippet: null, code_mappings: [], assumptions: ['intervals non-empty'], missing_information: [],
+      risk_flags: ['greedy choice not proven'], added_algorithm_steps: ['Consider exchange argument'],
+      source_draft_version: 4, model_id: 'legacy-model', rule_version: '1.0.0',
+      output_kind: 'pseudocode', visibility: 'visible', template_id: null
+    },
+    {
+      mode: 'progressive_hint',
+      pseudocode: [{ id: 'step-3', step: 'Compare current start with last end', source_refs: ['idea-1'] }],
+      code_snippet: 'if (cur.left >= lastRight) {\n  lastRight = cur.right;\n}',
+      code_mappings: [{ step_id: 'step-3', start_line: 1, end_line: 3 }],
+      assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: ['Track last selected right endpoint'], source_draft_version: 4,
+      model_id: 'legacy-model', rule_version: '1.0.0', output_kind: 'code_snippet',
+      visibility: 'hidden', template_id: 'greedy-hint'
+    },
+    {
+      mode: 'full_solution',
+      pseudocode: [{ id: 'step-4', step: 'Complete interval scheduling pass', source_refs: ['idea-1'] }],
+      code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: ['Count all compatible intervals'], source_draft_version: 4,
+      model_id: 'legacy-model', rule_version: '1.0.0', output_kind: 'pseudocode',
+      visibility: 'visible', template_id: null
+    },
+    {
+      mode: 'faithful_transform',
+      pseudocode: [{ id: 'step-5', step: 'Preserve later same-mode result', source_refs: ['idea-1'] }],
+      code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: [], source_draft_version: 4, model_id: 'legacy-model',
+      rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null
+    }
+  ]);
+  const draftRow = {
+    id: 'legacy-draft', title: 'Interval Scheduling', workspace_id: 'workspace-test',
+    idea: 'Keep source result', code: 'int value = 1;', short_code: '', rewrite: '', version: 4,
+    created_at: '2026-10-01T00:00:00.000Z', updated_at: '2026-10-02T00:00:00.000Z', deleted: 0,
+    last_modified_client_id: 'phone-old', sync_status: 'synced', ai_mode: 'feasibility_analysis',
+    artifact_hidden: 0, ai_artifacts_json: legacyArtifacts,
+    idea_segments_json: '[{"id":"idea-1","content":"Keep source result","position":0}]'
+  };
+  const makeResultSet = (items) => {
+    let idx = -1;
+    const cols = items.length > 0 ? Object.keys(items[0]) : [];
+    return {
+      goToFirstRow() { idx = 0; return items.length > 0; },
+      goToNextRow() { idx++; return idx < items.length; },
+      getColumnIndex(name) { return cols.indexOf(name); },
+      getString(colIdx) { return String(items[idx][cols[colIdx] ?? cols[0]]); },
+      getLong(colIdx) { return Number(items[idx][cols[colIdx] ?? cols[0]]); },
+      close() {}
+    };
+  };
+  let committedResults = new Map();
+  let committedHistory = new Map();
+  let workingResults = null;
+  let workingHistory = null;
+  let totalInsertAttempts = 0;
+  const store = {
+    version: 2,
+    beginTransaction() { workingResults = new Map(committedResults); workingHistory = new Map(committedHistory); },
+    commit() { if (workingResults) { committedResults = workingResults; committedHistory = workingHistory; workingResults = null; workingHistory = null; } },
+    rollBack() { workingResults = null; workingHistory = null; },
+    async executeSql(statement, args = []) {
+      const target = workingResults ?? committedResults;
+      const history = workingHistory ?? committedHistory;
+      if (statement.startsWith('INSERT OR IGNORE INTO ai_result_history') && statement.includes('SELECT')) {
+        const [draftId, mode, slot] = args;
+        const current = target.get(`${draftId}:${mode}:${slot}:0`);
+        if (current !== undefined) history.set(current.resultId, current);
+      } else if (statement.startsWith('INSERT OR IGNORE INTO ai_result_history')) {
+        const [draftId, mode, slot, resultId, updatedAt, recordJson] = args;
+        history.set(resultId, { draft_id: draftId, mode, slot, is_test: 0, resultId, updatedAt, recordJson });
+      } else if (statement.startsWith('INSERT OR IGNORE INTO ai_results') || statement.startsWith('INSERT OR REPLACE INTO ai_results')) {
+        totalInsertAttempts++;
+        const [draftId, mode, slot, resultId, updatedAt, recordJson] = args;
+        const key = `${draftId}:${mode}:${slot}:0`;
+        if (statement.startsWith('INSERT OR REPLACE') || !target.has(key)) {
+          target.set(key, { draft_id: draftId, mode, slot, is_test: 0, resultId, updatedAt, recordJson });
+        }
+      }
+    },
+    async querySql(statement, args = []) {
+      const target = workingResults ?? committedResults;
+      if (statement === 'PRAGMA table_info(drafts)') return makeResultSet([{ name: 'id' }, { name: 'ai_artifacts_json' }]);
+      if (statement === 'PRAGMA table_info(conflicts)') return makeResultSet([{ name: 'id' }, { name: 'entity_type' }]);
+      if (statement.startsWith('PRAGMA table_info(')) return makeResultSet([]);
+      if (statement === 'SELECT * FROM drafts') return makeResultSet([draftRow]);
+      if (statement.startsWith('SELECT record_json FROM ai_results WHERE draft_id = ? AND mode = ?')) {
+        const [draftId, mode, allowTest] = args;
+        const matched = [...target.values()].filter(row => row.draft_id === draftId && row.mode === mode && (row.is_test === 0 || allowTest === 1));
+        return makeResultSet(matched.map(row => ({ record_json: row.recordJson })));
+      }
+      if (statement.startsWith('SELECT record_json FROM ai_result_history')) {
+        const [draftId, mode, allowTest] = args;
+        const matched = [...(workingHistory ?? committedHistory).values()]
+          .filter(row => row.draft_id === draftId && row.mode === mode && (row.is_test === 0 || allowTest === 1));
+        return makeResultSet(matched.map(row => ({ record_json: row.recordJson })));
+      }
+      return makeResultSet([]);
+    }
+  };
+  await migrateWorkspaceStore(store);
+  assert.equal(store.version, 3);
+  assert.equal(committedResults.size, 4);
+  assert.equal(committedHistory.size, 5);
+  const repository = new RdbAIResultRepository(store, false);
+  for (const [mode, expectedId, expectedHidden, expectedStep] of [
+    ['faithful_transform', 'legacy-legacy-draft-4', false, 'Preserve later same-mode result'],
+    ['feasibility_analysis', 'legacy-legacy-draft-1', false, 'Analyze greedy choice property'],
+    ['progressive_hint', 'legacy-legacy-draft-2', true, 'Compare current start with last end'],
+    ['full_solution', 'legacy-legacy-draft-3', false, 'Complete interval scheduling pass']
+  ]) {
+    const records = await repository.list('legacy-draft', mode);
+    const selected = records.find(record => record.id === expectedId);
+    assert.equal(selected !== undefined, true);
+    assert.equal(selected.context.mode, mode);
+    assert.equal(selected.restored, true);
+    assert.equal(selected.stale, true);
+    assert.equal(selected.hidden, expectedHidden);
+    if (mode === 'faithful_transform') {
+      assert.equal(records.length, 2);
+      assert.equal(records.some(record => record.id === 'legacy-legacy-draft-0'), true);
+      assert.equal(committedResults.get('legacy-draft:faithful_transform:transform:0').resultId, expectedId);
+      const oldRecord = JSON.parse(committedHistory.get('legacy-legacy-draft-0').recordJson);
+      assert.equal(oldRecord.body.includes('Sort intervals by right endpoint'), true);
+    } else {
+      assert.equal(records.length, 1);
+    }
+    const session = new IDEAISession({ async request() { throw Error('not called'); }, cancel() {} }, repository);
+    const ctx = new IDEContext();
+    ctx.draftId = 'legacy-draft'; ctx.version = 4; ctx.mode = mode; ctx.code = draftRow.code;
+    ctx.idea = draftRow.idea; ctx.problemContext = draftRow.title;
+    ctx.segments = [new AIRequestSegment('idea-1', 'Keep source result')];
+    await session.setContext(ctx);
+    assert.equal(session.storageError, '');
+    assert.equal(session.records.length, mode === 'faithful_transform' ? 2 : 1);
+    const selectedMessage = session.records.find(record => session.result(record).transformText.includes(expectedStep));
+    assert.notEqual(selectedMessage, undefined);
+    const text = session.result(selectedMessage).transformText;
+    if (mode === 'progressive_hint') {
+      assert.match(text, /if \(cur\.left >= lastRight\)/);
+      assert.match(text, /step-3: L1-L3/);
+    }
+  }
+  const key = 'legacy-draft:feasibility_analysis:transform:0';
+  const modifiedRecord = JSON.parse(committedResults.get(key).recordJson);
+  modifiedRecord.hidden = true;
+  committedResults.get(key).recordJson = JSON.stringify(modifiedRecord);
+  store.version = 2;
+  await migrateWorkspaceStore(store);
+  assert.equal(store.version, 3);
+  assert.equal(committedResults.size, 4);
+  assert.equal(committedHistory.size, 5);
+  assert.equal(totalInsertAttempts, 8);
+  const afterRerun = await repository.list('legacy-draft', 'feasibility_analysis');
+  assert.equal(afterRerun.length, 1);
+  assert.equal(afterRerun[0].hidden, true);
+  const faithfulAfterRerun = await repository.list('legacy-draft', 'faithful_transform');
+  assert.equal(faithfulAfterRerun.length, 2);
+  assert.equal(new Set(faithfulAfterRerun.map(record => record.id)).size, 2);
+});
+test('PR23 migration rolls back corrupt artifacts but isolates historical results with deleted sources', async () => {
+  const { migrateWorkspaceStore } = load('platform/RdbDraftRepository');
+  const makeResultSet = (items) => {
+    let idx = -1;
+    const cols = items.length > 0 ? Object.keys(items[0]) : [];
+    return {
+      goToFirstRow() { idx = 0; return items.length > 0; },
+      goToNextRow() { idx++; return idx < items.length; },
+      getColumnIndex(name) { return cols.indexOf(name); },
+      getString(colIdx) { return String(items[idx][cols[colIdx] ?? cols[0]]); },
+      getLong(colIdx) { return Number(items[idx][cols[colIdx] ?? cols[0]]); },
+      close() {}
+    };
+  };
+  const validDraft = {
+    id: 'draft-valid', title: 'Valid', workspace_id: 'workspace-test', idea: 'Idea', code: 'int a = 1;',
+    short_code: '', rewrite: '', version: 1, created_at: '2026-10-01T00:00:00.000Z',
+    updated_at: '2026-10-02T00:00:00.000Z', deleted: 0, last_modified_client_id: 'phone',
+    sync_status: 'synced', ai_mode: 'faithful_transform', artifact_hidden: 0,
+    ai_artifacts_json: JSON.stringify([{
+      mode: 'faithful_transform',
+      pseudocode: [{ id: 'step-1', step: 'Valid step', source_refs: ['idea-1'] }],
+      code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: [], source_draft_version: 1, model_id: 'legacy-model',
+      rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null
+    }]),
+    idea_segments_json: '[{"id":"idea-1","content":"Idea","position":0}]'
+  };
+  for (const badArtifactsJson of [
+    '{corrupt-json',
+    JSON.stringify([{
+      mode: 'faithful_transform',
+      pseudocode: [{ id: 'step-1', step: 'Illegal step addition', source_refs: ['idea-1'] }],
+      code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: ['Forbidden in faithful_transform'], source_draft_version: 1,
+      model_id: 'legacy-model', rule_version: '1.0.0', output_kind: 'pseudocode',
+      visibility: 'visible', template_id: null
+    }]),
+    JSON.stringify([{
+      mode: 'faithful_transform',
+      pseudocode: [{ id: 'step-1', step: 'Unknown source', source_refs: ['missing-segment'] }],
+      code_snippet: null, code_mappings: [], assumptions: [], missing_information: [], risk_flags: [],
+      added_algorithm_steps: [], source_draft_version: 1, model_id: 'legacy-model',
+      rule_version: '1.0.0', output_kind: 'pseudocode', visibility: 'visible', template_id: null
+    }])
+  ]) {
+    const corruptDraft = { ...validDraft, id: 'draft-corrupt', ai_artifacts_json: badArtifactsJson };
+    let committedResults = new Map();
+    let workingResults = null;
+    let rolledBack = false;
+    const store = {
+      version: 2,
+      beginTransaction() { workingResults = new Map(committedResults); },
+      commit() { if (workingResults) { committedResults = workingResults; workingResults = null; } },
+      rollBack() { rolledBack = true; workingResults = null; },
+      async executeSql(statement, args = []) {
+        const target = workingResults ?? committedResults;
+        if (statement.startsWith('INSERT OR IGNORE INTO ai_results') || statement.startsWith('INSERT OR REPLACE INTO ai_results')) {
+          const [draftId, mode, slot, resultId, updatedAt, recordJson] = args;
+          target.set(`${draftId}:${mode}:${slot}:0`, { resultId, updatedAt, recordJson });
+        }
+      },
+      async querySql(statement) {
+        if (statement === 'PRAGMA table_info(drafts)') return makeResultSet([{ name: 'id' }, { name: 'ai_artifacts_json' }]);
+        if (statement === 'PRAGMA table_info(conflicts)') return makeResultSet([{ name: 'id' }, { name: 'entity_type' }]);
+        if (statement.startsWith('PRAGMA table_info(')) return makeResultSet([]);
+        if (statement === 'SELECT * FROM drafts') return makeResultSet([validDraft, corruptDraft]);
+        return makeResultSet([]);
+      }
+    };
+    if (badArtifactsJson.includes('missing-segment')) {
+      await migrateWorkspaceStore(store);
+      assert.equal(rolledBack, false);
+      assert.equal(store.version, 3);
+      assert.equal(committedResults.size, 2);
+      const record = JSON.parse([...committedResults.values()].find((item) => item.recordJson.includes('missing-segment')).recordJson);
+      assert.equal(record.hidden, true);
+      assert.deepEqual(record.context.segments, [{ id: 'missing-segment', content: '' }]);
+    } else {
+      await assert.rejects(() => migrateWorkspaceStore(store), /AI 结果数据库兼容升级失败，原工作区未删除/);
+      assert.equal(rolledBack, true);
+      assert.equal(store.version, 2);
+      assert.equal(committedResults.size, 0);
+    }
+  }
+});
+test('phone pull batch leaves its cursor unchanged when queued RDB writes fail', async () => {
+  const { PhoneSyncService } = load('platform/PhoneSyncService');
+  const { HttpSyncClient } = load('platform/HttpSyncClient');
+  const applied = []; let cursor = '4'; let commitCalls = 0;
+  const repository = { listPendingOperations: () => [], markInFlight() {}, getBaseUrl: () => 'http://sync', getCursor: () => cursor,
+    getClientId: () => 'phone', getDraft: () => undefined, setDraftSyncStatus() {}, hasPendingOperation: () => false,
+    removeOperation() {}, applyServerDraft(draft) { applied.push(draft); }, setCursor() {},
+    async flush() { throw Error('disk full'); }, async commitCursor(next) { commitCalls++; cursor = next; } };
+  const oldPull = HttpSyncClient.prototype.pull;
+  HttpSyncClient.prototype.pull = async () => ({ changes: [{ entity_type: 'draft', entity: {
+    id: 'pulled', version: 1, code: 'remote', last_modified_client_id: 'web'
+  } }], next_cursor: '5' });
+  try {
+    const result = await new PhoneSyncService(repository).synchronize();
+    assert.equal(result.status, 'failed'); assert.equal(applied.length, 1);
+    assert.equal(cursor, '4'); assert.equal(commitCalls, 0);
+  } finally { HttpSyncClient.prototype.pull = oldPull; }
+});
+test('RDB cursor changes in memory only after durable cursor write succeeds', async () => {
+  const { RdbDraftRepository } = load('platform/RdbDraftRepository');
+  let fail = true;
+  const repo = new RdbDraftRepository({}); repo.store = { version: 3, async executeSql() { if (fail) throw Error('disk full'); } };
+  repo.cursor = '4';
+  await assert.rejects(repo.commitCursor('5'), /disk full/); assert.equal(repo.getCursor(), '4');
+  fail = false; await repo.commitCursor('5'); assert.equal(repo.getCursor(), '5');
+});
+test('RDB AI result save rolls back a partial write and can be retried', async () => {
+  const record = recordFor(request, 'completion'); record.body = JSON.stringify(artifact);
+  const calls = []; let fail = true; let rolledBack = 0; let committed = 0;
+  const store = {
+    beginTransaction() { calls.push('begin'); }, commit() { committed++; calls.push('commit'); }, rollBack() { rolledBack++; calls.push('rollback'); },
+    async executeSql(sql) { calls.push(sql); if (fail && sql.startsWith('INSERT OR REPLACE INTO ai_results')) throw Error('disk full'); },
+    async querySql() { return { goToFirstRow() { return true; }, close() {} }; }
+  };
+  const { RdbAIResultRepository } = load('platform/RdbAIResultRepository');
+  const repo = new RdbAIResultRepository(store, false);
+  await assert.rejects(repo.save(record, true), /disk full/);
+  assert.equal(rolledBack, 1); assert.equal(committed, 0);
+  fail = false; await repo.save(record, true);
+  assert.equal(committed, 1); assert.equal(rolledBack, 1);
 });
 test('migration preparation fixture preserves every v1 table and field', async () => {
   const { migrateWorkspaceStore } = load('platform/RdbDraftRepository');
   const sql = [];
   const store = { version: 1, beginTransaction() {}, commit() {}, rollBack() {}, async executeSql(statement) { sql.push(statement); } };
   await migrateWorkspaceStore(store);
-  assert.equal(store.version, 2);
+  assert.equal(store.version, 3);
   for (const table of ['drafts', 'sync_operations', 'sync_state', 'conflicts']) {
     assert.equal(sql.some(statement => statement.includes(table)), false, `v1->v2 must not recreate ${table}`);
   }
-  assert.equal(sql.filter(statement => statement.includes('CREATE TABLE ai_results')).length, 1);
+  assert.equal(sql.filter(statement => statement.includes('CREATE TABLE IF NOT EXISTS ai_results')).length, 2);
   const v1Fixture = {
     draft: { id: 'test-draft', workspace_id: 'workspace-test', title: '迁移样例', idea: '保留用户思路', code: 'int value = 1;', short_code: 'value += 1;', rewrite: '// rewrite', version: 4 },
     operation: { operation_id: 'operation-v1', entity_id: 'test-draft', base_version: 3, payload_json: '{"code":"int value = 1;"}' },
@@ -301,7 +666,7 @@ test('AI Gateway URL uses the existing sync_state persistence', async () => {
   const { RdbDraftRepository } = load('platform/RdbDraftRepository');
   const calls = [];
   const repo = new RdbDraftRepository({});
-  repo.store = { version: 2, async executeSql(sql, args) { calls.push([sql, args]); },
+  repo.store = { version: 3, async executeSql(sql, args) { calls.push([sql, args]); },
     async querySql() {
       const rows = [{ key: 'ai_base_url', value: 'http://192.168.1.10:8788' }]; let index = -1;
       return { goToFirstRow() { index = 0; return true; }, goToNextRow() { index++; return index < rows.length; },
@@ -383,7 +748,7 @@ test('remote tombstone persists as a delete and clears only the AI result table'
   const { Draft } = load('domain/Models');
   const calls = [];
   const repo = new RdbDraftRepository({});
-  repo.store = { version: 2, async executeSql(sql, args) { calls.push([sql, args]); } };
+  repo.store = { version: 3, async executeSql(sql, args) { calls.push([sql, args]); } };
   const tombstone = new Draft('sync-delete', 'Deleted remotely');
   tombstone.deleted = true; tombstone.version = 4;
   repo.applyServerDraft(tombstone);
@@ -469,7 +834,7 @@ test('sync response preserves newer local edit and rotates operation identity', 
   const { PhoneSyncService } = load('platform/PhoneSyncService');
   const { HttpSyncClient } = load('platform/HttpSyncClient');
   const { Draft } = load('domain/Models');
-  const repo = new RdbDraftRepository({}); repo.store = { version: 2, async executeSql() {} }; repo.clientId = 'phone';
+  const repo = new RdbDraftRepository({}); repo.store = { version: 3, async executeSql() {} }; repo.clientId = 'phone';
   const draft = new Draft('d', 't'); draft.code = 'before'; repo.save(draft); await repo.flush();
   const original = repo.listPendingOperations()[0]; let finish;
   const oldPush = HttpSyncClient.prototype.push;
@@ -494,6 +859,7 @@ test('phone sync preserves server version and creates a local conflict copy', as
   const repository = {
     listPendingOperations: () => [operation], markInFlight() {}, getBaseUrl: () => 'http://sync', getCursor: () => '0',
     getClientId: () => 'phone', getDraft: () => undefined, setCursor() {}, setDraftSyncStatus() {}, hasPendingOperation: () => false,
+    flush: async () => {}, commitCursor: async () => {},
     removeOperation(id) { removed = id; }, applyServerDraft(draft) { applied.push(draft); },
     saveConflictDraft(copy, record) { conflictCopy = copy; conflictRecord = record; }
   };
@@ -535,6 +901,7 @@ test('Node ArkTS loader: PhoneSyncService orchestration retains an independent f
   const repository = {
     listPendingOperations: () => operations.slice(), markInFlight() {}, getBaseUrl: () => 'http://sync', getCursor: () => repository.cursor,
     getClientId: () => 'phone-a', getDraft: () => undefined, setCursor(cursor) { repository.cursor = cursor; }, cursor: '0',
+    commitCursor: async (cursor) => { repository.cursor = cursor; }, flush: async () => {},
     setDraftSyncStatus() {}, hasPendingOperation: (id) => operations.some((operation) => operation.entity_id === id),
     removeOperation(id) { const index = operations.findIndex((operation) => operation.operation_id === id); if (index >= 0) operations.splice(index, 1); },
     applyServerDraft() {}, saveConflictDraft() {}, queueAIRecord() {}, getAIRecord: async (id) => records.get(id),
@@ -563,6 +930,7 @@ test('phone sync ignores an older remote change during pull', async () => {
   const repository = {
     listPendingOperations: () => [], markInFlight() {}, getBaseUrl: () => 'http://sync', getCursor: () => '2',
     getClientId: () => 'phone', getDraft: () => local, setCursor(cursor) { this.cursor = cursor; }, cursor: '2',
+    commitCursor(cursor) { this.cursor = cursor; return Promise.resolve(); }, flush() { return Promise.resolve(); },
     setDraftSyncStatus() {}, hasPendingOperation: () => false, removeOperation() {}, applyServerDraft() { this.applied = true; },
     saveConflictDraft() {}
   };

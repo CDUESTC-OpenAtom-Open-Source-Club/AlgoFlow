@@ -92,7 +92,8 @@ export class PhoneSyncService {
     try {
       const pull = await client.pull(this.repository.getCursor());
       await this.applyPulledChanges(pull.changes);
-      this.repository.setCursor(pull.next_cursor);
+      await this.repository.flush();
+      await this.repository.commitCursor(pull.next_cursor);
     } catch (error) {
       this.markPendingFailed();
       const message = error instanceof Error ? error.message : '拉取变更失败';
@@ -141,11 +142,12 @@ export class PhoneSyncService {
         skipped += 1;
         continue;
       }
-      this.repository.applyServerDraft(payloadToDraft(change.entity));
+      const remoteDraft: DraftPayload = change.entity as DraftPayload;
+      this.repository.applyServerDraft(payloadToDraft(remoteDraft));
       applied += 1;
       hilog.info(DOMAIN, TAG,
         '[AlgoFlow] Sync pull applied. entity_id=%{public}s server_version=%{public}s',
-        safeLogValue(change.entity.id), change.entity.version.toString());
+        safeLogValue(remoteDraft.id), remoteDraft.version.toString());
     }
     hilog.info(DOMAIN, TAG, '[AlgoFlow] Sync pull merge completed. applied=%{public}s skipped=%{public}s',
       applied.toString(), skipped.toString());

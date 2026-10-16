@@ -95,6 +95,82 @@
         ],
         "visibility": "visible"
       }
+    },
+    {
+      "name": "review request with invalid mode enum",
+      "valid": false,
+      "request": {
+        "mode": "legacy_mode",
+        "output_kind": "review",
+        "draft_id": "draft-1",
+        "draft_version": 3,
+        "language": "cpp",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "problem_context": "Given intervals, choose a non-overlapping subset.",
+        "idea_segments": [
+          { "id": "idea_segment_1", "content": "Sort by right endpoint." }
+        ],
+        "code": "void choose(vector<Interval>& intervals) {}",
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "review request with invalid review_kind enum",
+      "valid": false,
+      "request": {
+        "mode": "faithful_transform",
+        "output_kind": "review",
+        "draft_id": "draft-1",
+        "draft_version": 3,
+        "language": "cpp",
+        "rule_version": "1.0.0",
+        "review_kind": "style",
+        "problem_context": "Given intervals, choose a non-overlapping subset.",
+        "idea_segments": [
+          { "id": "idea_segment_1", "content": "Sort by right endpoint." }
+        ],
+        "code": "void choose(vector<Interval>& intervals) {}",
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "review request with legacy output_kind",
+      "valid": false,
+      "request": {
+        "mode": "faithful_transform",
+        "output_kind": "pseudocode",
+        "draft_id": "draft-1",
+        "draft_version": 3,
+        "language": "cpp",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "problem_context": "Given intervals, choose a non-overlapping subset.",
+        "idea_segments": [
+          { "id": "idea_segment_1", "content": "Sort by right endpoint." }
+        ],
+        "code": "void choose(vector<Interval>& intervals) {}",
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "review request with invalid visibility enum",
+      "valid": false,
+      "request": {
+        "mode": "faithful_transform",
+        "output_kind": "review",
+        "draft_id": "draft-1",
+        "draft_version": 3,
+        "language": "cpp",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "problem_context": "Given intervals, choose a non-overlapping subset.",
+        "idea_segments": [
+          { "id": "idea_segment_1", "content": "Sort by right endpoint." }
+        ],
+        "code": "void choose(vector<Interval>& intervals) {}",
+        "visibility": "classified"
+      }
     }
   ],
   "results": [
@@ -255,6 +331,81 @@
         ],
         "visibility": "visible"
       }
+    },
+    {
+      "name": "review result with invalid mode enum",
+      "valid": false,
+      "result": {
+        "mode": "unknown_mode",
+        "output_kind": "review",
+        "draft_id": "draft-1",
+        "source_draft_version": 3,
+        "model_id": "provider-disabled",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "diagnostics": [],
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "review result with invalid review_kind enum",
+      "valid": false,
+      "result": {
+        "mode": "faithful_transform",
+        "output_kind": "review",
+        "draft_id": "draft-1",
+        "source_draft_version": 3,
+        "model_id": "provider-disabled",
+        "rule_version": "1.0.0",
+        "review_kind": "security",
+        "diagnostics": [],
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "review result with invalid visibility enum",
+      "valid": false,
+      "result": {
+        "mode": "faithful_transform",
+        "output_kind": "review",
+        "draft_id": "draft-1",
+        "source_draft_version": 3,
+        "model_id": "provider-disabled",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "diagnostics": [],
+        "visibility": "private"
+      }
+    },
+    {
+      "name": "legacy review result missing draft_id and output_kind",
+      "valid": false,
+      "result": {
+        "mode": "faithful_transform",
+        "source_draft_version": 3,
+        "model_id": "provider-disabled",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "diagnostics": [],
+        "visibility": "visible"
+      }
+    },
+    {
+      "name": "review result rejects code-writing fields",
+      "valid": false,
+      "result": {
+        "mode": "faithful_transform",
+        "output_kind": "review",
+        "draft_id": "draft-1",
+        "source_draft_version": 3,
+        "model_id": "provider-disabled",
+        "rule_version": "1.0.0",
+        "review_kind": "risk",
+        "diagnostics": [],
+        "visibility": "visible",
+        "code_snippet": "int answer = 42;",
+        "target_file": "main.cpp"
+      }
     }
   ],
   "against_request": [
@@ -296,6 +447,30 @@
         ],
         "visibility": "visible"
       }
+    }
+  ],
+  "test_data_responses": [
+    {
+      "name": "marked test response is rejected when test data is disabled",
+      "allow_test_data": false,
+      "headers": { "X-AlgoFlow-Test-Data": "true" },
+      "accepted": false,
+      "is_test_data": true,
+      "expected_error_code": "AI_NOT_ENABLED"
+    },
+    {
+      "name": "marked test response is accepted and isolated when test data is enabled",
+      "allow_test_data": true,
+      "headers": { "X-AlgoFlow-Test-Data": "true" },
+      "accepted": true,
+      "is_test_data": true
+    },
+    {
+      "name": "unmarked response is accepted as normal non-test data",
+      "allow_test_data": false,
+      "headers": {},
+      "accepted": true,
+      "is_test_data": false
     }
   ]
 }

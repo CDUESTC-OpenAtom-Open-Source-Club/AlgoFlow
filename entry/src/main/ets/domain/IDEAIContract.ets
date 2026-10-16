@@ -9,24 +9,49 @@ export function parseIDEResult(body: string, record: IDERecord): IDEResult {
   const shared = ['mode', 'source_draft_version', 'model_id', 'rule_version', 'output_kind', 'visibility'];
   exact(value, legacy ? shared.concat(['pseudocode', 'code_snippet', 'code_mappings', 'assumptions', 'missing_information', 'risk_flags', 'added_algorithm_steps', 'template_id']) :
     shared.concat(record.capability === IDECapability.REVIEW ? ['draft_id', 'review_kind', 'diagnostics'] : ['draft_id', 'replaced_range', 'suggestion_text', 'source_refs']));
-  requireValue(text(value['mode']) === record.context.mode && record.context.mode === AIMode.FAITHFUL_TRANSFORM);
+  const validModes: string[] = [AIMode.FAITHFUL_TRANSFORM, AIMode.FEASIBILITY_ANALYSIS, AIMode.PROGRESSIVE_HINT, AIMode.FULL_SOLUTION];
+  requireValue(text(value['mode']) === record.context.mode &&
+    (legacy ? validModes.includes(record.context.mode) : record.context.mode === AIMode.FAITHFUL_TRANSFORM));
   requireValue(integer(value['source_draft_version'], 0) === record.context.version);
-  requireValue(text(value['rule_version']) === '1.0.0' && text(value['visibility']) === 'visible');
-  requireValue(text(value['output_kind']) === (legacy ? 'pseudocode' : record.capability));
+  requireValue(legacy ? text(value['rule_version']).length > 0 && ['visible', 'hidden'].includes(text(value['visibility'])) :
+    text(value['rule_version']) === '1.0.0' && text(value['visibility']) === 'visible');
+  const outputKind = text(value['output_kind']);
+  requireValue(legacy ? ['pseudocode', 'code_snippet'].includes(outputKind) : outputKind === record.capability);
   result.modelId = text(value['model_id']);
   const ids = record.context.segments.map(segment => segment.id);
   if (legacy) {
-    requireValue(value['code_snippet'] === null && array(value['code_mappings']).length === 0 && array(value['added_algorithm_steps']).length === 0);
-    requireValue(value['template_id'] === null || typeof value['template_id'] === 'string');
+    const added = strings(value['added_algorithm_steps']);
+    requireValue(record.context.mode !== AIMode.FAITHFUL_TRANSFORM || added.length === 0);
+    requireValue(value['template_id'] === null || text(value['template_id']).length > 0);
     const stepIds: string[] = [];
     const steps = array(value['pseudocode']).map(item => {
       const step = object(item); exact(step, ['id', 'step', 'source_refs']);
       const id = text(step['id']); requireValue(!stepIds.includes(id)); stepIds.push(id);
-      const refs = strings(step['source_refs']); requireValue(refs.length > 0 && refs.every(ref => ids.includes(ref)));
+      const refs = strings(step['source_refs']); requireValue(refs.length > 0 && refs.every(ref => ref.length > 0 && ids.includes(ref)));
       return `${text(step['step'])}\n来源：${refs.join(', ')}`;
     });
+    if (outputKind === 'pseudocode') {
+      requireValue(value['code_snippet'] === null && array(value['code_mappings']).length === 0);
+      for (const key of ['assumptions', 'missing_information', 'risk_flags']) strings(value[key]);
+      result.transformText = steps.join('\n\n') || '（无伪代码步骤）'; return result;
+    }
+    const snippet = text(value['code_snippet']);
+    requireValue(snippet.length <= 4000 && !/\b(?:int|signed|auto|void)\s+main\s*\(/.test(snippet));
+    const mappings = array(value['code_mappings']);
+    requireValue(mappings.length > 0);
+    const mappedLines = mappings.map(item => {
+      const mapping = object(item); exact(mapping, ['step_id', 'start_line', 'end_line']);
+      const stepId = text(mapping['step_id']);
+      requireValue(stepIds.includes(stepId));
+      const startLine = integer(mapping['start_line'], 1);
+      const endLine = integer(mapping['end_line'], 1);
+      requireValue(endLine >= startLine);
+      return `${stepId}: L${startLine}-L${endLine}`;
+    });
     for (const key of ['assumptions', 'missing_information', 'risk_flags']) strings(value[key]);
-    result.transformText = steps.join('\n\n') || '（无伪代码步骤）'; return result;
+    const stepText = steps.join('\n\n') || '（无伪代码步骤）';
+    result.transformText = `${stepText}\n\n代码片段：\n${snippet}\n映射：${mappedLines.join(', ')}`;
+    return result;
   }
   requireValue(text(value['draft_id']) === record.context.draftId);
   if (record.capability === IDECapability.REVIEW) {
