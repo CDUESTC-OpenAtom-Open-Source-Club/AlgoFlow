@@ -15,7 +15,7 @@ The current AI scope separates faithful transformation and local completion from
 3. The user explicitly asks to generate code from a review result or a faithful-transform/AI-hint context.
 4. The app switches to a separate code-generation entry instead of continuing in the originating review conversation.
 5. The generated C++ is previewed as a proposed change. The app writes it to the selected `.cpp` document only after explicit user confirmation.
-6. Only the user-confirmed document edit enters the existing draft save and sync flow. AI review and generation records remain local and are not included in sync operations.
+6. Only the user-confirmed document edit enters the existing draft save and sync flow. Generation candidates and review conversation history remain local and are not included in sync operations. Completed review results sync only as independent `review_result` entities (issue #27), never inside the draft payload.
 
 ## Product decisions that need review
 
@@ -50,4 +50,4 @@ The current AI scope separates faithful transformation and local completion from
 - Generated changes are previewed and require explicit confirmation before editing a `.cpp` document.
 - Stale or out-of-scope proposals cannot be accepted.
 - Rejected, hidden, or failed proposals leave source code and existing AI results unchanged.
-- Only confirmed source edits enter the existing save/sync flow; AI-only state never enters sync payloads.
+- Only confirmed source edits enter the existing save/sync flow; generation candidates never enter sync payloads.
