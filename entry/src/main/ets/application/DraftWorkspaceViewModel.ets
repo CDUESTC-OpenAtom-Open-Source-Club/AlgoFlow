@@ -80,6 +80,33 @@ export class DraftWorkspaceViewModel {
     this.syncRepository?.setBaseUrl(baseUrl);
   }
 
+  getClientId(): string {
+    return this.syncRepository?.getClientId() ?? '';
+  }
+
+  getSyncCursor(): string {
+    return this.syncRepository?.getCursor() ?? '0';
+  }
+
+  getPendingOperationCount(): number {
+    return this.syncRepository?.listPendingOperations().length ?? 0;
+  }
+
+  getDraftSourceVersions(draftId: string): number[] {
+    if (this.syncRepository?.getDraftSourceVersions !== undefined) {
+      return this.syncRepository.getDraftSourceVersions(draftId);
+    }
+    return [];
+  }
+
+  getDraftSourceCode(draftId: string, version: number): string | undefined {
+    return this.syncRepository?.getDraftSourceCode(draftId, version);
+  }
+
+  getDraftSourceSegments(draftId: string, version: number): IdeaSegment[] | undefined {
+    return this.syncRepository?.getDraftSourceSegments(draftId, version);
+  }
+
   setAIBaseUrl(baseUrl: string, allowTestData: boolean = false): void {
     this.aiRequestGeneration += 1;
     this.aiRequestInFlight = false;

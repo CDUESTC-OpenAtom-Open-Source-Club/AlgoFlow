@@ -9,7 +9,8 @@ export enum ResourceIconName {
   CODE = 'code',
   MENU = 'menu',
   QUERY = 'query',
-  SOURCE = 'source'
+  SOURCE = 'source',
+  SEARCH = 'search'
 }
 
 @Component
@@ -41,6 +42,8 @@ export struct ResourceIcon {
       return $r('app.media.af_query');
     } else if (this.name === ResourceIconName.SOURCE) {
       return $r('app.media.af_source');
+    } else if (this.name === ResourceIconName.SEARCH) {
+      return $r('app.media.search');
     }
     return $r('app.media.af_document');
   }

@@ -405,6 +405,12 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
       new IdeaSegment(segment.id, segment.content, segment.position));
   }
 
+  getDraftSourceVersions(draftId: string): number[] {
+    const versions = this.sourceHistory.get(draftId);
+    if (versions === undefined) return [];
+    return Array.from(versions.keys()).sort((left: number, right: number) => right - left);
+  }
+
   saveConflictDraft(draft: Draft, record: ConflictRecord): void {
     draft.syncStatus = SyncStatus.CONFLICT;
     this.replaceDraft(draft);

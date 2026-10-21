@@ -125,6 +125,10 @@ struct Index {
   @State aiStorageError: string = '';
   @State allowTestData: boolean = false;
   @State canWithdrawAI: boolean = false;
+  @State drawerDraftsExpanded: boolean = false;
+  @State drawerAIExpanded: boolean = false;
+  @State drawerToolsExpanded: boolean = false;
+  @State drawerSyncExpanded: boolean = false;
   private aiRepository: RdbDraftRepository | null = null;
   private editEpoch: number = 0;
 
@@ -719,6 +723,25 @@ struct Index {
   }
 
   @Builder
+  DrawerCollapsibleHeader(label: string, summary: string, expanded: boolean, onToggle: () => void) {
+    Button() {
+      Row({ space: 8 }) {
+        Text(label).fontSize(10).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+        if (summary.length > 0) {
+          Text(summary).fontSize(9).fontColor('#9BE7A9')
+            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+            .backgroundColor('#1E3A27').borderRadius(4)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        Blank()
+        Text(expanded ? '收起' : '展开').fontSize(9).fontColor('#8E8E93')
+      }.width('100%').alignItems(VerticalAlign.Center)
+    }.type(ButtonType.Normal).width('100%').height(36).padding({ left: 11, right: 11 })
+      .backgroundColor('#1C1C1E').border({ width: 1, color: expanded ? '#3E4A42' : '#2A2A2D' })
+      .borderRadius(7).onClick(onToggle)
+  }
+
+  @Builder
   DrawerFileButton(file: EditorFile, label: string) {
     Button() {
       Row({ space: 9 }) {
@@ -1186,84 +1209,114 @@ struct Index {
         .border({ width: { bottom: 1 }, color: '#2A2A2D' })
 
       Scroll() {
-        Column({ space: 15 }) {
-          Column() {
-            this.DrawerSectionTitle('草稿管理')
-            Button() {
-              Row({ space: 7 }) {
-                this.Icon(WorkspaceIcon.PLUS, 14, '#07110A')
-                Text('新建思路草稿').fontSize(10).fontColor('#07110A')
-              }
-            }.width('100%').height(36).backgroundColor('#30D158').borderRadius(6)
-              .onClick(() => { this.createDraft(); this.closeDrawer(); })
-            Column({ space: 5 }) {
-              ForEach(this.drafts, (draft: Draft) => {
-                Button() {
-                  Row() {
-                    Column() {
-                      Text(draft.title.length === 0 ? '未命名思路' : draft.title).fontSize(10)
-                        .fontColor(draft.id === this.selectedId ? '#ECECED' : '#B8B8BD')
-                      Text(`main.cpp · v${draft.version}`).fontSize(9).fontColor('#6E6E73').margin({ top: 2 })
-                    }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                    Circle().width(7).height(7).fill(draft.id === this.selectedId ? '#ECECED' : '#6E6E73')
-                  }
-                }.width('100%').height(44).padding({ left: 10, right: 10 })
-                  .backgroundColor(draft.id === this.selectedId ? '#242426' : '#1C1C1E')
-                  .border({ width: 1, color: draft.id === this.selectedId ? '#5A5A5F' : '#2A2A2D' })
-                  .borderRadius(6).onClick(() => { this.selectDraft(draft.id); this.closeDrawer(); })
-              }, (draft: Draft) => draft.id)
-            }.width('100%').margin({ top: 7 })
-          }.width('100%')
-
+        Column({ space: 12 }) {
           Column({ space: 6 }) {
-            this.DrawerSectionTitle('文件')
+            this.DrawerSectionTitle('当前文件')
             this.DrawerFileButton(EditorFile.MAIN, 'main.cpp')
             this.DrawerFileButton(EditorFile.IDEA, 'idea.md')
             this.DrawerFileButton(EditorFile.REWRITE, 'rewrite.cpp')
           }.width('100%')
 
           Column({ space: 6 }) {
-            this.DrawerSectionTitle('AI 协作模式')
-            Row({ space: 6 }) {
-              this.DrawerModeButton('忠实转换', AIMode.FAITHFUL_TRANSFORM)
-              this.DrawerModeButton('可行性分析', AIMode.FEASIBILITY_ANALYSIS)
-            }.width('100%')
-            Row({ space: 6 }) {
-              this.DrawerModeButton('渐进提示', AIMode.PROGRESSIVE_HINT)
-              this.DrawerModeButton('完整解题', AIMode.FULL_SOLUTION)
-            }.width('100%')
-            Text('当前未配置模型服务，保持 AI 结果隔离。').fontSize(9).fontColor('#8E8E93').margin({ top: 3 })
+            this.DrawerCollapsibleHeader(
+              '草稿管理',
+              `${this.drafts.length} 篇`,
+              this.drawerDraftsExpanded,
+              () => { this.drawerDraftsExpanded = !this.drawerDraftsExpanded; }
+            )
+            if (this.drawerDraftsExpanded) {
+              Button() {
+                Row({ space: 7 }) {
+                  this.Icon(WorkspaceIcon.PLUS, 14, '#07110A')
+                  Text('新建思路草稿').fontSize(10).fontColor('#07110A')
+                }
+              }.width('100%').height(36).backgroundColor('#30D158').borderRadius(6)
+                .onClick(() => { this.createDraft(); this.closeDrawer(); })
+              Column({ space: 5 }) {
+                ForEach(this.drafts, (draft: Draft) => {
+                  Button() {
+                    Row() {
+                      Column() {
+                        Text(draft.title.length === 0 ? '未命名思路' : draft.title).fontSize(10)
+                          .fontColor(draft.id === this.selectedId ? '#ECECED' : '#B8B8BD')
+                        Text(`main.cpp · v${draft.version}`).fontSize(9).fontColor('#6E6E73').margin({ top: 2 })
+                      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                      Circle().width(7).height(7).fill(draft.id === this.selectedId ? '#ECECED' : '#6E6E73')
+                    }
+                  }.width('100%').height(44).padding({ left: 10, right: 10 })
+                    .backgroundColor(draft.id === this.selectedId ? '#242426' : '#1C1C1E')
+                    .border({ width: 1, color: draft.id === this.selectedId ? '#5A5A5F' : '#2A2A2D' })
+                    .borderRadius(6).onClick(() => { this.selectDraft(draft.id); this.closeDrawer(); })
+                }, (draft: Draft) => draft.id)
+              }.width('100%')
+            }
           }.width('100%')
 
-          Column({ space: 3 }) {
-            this.DrawerSectionTitle('工具')
-            this.DrawerToolButton('草稿详情与标题', WorkspaceTool.FILES)
-            this.DrawerToolButton('思路来源', WorkspaceTool.IDEA)
-            this.DrawerToolButton('独立短代码', WorkspaceTool.SNIPPET)
-            this.DrawerToolButton('独立复写', WorkspaceTool.REWRITE)
-            this.DrawerToolButton('代码检查', WorkspaceTool.REVIEW)
-            this.DrawerToolButton('当前文件搜索', WorkspaceTool.SEARCH)
-            this.DrawerToolButton('保存与同步', WorkspaceTool.SYNC)
-          }.width('100%')
-
-          Column() {
-            this.DrawerSectionTitle('同步状态')
-            Row() {
-              Column() {
-                Text(this.statusLabel()).fontSize(11).fontWeight(FontWeight.Bold).fontColor(this.statusColor())
-                Text(this.syncMessage.length === 0 ? '本地副本可继续编辑' : this.syncMessage)
-                  .fontSize(9).fontColor('#8E8E93').margin({ top: 3 })
-              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-              Text(`v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`).fontSize(10).fontColor('#8E8E93')
-            }.width('100%').padding({ left: 11, right: 11, top: 10, bottom: 10 })
-              .backgroundColor('#1C1C1E').border({ width: 1, color: '#2A2A2D' }).borderRadius(7)
-            Button() {
+          Column({ space: 6 }) {
+            this.DrawerCollapsibleHeader(
+              'AI 协作模式',
+              this.modeLabel(),
+              this.drawerAIExpanded,
+              () => { this.drawerAIExpanded = !this.drawerAIExpanded; }
+            )
+            if (this.drawerAIExpanded) {
               Row({ space: 6 }) {
-                this.Icon(WorkspaceIcon.REFRESH, 14, '#07110A')
-                Text('立即同步').fontSize(10).fontColor('#07110A')
-              }
-            }.width('100%').height(34).backgroundColor('#30D158').borderRadius(6).margin({ top: 7 })
-              .onClick(() => { this.closeDrawer(); this.synchronize(); })
+                this.DrawerModeButton('忠实转换', AIMode.FAITHFUL_TRANSFORM)
+                this.DrawerModeButton('可行性分析', AIMode.FEASIBILITY_ANALYSIS)
+              }.width('100%')
+              Row({ space: 6 }) {
+                this.DrawerModeButton('渐进提示', AIMode.PROGRESSIVE_HINT)
+                this.DrawerModeButton('完整解题', AIMode.FULL_SOLUTION)
+              }.width('100%')
+              Text('当前未配置模型服务，保持 AI 结果隔离。').fontSize(9).fontColor('#8E8E93').margin({ top: 2 })
+            }
+          }.width('100%')
+
+          Column({ space: 4 }) {
+            this.DrawerCollapsibleHeader(
+              '工作台工具',
+              this.activeTool === WorkspaceTool.NONE ? '7 项' : '已开启',
+              this.drawerToolsExpanded,
+              () => { this.drawerToolsExpanded = !this.drawerToolsExpanded; }
+            )
+            if (this.drawerToolsExpanded) {
+              Column({ space: 3 }) {
+                this.DrawerToolButton('草稿详情与标题', WorkspaceTool.FILES)
+                this.DrawerToolButton('思路来源', WorkspaceTool.IDEA)
+                this.DrawerToolButton('独立短代码', WorkspaceTool.SNIPPET)
+                this.DrawerToolButton('独立复写', WorkspaceTool.REWRITE)
+                this.DrawerToolButton('代码检查', WorkspaceTool.REVIEW)
+                this.DrawerToolButton('当前文件搜索', WorkspaceTool.SEARCH)
+                this.DrawerToolButton('保存与同步', WorkspaceTool.SYNC)
+              }.width('100%').padding({ top: 2 })
+            }
+          }.width('100%')
+
+          Column({ space: 6 }) {
+            this.DrawerCollapsibleHeader(
+              '同步状态',
+              `${this.statusLabel()} · v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`,
+              this.drawerSyncExpanded,
+              () => { this.drawerSyncExpanded = !this.drawerSyncExpanded; }
+            )
+            if (this.drawerSyncExpanded) {
+              Row() {
+                Column() {
+                  Text(this.statusLabel()).fontSize(11).fontWeight(FontWeight.Bold).fontColor(this.statusColor())
+                  Text(this.syncMessage.length === 0 ? '本地副本可继续编辑' : this.syncMessage)
+                    .fontSize(9).fontColor('#8E8E93').margin({ top: 3 })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                Text(`v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`).fontSize(10).fontColor('#8E8E93')
+              }.width('100%').padding({ left: 11, right: 11, top: 10, bottom: 10 })
+                .backgroundColor('#1C1C1E').border({ width: 1, color: '#2A2A2D' }).borderRadius(7)
+              Button() {
+                Row({ space: 6 }) {
+                  this.Icon(WorkspaceIcon.REFRESH, 14, '#07110A')
+                  Text('立即同步').fontSize(10).fontColor('#07110A')
+                }
+              }.width('100%').height(34).backgroundColor('#30D158').borderRadius(6)
+                .onClick(() => { this.closeDrawer(); this.synchronize(); })
+            }
           }.width('100%')
         }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 18 })
       }.layoutWeight(1).scrollBar(BarState.Auto)
