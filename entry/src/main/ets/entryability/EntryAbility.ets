@@ -1,15 +1,15 @@
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
+import { util } from '@kit.ArkTS';
+import { CARD_REQUEST_KEY, encodeCardRequest, parseCardLaunch } from '../navigation/AppRoutes';
 
 const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
 
 export default class EntryAbility extends UIAbility {
-  private launchDraftId: string = '';
-
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    this.launchDraftId = this.readDraftId(want);
+    this.storeCardRequest(want);
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
     } catch (err) {
@@ -26,7 +26,6 @@ export default class EntryAbility extends UIAbility {
     // Main window is created, set main page for this ability
     hilog.info(DOMAIN, TAG, '[AlgoFlow] Ability onWindowStageCreate');
 
-    if (this.launchDraftId.length > 0) AppStorage.setOrCreate<string>('routeDraftId', this.launchDraftId);
     windowStage.loadContent('pages/Home', (err) => {
       if (err.code) {
         hilog.error(DOMAIN, TAG, '[AlgoFlow] Failed to load content. Cause: %{public}s', JSON.stringify(err));
@@ -37,15 +36,18 @@ export default class EntryAbility extends UIAbility {
   }
 
   onNewWant(want: Want): void {
-    const draftId = this.readDraftId(want);
-    if (draftId.length > 0) AppStorage.setOrCreate<string>('routeDraftId', draftId);
+    this.storeCardRequest(want);
   }
 
-  private readDraftId(want: Want): string {
-    const parameters = want.parameters;
-    if (parameters === undefined) return '';
-    const value = parameters['draft_id'];
-    return typeof value === 'string' ? value : '';
+  // Home watches CARD_REQUEST_KEY, so card taps work on cold start and while
+  // the app is already running.
+  private storeCardRequest(want: Want): void {
+    const request = parseCardLaunch(want.parameters as Record<string, Object> | undefined, util.generateRandomUUID());
+    const encoded = encodeCardRequest(request);
+    if (encoded.length > 0) {
+      hilog.info(DOMAIN, TAG, '[AlgoFlow] Card launch action=%{public}s', request.action);
+      AppStorage.setOrCreate<string>(CARD_REQUEST_KEY, encoded);
+    }
   }
 
   onWindowStageDestroy(): void {

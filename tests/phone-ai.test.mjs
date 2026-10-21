@@ -9,10 +9,34 @@ import { runInThisContext } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { validateCompletionFragment } from '../packages/contracts/cpp-fragment.mjs';
 const root = resolve('entry/src/main/ets');
+// In-memory FormKit/preferences stand-ins for service card tests; not device validation.
+const cardKit = { prefs: new Map(), forms: [], updates: [], failList: false };
+const cardPreferences = {
+  async getPreferences() {
+    return { async put(key, value) { cardKit.prefs.set(key, value); }, async flush() {},
+      async get(key, fallback) { return cardKit.prefs.has(key) ? cardKit.prefs.get(key) : fallback; } };
+  },
+  getPreferencesSync() {
+    return { getSync(key, fallback) { return cardKit.prefs.has(key) ? cardKit.prefs.get(key) : fallback; } };
+  },
+  removePreferencesFromCacheSync() {}
+};
+const cardFormKit = {
+  formBindingData: { createFormBindingData(data) { return { data: JSON.parse(JSON.stringify(data)) }; } },
+  formProvider: {
+    async getPublishedRunningFormInfos() {
+      if (cardKit.failList) throw new Error('form service unavailable');
+      return cardKit.forms.map(formId => ({ formId }));
+    },
+    async updateForm(formId, binding) { cardKit.updates.push({ formId, data: binding.data }); }
+  },
+  formInfo: {}
+};
 function loader(debug = true, http = {}) {
   const cache = new Map();
   const stubs = {
     '@kit.AbilityKit': {}, '@kit.BasicServicesKit': {},
+    '@kit.FormKit': cardFormKit, '@ohos.data.preferences': { default: cardPreferences }, '@ohos.router': { default: {} },
     BuildProfile: { DEBUG: debug }, '@ohos.net.http': { default: http },
     '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {}, error() {} } },
     '@kit.ArkTS': { util: { generateRandomUUID: randomUUID } },
@@ -944,4 +968,81 @@ test('phone sync ignores an older remote change during pull', async () => {
     assert.equal(repository.applied, undefined);
     assert.equal(repository.cursor, '3');
   } finally { HttpSyncClient.prototype.pull = oldPull; }
+});
+
+const Card = load('platform/CardSnapshot');
+const Routes = load('navigation/AppRoutes');
+const CardModels = load('domain/Models');
+function cardDraft(id, updatedAt, extra = {}) {
+  return Object.assign(new CardModels.Draft(id, `title ${id}`), { updatedAt }, extra);
+}
+
+test('service card shows the most recently updated live draft, never a tombstone', () => {
+  const snapshot = Card.selectCardSnapshot([
+    cardDraft('old', '2026-10-01T00:00:00.000Z', { syncStatus: 'synced' }),
+    cardDraft('gone', '2026-10-03T00:00:00.000Z', { deleted: true }),
+    cardDraft('new', '2026-10-02T00:00:00.000Z')
+  ]);
+  assert.equal(snapshot.draftId, 'new');
+  assert.equal(snapshot.syncStatus, 'local_only');
+  const empty = Card.cardFormData(Card.selectCardSnapshot([cardDraft('gone', '2026-10-03T00:00:00.000Z', { deleted: true })]));
+  assert.deepEqual({ ...empty }, { title: '暂无草稿', draftId: '', syncLabel: '点击新建思路开始记录', hasDraft: false });
+});
+
+test('service card surfaces failed or conflicting sync runs over the stored draft status', () => {
+  const drafts = [cardDraft('a', '2026-10-01T00:00:00.000Z', { syncStatus: 'synced' })];
+  assert.equal(Card.selectCardSnapshot(drafts, 'failed').syncStatus, 'failed');
+  assert.equal(Card.selectCardSnapshot(drafts, 'conflict').syncStatus, 'conflict');
+  assert.equal(Card.selectCardSnapshot(drafts, 'local_only').syncStatus, 'synced');
+  assert.deepEqual(['synced', 'syncing', 'conflict', 'failed', 'local_only', 'unknown'].map(Card.cardStatusLabel),
+    ['已同步', '同步中', '有冲突', '同步失败', '仅本地', '仅本地']);
+});
+
+test('service card data carries only title and status, with a bounded title', () => {
+  const draft = cardDraft('a', '2026-10-01T00:00:00.000Z', { title: 'x'.repeat(40), idea: 'secret idea', code: 'int main() {}' });
+  const data = Card.cardFormData(Card.selectCardSnapshot([draft]));
+  assert.deepEqual(Object.keys(data).sort(), ['draftId', 'hasDraft', 'syncLabel', 'title']);
+  assert.equal(data.title, 'x'.repeat(24) + '…');
+  assert.ok(!JSON.stringify(data).includes('secret') && !JSON.stringify(data).includes('main'));
+  assert.equal(Card.cardFormData(Card.selectCardSnapshot([cardDraft('b', '2026-10-01', { title: '  ' })])).title, '未命名思路');
+});
+
+test('publishing a card snapshot persists it and updates every added card', async () => {
+  cardKit.prefs.clear(); cardKit.updates = []; cardKit.forms = ['f1', 'f2']; cardKit.failList = false;
+  await Card.publishCardSnapshot({}, [cardDraft('a', '2026-10-01T00:00:00.000Z', { syncStatus: 'synced' })]);
+  assert.deepEqual(cardKit.updates.map(update => update.formId), ['f1', 'f2']);
+  assert.deepEqual(cardKit.updates[0].data, { title: 'title a', draftId: 'a', syncLabel: '已同步', hasDraft: true });
+  const restored = Card.loadCardSnapshotSync({});
+  assert.equal(restored.draftId, 'a');
+  assert.equal(restored.syncStatus, 'synced');
+  cardKit.failList = true; cardKit.updates = [];
+  await Card.publishCardSnapshot({}, []);
+  assert.equal(cardKit.updates.length, 0);
+  assert.equal(Card.loadCardSnapshotSync({}).draftId, '');
+  cardKit.failList = false; cardKit.forms = [];
+});
+
+test('card launch parameters map to explicit actions, accepting nested and legacy params', () => {
+  const parse = (parameters) => { const r = Routes.parseCardLaunch(parameters, 'n1'); return [r.action, r.draftId]; };
+  assert.deepEqual(parse({ card_action: 'open_draft', draft_id: 'd1' }), ['open_draft', 'd1']);
+  assert.deepEqual(parse({ params: JSON.stringify({ card_action: 'new_draft', draft_id: '' }) }), ['new_draft', '']);
+  assert.deepEqual(parse({ draft_id: 'legacy' }), ['open_draft', 'legacy']);
+  assert.deepEqual(parse({ draft_id: 'latest' }), ['open_home', '']);
+  assert.deepEqual(parse({ card_action: 'open_draft', draft_id: ' ' }), ['open_home', '']);
+  assert.deepEqual(parse({ card_action: 'open_home' }), ['open_home', '']);
+  assert.deepEqual(parse({ params: '{broken' }), ['none', '']);
+  assert.deepEqual(parse(undefined), ['none', '']);
+  assert.deepEqual(parse({ 'ohos.aafwk.param.callerBundleName': 'x' }), ['none', '']);
+});
+
+test('card requests round-trip through AppStorage encoding and reject malformed values', () => {
+  const request = Routes.parseCardLaunch({ card_action: 'open_draft', draft_id: 'd1' }, 'nonce-1');
+  const decoded = Routes.decodeCardRequest(Routes.encodeCardRequest(request));
+  assert.deepEqual([decoded.action, decoded.draftId, decoded.nonce], ['open_draft', 'd1', 'nonce-1']);
+  assert.equal(Routes.encodeCardRequest(Routes.parseCardLaunch(undefined, 'n')), '');
+  assert.notEqual(Routes.encodeCardRequest(Routes.parseCardLaunch({ card_action: 'new_draft' }, 'a')),
+    Routes.encodeCardRequest(Routes.parseCardLaunch({ card_action: 'new_draft' }, 'b')));
+  for (const value of [undefined, '', '{', JSON.stringify({ action: 'drop_db' }), JSON.stringify({ action: 'open_draft', draft_id: '' })]) {
+    assert.equal(Routes.decodeCardRequest(value).action, 'none');
+  }
 });

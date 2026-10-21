@@ -2,7 +2,7 @@ import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel'
 import { AIArtifact, AIMode, AIResultStatus, Draft, IdeaSegment, PseudocodeStep, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
-import { saveCardSnapshot } from '../platform/CardSnapshot';
+import { publishCardSnapshot } from '../platform/CardSnapshot';
 import { DEBUG } from 'BuildProfile';
 import { IDECapability, IDERecord, IDEState, ReviewKind, SourceCursor } from '../domain/IDEAIModels';
 import { rangeOffsets } from '../domain/IDEAIContract';
@@ -206,7 +206,7 @@ struct Index {
     this.aiResult = this.viewModel.getArtifact(this.selectedId, draft.aiMode) ?? null;
     this.aiError = false;
     this.aiMessage = '';
-    saveCardSnapshot(getContext(this), draft);
+    publishCardSnapshot(getContext(this), this.drafts);
     this.saved = true;
     this.resetEditorPosition();
     this.refreshEditorFeatures();
@@ -512,7 +512,7 @@ struct Index {
     this.drafts = this.viewModel.listDrafts();
     this.syncStatus = SyncStatus.LOCAL_ONLY;
     this.saved = true;
-    if (draft !== undefined) saveCardSnapshot(getContext(this), draft);
+    publishCardSnapshot(getContext(this), this.drafts);
   }
 
   private async synchronize(): Promise<void> {
@@ -526,6 +526,7 @@ struct Index {
     } catch (error) {
       this.syncStatus = SyncStatus.FAILED;
       this.syncMessage = error instanceof Error ? error.message : '同步请求失败';
+      publishCardSnapshot(getContext(this), this.viewModel.listDrafts(), SyncStatus.FAILED);
       return;
     }
     if (result === undefined) {
@@ -539,6 +540,7 @@ struct Index {
     else this.syncStatus = SyncStatus.LOCAL_ONLY;
     this.syncMessage = result.message;
     this.drafts = this.viewModel.listDrafts();
+    publishCardSnapshot(getContext(this), this.drafts, this.syncStatus);
     if (epoch !== this.editEpoch) return;
     this.selectRemoteDraftIfPlaceholder();
     const draft = this.viewModel.getDraft(this.selectedId);
@@ -550,7 +552,6 @@ struct Index {
       this.rewrite = draft.rewrite;
       this.segments = draft.ideaSegments;
       this.viewModel.selectAIContext(this.selectedId, this.activeFile);
-      saveCardSnapshot(getContext(this), draft);
     }
   }
 
