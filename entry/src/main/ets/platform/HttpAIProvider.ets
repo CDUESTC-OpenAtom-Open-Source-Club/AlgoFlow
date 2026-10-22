@@ -1,4 +1,5 @@
 import http from '@ohos.net.http';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AIProvider } from '../domain/AIProvider';
 import { AIArtifact, AIErrorCode, AIOutputKind, AIMode, AIRequest, AIRequestSegment, AIResult,
@@ -12,6 +13,24 @@ const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8788';
 const RULE_VERSION = '1.0.0';
+const CONNECT_TIMEOUT_MS = 5000;
+// @ohos.net.http (API 20) error codes, from the SDK's request() @throws list.
+const HTTP_OPERATION_TIMEOUT = 2300028;
+
+export enum TransportFailure {
+  READ_TIMEOUT = 'read_timeout',
+  CONNECT_TIMEOUT = 'connect_timeout',
+  NETWORK = 'network'
+}
+
+// 2300028 "Operation timeout" is raised for both connectTimeout and
+// readTimeout. A request that already outlived the connect timeout was
+// connected and is waiting for the provider, so it is a read timeout: the
+// provider is slow, not unreachable. Earlier timeouts are connect failures.
+export function classifyTransportError(code: number | undefined, elapsedMs: number): TransportFailure {
+  if (code !== HTTP_OPERATION_TIMEOUT) return TransportFailure.NETWORK;
+  return elapsedMs > CONNECT_TIMEOUT_MS ? TransportFailure.READ_TIMEOUT : TransportFailure.CONNECT_TIMEOUT;
+}
 
 export class HttpAIProvider implements AIProvider, IDEProvider {
   private allowTestData: boolean = false;
@@ -20,6 +39,8 @@ export class HttpAIProvider implements AIProvider, IDEProvider {
   private activeRequest: http.HttpRequest | null = null;
   private generation: number = 0;
   private cancelledGeneration: number = -1;
+  // Injectable clock so tests can tell a connect timeout from a read timeout.
+  now: () => number = () => Date.now();
 
   constructor(baseUrl: string = DEFAULT_BASE_URL, maxRetries: number = 0, readTimeoutMs: number = 10000, allowTestData: boolean = false) {
     this.baseUrl = trimBaseUrl(baseUrl);
@@ -35,11 +56,12 @@ export class HttpAIProvider implements AIProvider, IDEProvider {
       reply.errorCode = 'AI_MODE_NOT_AVAILABLE'; reply.message = '当前模式尚未接入'; return reply;
     }
     const transport = http.createHttp(); this.activeRequest = transport;
+    const startedAt = this.now();
     try {
       const path = capability === IDECapability.TRANSFORM ? '/requests' : capability === IDECapability.REVIEW ? '/reviews' : '/completions';
       const response = await transport.request(`${this.baseUrl}${path}`, {
         method: http.RequestMethod.POST, header: { 'Content-Type': 'application/json' }, extraData: JSON.stringify(body),
-        expectDataType: http.HttpDataType.STRING, connectTimeout: 5000, readTimeout: this.readTimeoutMs
+        expectDataType: http.HttpDataType.STRING, connectTimeout: CONNECT_TIMEOUT_MS, readTimeout: this.readTimeoutMs
       });
       if (generation !== this.generation || this.isCancelled(generation)) {
         reply.errorCode = 'CANCELLED'; reply.message = '请求已取消'; return reply;
@@ -57,8 +79,19 @@ export class HttpAIProvider implements AIProvider, IDEProvider {
       reply.body = typeof response.result === 'string' ? response.result : JSON.stringify(response.result);
       return reply;
     } catch (error) {
-      reply.errorCode = generation !== this.generation || this.isCancelled(generation) ? 'CANCELLED' : 'NETWORK_ERROR';
-      reply.message = reply.errorCode === 'CANCELLED' ? '请求已取消' : 'AI 服务不可达，请检查地址或网络后重试'; return reply;
+      if (generation !== this.generation || this.isCancelled(generation)) {
+        reply.errorCode = 'CANCELLED'; reply.message = '请求已取消'; return reply;
+      }
+      const transportCode = (error as BusinessError).code;
+      const elapsedMs = this.now() - startedAt;
+      const category = classifyTransportError(transportCode, elapsedMs);
+      // Only the category, transport code and timing are logged: no URL or body.
+      hilog.warn(DOMAIN, TAG, '[AlgoFlow] AI transport failed. category=%{public}s code=%{public}s elapsed_ms=%{public}s',
+        category, String(transportCode ?? 'unknown'), elapsedMs.toString());
+      if (category === TransportFailure.READ_TIMEOUT) {
+        reply.errorCode = AIErrorCode.AI_PROVIDER_TIMEOUT; reply.message = 'AI 请求超时'; return reply;
+      }
+      reply.errorCode = 'NETWORK_ERROR'; reply.message = 'AI 服务不可达，请检查地址或网络后重试'; return reply;
     } finally {
       if (this.activeRequest === transport) this.activeRequest = null;
       transport.destroy();
