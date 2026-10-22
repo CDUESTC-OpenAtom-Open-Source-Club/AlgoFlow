@@ -9,6 +9,8 @@ export class SyncStore {
   apply(operation) {
     const validationError = validateOperation(operation);
     if (validationError) return { operation_id: operation?.operation_id ?? '', status: 'rejected', error_code: 'INVALID_REQUEST' };
+    // Only applied operations are remembered, so `duplicate` always means "this
+    // operation_id already changed the entity" and carries that server_entity.
     if (this.#operations.has(operation.operation_id)) {
       return { ...this.#operations.get(operation.operation_id), status: 'duplicate' };
     }
@@ -36,9 +38,10 @@ export class SyncStore {
     }
     const currentVersion = current?.version ?? 0;
     if (operation.base_version !== currentVersion) {
-      const result = { operation_id: operation.operation_id, status: 'conflict', error_code: 'VERSION_CONFLICT', server_entity: current ?? null };
-      this.#operations.set(operation.operation_id, result);
-      return result;
+      // A conflict did not change anything. It is not recorded: a retry of the
+      // same operation_id is checked again against the current version instead
+      // of being reported as an already-applied duplicate.
+      return { operation_id: operation.operation_id, status: 'conflict', error_code: 'VERSION_CONFLICT', server_entity: current ?? null };
     }
     const version = currentVersion + 1;
     if (operation.entity_type === 'ai_artifact' && operation.operation_type === 'upsert' &&

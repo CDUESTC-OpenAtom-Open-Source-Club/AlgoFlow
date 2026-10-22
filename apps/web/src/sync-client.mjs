@@ -101,6 +101,13 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
         continue;
       }
 
+      // A duplicate without the stored server entity cannot prove the edit
+      // reached the server; keep the operation queued instead of assuming it.
+      if (result.status === 'duplicate' && !result.server_entity) {
+        hadFailure = true;
+        continue;
+      }
+
       if (result.status === 'applied' || result.status === 'duplicate') {
         const entity = result.server_entity ?? { ...operation.payload, version: result.version ?? operation.base_version };
         if (operation.entity_type === 'ai_artifact') {

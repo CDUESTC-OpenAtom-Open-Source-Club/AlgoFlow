@@ -719,3 +719,42 @@ function makeReview(id, draftId, clientId) {
     diagnostics: [{ id: 'diagnostic-1', level: 'warning', range: { start_line: 1, start_char: 0, end_line: 1, end_char: 1 }, problem: 'Potential issue', basis: 'Rule matched', suggestion: 'Review this line' }], visibility: 'visible', freshness: 'current'
   };
 }
+
+test('a retried conflicting operation is checked again instead of reported as duplicate', () => {
+  const store = new SyncStore();
+  const stale = { ...operation, operation_id: 'op-stale', base_version: 1, client_id: 'phone-local', payload: { title: 'Phone edit' } };
+  // The entity does not exist yet (for example the in-memory server restarted).
+  const first = store.apply(stale);
+  assert.equal(first.status, 'conflict');
+  assert.equal(first.server_entity, null);
+
+  store.apply({ ...operation, operation_id: 'web-1', payload: { title: 'Web v1' } });
+  store.apply({ ...operation, operation_id: 'web-2', base_version: 1, payload: { title: 'Web v2' } });
+
+  const retry = store.apply(stale);
+  assert.equal(retry.status, 'conflict', 'a conflict must never be replayed as duplicate');
+  assert.equal(retry.server_entity.version, 2);
+  assert.equal(retry.server_entity.title, 'Web v2');
+  assert.equal(store.pull('0').changes.at(-1).entity.title, 'Web v2');
+});
+
+test('a duplicate always carries the entity the operation produced', () => {
+  const store = new SyncStore();
+  store.apply(operation);
+  const replay = store.apply(operation);
+  assert.equal(replay.status, 'duplicate');
+  assert.equal(replay.server_entity.version, 1);
+});
+
+test('Web sync keeps a duplicate without server_entity queued and reports failure', async () => {
+  const state = makeWorkspace('web-dup', makeDraft('draft-dup', 'seed', 'web-dup'));
+  queueUpsert(state, { ...state.drafts[0], code: 'local edit' });
+  const client = {
+    async push(op) { return { operation_id: op.operation_id, status: 'duplicate' }; },
+    async pull() { return { changes: [], next_cursor: '0' }; }
+  };
+  const result = await synchronizeWorkspace(state, client);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.state.operations.length, 1);
+  assert.notEqual(result.state.drafts[0].sync_status, 'synced');
+});
