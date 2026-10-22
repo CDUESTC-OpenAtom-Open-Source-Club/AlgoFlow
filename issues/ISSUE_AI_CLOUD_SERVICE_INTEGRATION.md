@@ -50,7 +50,7 @@ Until these decisions and prerequisites are recorded, cloud integration remains 
 - Authentication, authorization, rate limiting, timeout/cancellation, audit IDs, health checks, monitoring, and documented rollback are exercised in the selected environments.
 - Privacy/data-flow/retention decisions are reflected in user-facing notices and operational configuration.
 - Real-provider results pass schema and source/range validation; evaluation results document model-behavior limitations and known failure modes.
-- Web and OpenHarmony clients show accurate unavailable, provider-error, invalid-output, and test-data states without syncing AI-only results.
+- Web and OpenHarmony clients show accurate unavailable, provider-error, invalid-output, and test-data states. Only faithful-transform artifacts and review results sync, as independent AI entities (issue #27); test responses, completion candidates, and review conversation history do not sync.
 - Deployment and integration tests are reported with exact environment and commands. No cloud or device acceptance is inferred from local unit tests.
 
 ## Dependencies and risks

@@ -2,16 +2,19 @@ import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel'
 import { Draft, draftRenderKey, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { ResourceIcon, ResourceIconName } from '../components/ResourceIcon';
-import { openEditor, openPlaceholder } from '../navigation/AppRoutes';
+import { publishCardSnapshot } from '../platform/CardSnapshot';
+import { CARD_REQUEST_KEY, CardAction, decodeCardRequest, openEditor, openPlaceholder } from '../navigation/AppRoutes';
 
 @Entry
 @Component
 struct Home {
   private viewModel: DraftWorkspaceViewModel = new DraftWorkspaceViewModel(new RdbDraftRepository(getContext(this)));
+  private handlingCard: boolean = false;
 
   @State drafts: Draft[] = [];
   @State ready: boolean = false;
   @State message: string = '';
+  @StorageProp(CARD_REQUEST_KEY) @Watch('onCardRequest') cardRequest: string = '';
   @State statusExpanded: boolean = false;
   @State expandedDraftId: string = '';
 
@@ -22,21 +25,15 @@ struct Home {
   onPageShow(): void {
     // Index and Placeholder keep their own repository instances; reload so
     // drafts created, deleted or synced there are current when returning.
-    if (this.ready) this.reloadWorkspace().catch(() => {});
+    if (this.ready && !this.handlingCard) this.reloadWorkspace().catch(() => {});
   }
 
   private async initializeWorkspace(): Promise<void> {
     try {
       await this.reloadWorkspace();
       this.ready = true;
-
-      const routedDraftId = AppStorage.get<string>('routeDraftId');
-      if (routedDraftId !== undefined && routedDraftId.length > 0) {
-        AppStorage.setOrCreate<string>('routeDraftId', '');
-        const draftId = routedDraftId === 'latest' ? this.viewModel.ensureStarterDraft() : routedDraftId;
-        const draft = this.viewModel.getDraft(draftId);
-        await this.openDraft(draft === undefined ? this.viewModel.ensureStarterDraft() : draft.id);
-      }
+      publishCardSnapshot(getContext(this), this.viewModel.listDrafts());
+      await this.handleCardRequest();
     } catch (error) {
       this.message = '工作区暂时无法打开，请重试';
       console.error(`[AlgoFlow] Home initialization failed: ${error instanceof Error ? error.message : 'unknown'}`);
@@ -49,6 +46,37 @@ struct Home {
     await viewModel.initialize();
     this.viewModel = viewModel;
     this.drafts = viewModel.listDrafts();
+  }
+
+  onCardRequest(): void {
+    this.handleCardRequest().catch((error: Error) => {
+      console.error(`[AlgoFlow] card request failed: ${error.message}`);
+    });
+  }
+
+  // Card taps never create or revive a draft implicitly: a missing draft keeps
+  // the user on Home, and only the explicit new-draft action calls createDraft.
+  private async handleCardRequest(): Promise<void> {
+    if (!this.ready || this.handlingCard) return;
+    const request = decodeCardRequest(AppStorage.get<string>(CARD_REQUEST_KEY));
+    if (request.action === CardAction.NONE) return;
+    AppStorage.setOrCreate<string>(CARD_REQUEST_KEY, '');
+    this.handlingCard = true;
+    try {
+      await this.reloadWorkspace();
+      if (request.action === CardAction.NEW_DRAFT) {
+        await this.createDraft();
+      } else if (request.action === CardAction.OPEN_DRAFT) {
+        const draft = this.viewModel.getDraft(request.draftId);
+        if (draft !== undefined) await this.openDraft(draft.id);
+        else {
+          this.message = '卡片中的草稿已删除或不存在';
+          publishCardSnapshot(getContext(this), this.viewModel.listDrafts());
+        }
+      }
+    } finally {
+      this.handlingCard = false;
+    }
   }
 
   private async openDraft(draftId: string): Promise<void> {
@@ -74,6 +102,7 @@ struct Home {
     if (!this.ready) return;
     this.viewModel.deleteDraft(draftId);
     this.drafts = this.viewModel.listDrafts();
+    publishCardSnapshot(getContext(this), this.drafts);
     if (this.expandedDraftId === draftId) {
       this.expandedDraftId = '';
     }
