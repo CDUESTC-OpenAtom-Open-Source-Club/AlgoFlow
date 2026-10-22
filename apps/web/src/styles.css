@@ -440,6 +440,43 @@ input:focus-visible {
   height: 100%;
 }
 
+.pebrel-qr-box.is-inactive .pebrel-qr-svg {
+  opacity: .18;
+}
+
+.pebrel-qr-placeholder {
+  color: var(--md-on-surface-variant);
+  font-size: 12px;
+}
+
+.pebrel-status-pill.status-ok i {
+  background: var(--md-primary);
+}
+
+.pebrel-status-pill.status-pending i {
+  background: #d97706;
+}
+
+.pebrel-status-pill.status-error {
+  background: #fdf2ef;
+  color: var(--md-error);
+}
+
+.pebrel-status-pill.status-error i {
+  background: var(--md-error);
+}
+
+.pebrel-warning {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  border: 1px solid #f3d9a4;
+  border-radius: 8px;
+  background: #faf3dc;
+  color: #7a5a12;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .pebrel-qr-timer {
   display: flex;
   align-items: center;

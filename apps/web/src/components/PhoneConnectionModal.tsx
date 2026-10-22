@@ -1,5 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { SyncStatus } from '../types';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  buildPairingInvitation,
+  createPairingSession,
+  getPairingSession,
+  isLoopbackEndpoint,
+  type PairingSession,
+} from '../pairing-client.mjs';
+import { PairingQrCode } from './PairingQrCode';
+
+const POLL_INTERVAL_MS = 2000;
+
+function formatCode(code: string): string {
+  return `${code.slice(0, 4)} ${code.slice(4, 8)}`;
+}
 
 export interface PhoneConnectionConfig {
   enabled: boolean;
@@ -14,7 +27,6 @@ interface PhoneConnectionModalProps {
   onClose: () => void;
   clientId: string;
   cursor: string;
-  syncState: SyncStatus;
   pendingCount: number;
   config: PhoneConnectionConfig;
   onSaveConfig: (next: PhoneConnectionConfig) => void;
@@ -26,7 +38,6 @@ export function PhoneConnectionModal({
   onClose,
   clientId,
   cursor,
-  syncState,
   pendingCount,
   config,
   onSaveConfig,
@@ -36,10 +47,15 @@ export function PhoneConnectionModal({
   const [syncUrl, setSyncUrl] = useState(config.syncBaseUrl);
   const [aiUrl, setAiUrl] = useState(config.aiBaseUrl);
   const [computerName, setComputerName] = useState(config.computerName);
-  // The short code is only compared by the user on both screens. No server
-  // validates or expires it, so the UI must not present it as authentication.
-  const [nonce, setNonce] = useState(() => Math.floor(10000000 + Math.random() * 90000000));
-  const [copied, setCopied] = useState(false);
+  // The code is issued, expired and consumed by sync-api (/v1/pairing). It is a
+  // single-use endpoint handoff, not account authentication.
+  const [session, setSession] = useState<(PairingSession & { code: string }) | null>(null);
+  const [sessionState, setSessionState] = useState<PairingSession['state'] | null>(null);
+  const [phoneClientId, setPhoneClientId] = useState<string | null>(null);
+  const [pairingError, setPairingError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
 
   useEffect(() => {
     if (!open) return;
@@ -49,39 +65,79 @@ export function PhoneConnectionModal({
     setComputerName(config.computerName);
   }, [open, config]);
 
-  const shortCode = useMemo(() => {
-    const digits = String(nonce).padStart(8, '0').slice(0, 8);
-    return `${digits.slice(0, 4)} ${digits.slice(4, 8)}`;
-  }, [nonce]);
+  // Sessions are created from the saved config, so editing the form does not
+  // revoke the code a phone may be typing; 「更新配对与端点」 issues a new one.
+  const startSession = useCallback(async () => {
+    setLoading(true);
+    setPairingError('');
+    setCopyState('idle');
+    try {
+      const created = await createPairingSession(config.syncBaseUrl, {
+        desktop_client_id: clientId,
+        computer_name: config.computerName,
+        route: config.route,
+        sync_api: config.syncBaseUrl,
+        ai_gateway: config.aiBaseUrl,
+      });
+      setSession(created);
+      setSessionState(created.state);
+      setPhoneClientId(null);
+    } catch (error) {
+      setSession(null);
+      setSessionState(null);
+      setPairingError(error instanceof Error && error.message === 'INVALID_REQUEST'
+        ? '端点配置无效，请检查 Sync API 与 AI Gateway 地址'
+        : `无法连接同步服务 ${config.syncBaseUrl}，请先启动 sync-api`);
+    } finally {
+      setLoading(false);
+    }
+  }, [clientId, config]);
 
-  const invitationPayload = useMemo(() => {
-    return JSON.stringify({
-      type: 'algoflow-pair-v1',
-      computer: computerName || 'AlgoFlow-Desktop',
-      route,
-      code: shortCode.replace(/\s+/g, ''),
-      sync_api: syncUrl.trim(),
-      ai_gateway: aiUrl.trim(),
-      desktop_client_id: clientId,
-    });
-  }, [computerName, route, shortCode, syncUrl, aiUrl, clientId]);
+  useEffect(() => {
+    if (!open || !config.enabled) return;
+    void startSession();
+  }, [open, config.enabled, startSession]);
 
-  const qrMatrix = useMemo(() => buildQrMatrix(invitationPayload, 21), [invitationPayload]);
+  useEffect(() => {
+    if (!open || !session || sessionState !== 'pending') return;
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+      void getPairingSession(config.syncBaseUrl, session.pairing_id).then((latest) => {
+        setSessionState(latest.state);
+        setPhoneClientId(latest.phone_client_id);
+      }).catch(() => {});
+    }, POLL_INTERVAL_MS);
+    const tick = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => { window.clearInterval(timer); window.clearInterval(tick); };
+  }, [open, session, sessionState, config.syncBaseUrl]);
+
+  const remainingSec = session ? Math.max(0, Math.ceil((Date.parse(session.expires_at) - now) / 1000)) : 0;
+  const effectiveState = sessionState === 'pending' && remainingSec === 0 ? 'expired' : sessionState;
+  const invitation = useMemo(
+    () => (session ? buildPairingInvitation(config.syncBaseUrl, session.code) : ''),
+    [session, config.syncBaseUrl],
+  );
 
   if (!open) return null;
 
-  function handleRefreshCode() {
-    setNonce(Math.floor(10000000 + Math.random() * 90000000));
-    setCopied(false);
-  }
+  const timerText = `${String(Math.floor(remainingSec / 60)).padStart(2, '0')}:${String(remainingSec % 60).padStart(2, '0')}`;
+  const loopback = isLoopbackEndpoint(config.syncBaseUrl);
+  const statusLabel = loading ? '正在生成配对码'
+    : pairingError ? '同步服务不可用'
+    : effectiveState === 'claimed' ? '手机已配对'
+    : effectiveState === 'expired' ? '配对码已过期'
+    : effectiveState === 'revoked' ? '配对码已作废'
+    : '等待手机扫码';
+  const statusClass = effectiveState === 'claimed' ? 'status-ok'
+    : pairingError || effectiveState === 'expired' || effectiveState === 'revoked' ? 'status-error' : 'status-pending';
 
   async function handleCopyInvitation() {
     try {
-      await navigator.clipboard.writeText(invitationPayload);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
+      await navigator.clipboard.writeText(invitation);
+      setCopyState('copied');
+      window.setTimeout(() => setCopyState('idle'), 2000);
     } catch {
-      setCopied(true);
+      setCopyState('failed');
     }
   }
 
@@ -102,7 +158,7 @@ export function PhoneConnectionModal({
           <div>
             <span className="eyebrow">SETTINGS → PHONE REMOTE</span>
             <h2>手机远程与跨端配对</h2>
-            <p className="pebrel-subtitle">在手机端打开「设置 → 连接电脑」，输入电脑地址与 8 位配对码，或粘贴完整配对信息以写入同步端点。</p>
+            <p className="pebrel-subtitle">在手机端打开「设置 → 连接电脑」，扫描二维码或输入 8 位配对码，把当前电脑的同步与 AI 端点交给手机。</p>
           </div>
           <button type="button" className="quiet-button" aria-label="关闭手机连接窗口" onClick={onClose}>
             ✕
@@ -112,7 +168,7 @@ export function PhoneConnectionModal({
         {!config.enabled ? (
           <div className="pebrel-off-card">
             <h3>开启手机远程同步</h3>
-            <p>开启后显示 8 位核对码和完整配对信息，用于把当前电脑使用的同步与 AI 服务端点交给 OpenHarmony 手机端。这只是端点移交，不是经过认证的配对。</p>
+            <p>开启后由同步服务生成 10 分钟内有效、只能使用一次的配对二维码与 8 位配对码，把当前电脑使用的同步与 AI 服务端点交给 OpenHarmony 手机端。配对只移交端点，不是账号认证。</p>
             <button
               type="button"
               className="sync-button"
@@ -127,12 +183,12 @@ export function PhoneConnectionModal({
               <div className="pebrel-pairing-left">
                 <div className="pebrel-hero-title-row">
                   <h3>配对新手机</h3>
-                  <span className={`pebrel-status-pill status-${syncState}`}>
+                  <span className={`pebrel-status-pill ${statusClass}`} aria-live="polite">
                     <i />
-                    {syncState === 'synced' ? '服务就绪' : syncState === 'syncing' ? '同步中' : '等待手机连接'}
+                    {statusLabel}
                   </span>
                 </div>
-                <p className="pebrel-desc">选择网络拓扑后，在手机端输入电脑地址与 8 位配对码，或粘贴完整配对信息完成端点写入。</p>
+                <p className="pebrel-desc">选择网络拓扑后，在手机端扫描右侧二维码，或输入电脑地址与 8 位配对码完成配对。</p>
 
                 <div className="pebrel-segmented" role="tablist" aria-label="连接通道">
                   <button
@@ -170,21 +226,31 @@ export function PhoneConnectionModal({
                   <li>
                     <span className="step-num">2</span>
                     <div>
-                      <strong>在手机端打开「设置 → 连接电脑」</strong>
-                      <p>输入电脑地址和右侧的 8 位配对码，或粘贴「复制完整配对信息」的内容。</p>
+                      <strong>在手机端打开「设置 → 连接电脑」扫码</strong>
+                      <p>也可以输入电脑地址和右侧的 8 位配对码，或粘贴「复制配对信息」的内容。</p>
                     </div>
                   </li>
                   <li>
                     <span className="step-num">3</span>
                     <div>
-                      <strong>核对校验码并完成首次 Push &amp; Pull</strong>
-                      <p>配对后两端共享同一草稿流与忠实转换产物，AI 缓存严格按契约隔离。</p>
+                      <strong>同步服务校验配对码，手机完成首次 Push &amp; Pull</strong>
+                      <p>配对码 10 分钟内有效、只能使用一次。配对只移交端点，不是账号认证；同步服务本身仍无鉴权，仅适合可信局域网。</p>
                     </div>
                   </li>
                 </ol>
 
+                {pairingError && <p className="pebrel-warning" role="alert">{pairingError}</p>}
+                {!pairingError && loopback && (
+                  <p className="pebrel-warning">
+                    当前 Sync API 是本机回环地址，手机无法直接访问：真机或模拟器需先执行 hdc rport，或把地址改成电脑的局域网 IP。
+                  </p>
+                )}
+                {effectiveState === 'claimed' && phoneClientId && (
+                  <p className="pebrel-desc">已与手机 <code>{phoneClientId}</code> 配对，手机将执行首次同步。</p>
+                )}
+
                 <div className="pebrel-endpoint-summary">
-                  <code>{syncUrl}</code>
+                  <code>{config.syncBaseUrl}</code>
                   <span>·</span>
                   <code>Cursor #{cursor}</code>
                   <span>·</span>
@@ -193,36 +259,37 @@ export function PhoneConnectionModal({
               </div>
 
               <div className="pebrel-pairing-qr-col">
-                <div className="pebrel-qr-box">
-                  <svg
-                    viewBox="0 0 21 21"
-                    className="pebrel-qr-svg"
-                    shapeRendering="crispEdges"
-                    role="img"
-                    aria-label="配对示意图，非标准二维码，无法扫描"
-                  >
-                    {qrMatrix.map((row, rIdx) =>
-                      row.map((cell, cIdx) =>
-                        cell ? <rect key={`${rIdx}-${cIdx}`} x={cIdx} y={rIdx} width={1} height={1} fill="#0F172A" /> : null,
-                      ),
-                    )}
-                  </svg>
+                <div className={effectiveState === 'pending' ? 'pebrel-qr-box' : 'pebrel-qr-box is-inactive'}>
+                  {session ? (
+                    <PairingQrCode value={invitation} label={`手机配对二维码，配对码 ${formatCode(session.code)}`} />
+                  ) : (
+                    <span className="pebrel-qr-placeholder">{loading ? '生成中…' : '暂无配对码'}</span>
+                  )}
                 </div>
 
-                <div className="pebrel-qr-timer">
-                  <span>示意图，暂不支持扫码</span>
-                  <button type="button" className="quiet-link" onClick={handleRefreshCode}>
+                <div className="pebrel-qr-timer" aria-live="polite">
+                  <span>
+                    {effectiveState === 'pending' ? `${timerText} 后失效 · 仅可使用一次`
+                      : effectiveState === 'claimed' ? '已被手机使用'
+                      : session ? '已失效，请刷新' : ''}
+                  </span>
+                  <button type="button" className="quiet-link" onClick={() => void startSession()} disabled={loading}>
                     刷新配对码
                   </button>
                 </div>
 
                 <div className="pebrel-short-code-box">
                   <span>8 位配对码</span>
-                  <strong>{shortCode}</strong>
+                  <strong>{session && effectiveState === 'pending' ? formatCode(session.code) : '---- ----'}</strong>
                 </div>
 
-                <button type="button" className="pebrel-copy-btn" onClick={handleCopyInvitation}>
-                  {copied ? '✓ 已复制完整配对信息' : '复制完整配对信息'}
+                <button
+                  type="button"
+                  className="pebrel-copy-btn"
+                  onClick={handleCopyInvitation}
+                  disabled={!session || effectiveState !== 'pending'}
+                >
+                  {copyState === 'copied' ? '✓ 已复制配对信息' : copyState === 'failed' ? '复制失败，请手动输入配对码' : '复制配对信息'}
                 </button>
               </div>
             </div>
@@ -281,50 +348,4 @@ export function PhoneConnectionModal({
       </div>
     </div>
   );
-}
-
-function buildQrMatrix(seedText: string, size: number): boolean[][] {
-  const matrix: boolean[][] = Array.from({ length: size }, () => Array<boolean>(size).fill(false));
-  const reserved: boolean[][] = Array.from({ length: size }, () => Array<boolean>(size).fill(false));
-
-  function drawFinder(rowOffset: number, colOffset: number) {
-    for (let r = 0; r < 7; r++) {
-      const mRow = matrix[rowOffset + r];
-      const rRow = reserved[rowOffset + r];
-      if (!mRow || !rRow) continue;
-      for (let c = 0; c < 7; c++) {
-        const border = r === 0 || r === 6 || c === 0 || c === 6;
-        const inner = r >= 2 && r <= 4 && c >= 2 && c <= 4;
-        mRow[colOffset + c] = border || inner;
-        rRow[colOffset + c] = true;
-      }
-    }
-  }
-
-  drawFinder(0, 0);
-  drawFinder(0, size - 7);
-  drawFinder(size - 7, 0);
-
-  let hash = 2166136261;
-  for (let i = 0; i < seedText.length; i++) {
-    hash ^= seedText.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-
-  for (let r = 0; r < size; r++) {
-    const mRow = matrix[r];
-    const rRow = reserved[r];
-    if (!mRow || !rRow) continue;
-    for (let c = 0; c < size; c++) {
-      if (rRow[c]) continue;
-      if (r === 6 || c === 6) {
-        mRow[c] = (r + c) % 2 === 0;
-        continue;
-      }
-      hash ^= (r * 31 + c * 17) & 0xff;
-      hash = Math.imul(hash, 16777619);
-      mRow[c] = (Math.abs(hash) % 11) < 5;
-    }
-  }
-  return matrix;
 }

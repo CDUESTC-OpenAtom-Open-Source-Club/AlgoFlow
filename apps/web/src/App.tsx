@@ -345,7 +345,6 @@ export function App() {
         onClose={() => setPhoneModalOpen(false)}
         clientId={clientId}
         cursor={workspace.cursor}
-        syncState={syncState}
         pendingCount={workspace.operations.length}
         config={phoneConfig}
         onSaveConfig={handleSavePhoneConfig}
