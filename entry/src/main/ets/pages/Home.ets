@@ -1,5 +1,5 @@
 import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
-import { Draft, SyncStatus } from '../domain/Models';
+import { Draft, draftRenderKey, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { ResourceIcon, ResourceIconName } from '../components/ResourceIcon';
 import { publishCardSnapshot } from '../platform/CardSnapshot';
@@ -311,7 +311,7 @@ struct Home {
             } else {
               ForEach(this.recentDrafts(), (draft: Draft) => {
                 this.DraftCard(draft)
-              }, (draft: Draft) => draft.id)
+              }, (draft: Draft) => draftRenderKey(draft))
             }
           }.width('100%')
 
