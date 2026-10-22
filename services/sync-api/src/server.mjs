@@ -1,8 +1,17 @@
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { SyncStore, validateOperation } from './sync-store.mjs';
+import { PairingStore } from './pairing-store.mjs';
 
-export function createSyncServer(store = new SyncStore()) {
+const PAIRING_HTTP_STATUS = {
+  INVALID_REQUEST: 400,
+  PAIRING_CODE_INVALID: 404,
+  PAIRING_CODE_USED: 409,
+  PAIRING_CODE_EXPIRED: 410,
+  PAIRING_RATE_LIMITED: 429
+};
+
+export function createSyncServer(store = new SyncStore(), pairing = new PairingStore()) {
   return createServer(async (request, response) => {
     response.setHeader('Content-Type', 'application/json; charset=utf-8');
     response.setHeader('Access-Control-Allow-Origin', '*');
@@ -23,6 +32,32 @@ export function createSyncServer(store = new SyncStore()) {
         console.log(`[AlgoFlow] Sync push handled. request_id=${requestId} status=${result.status} version=${result.version ?? 'none'}`);
       }
       response.statusCode = result.status === 'rejected' ? (result.error_code === 'INVALID_AI_ARTIFACT' ? 422 : 400) : result.status === 'conflict' ? 409 : 200;
+      response.end(JSON.stringify(result));
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/v1/pairing/sessions') {
+      const result = pairing.create(await readJson(request));
+      if (result.status === 'created') {
+        console.log(`[AlgoFlow] Pairing session created. pairing_id=${safeLogValue(result.session.pairing_id)} route=${result.session.route}`);
+      } else {
+        console.warn(`[AlgoFlow] Pairing session rejected. error=${result.error_code} reason=${safeLogValue(result.reason)}`);
+      }
+      response.statusCode = result.status === 'created' ? 201 : 400;
+      response.end(JSON.stringify(result));
+      return;
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/v1/pairing/sessions/')) {
+      const pairingId = decodeURIComponent(request.url.slice('/v1/pairing/sessions/'.length).split('?')[0]);
+      const result = pairing.get(pairingId);
+      response.statusCode = result.status === 'ok' ? 200 : 404;
+      response.end(JSON.stringify(result));
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/v1/pairing/claims') {
+      // The code is a credential for the endpoint handoff; never log it.
+      const result = pairing.claim(await readJson(request));
+      console.log(`[AlgoFlow] Pairing claim handled. status=${result.status} error=${result.error_code ?? 'none'} pairing_id=${safeLogValue(result.pairing_id ?? 'none')}`);
+      response.statusCode = result.status === 'claimed' ? 200 : PAIRING_HTTP_STATUS[result.error_code] ?? 400;
       response.end(JSON.stringify(result));
       return;
     }

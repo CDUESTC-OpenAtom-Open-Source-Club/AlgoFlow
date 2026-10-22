@@ -945,3 +945,74 @@ test('phone sync ignores an older remote change during pull', async () => {
     assert.equal(repository.cursor, '3');
   } finally { HttpSyncClient.prototype.pull = oldPull; }
 });
+
+const pairingVectors = JSON.parse(readFileSync('packages/contracts/vectors/pairing-invitations.json'));
+for (const vector of pairingVectors.invitations) {
+  test('phone pairing invitation vector: ' + vector.name, () => {
+    const { parsePairingInvitation } = load('domain/PairingContract');
+    const parsed = parsePairingInvitation(vector.text);
+    assert.equal(parsed.invitation !== undefined, vector.valid, parsed.error);
+    if (!vector.valid) assert.ok(parsed.error.length > 0);
+  });
+}
+test('manual pairing defaults the sync port and keeps explicit addresses', () => {
+  const { manualPairingInvitation } = load('domain/PairingContract');
+  assert.equal(manualPairingInvitation('192.168.1.5', '0482 9103').invitation.syncApi, 'http://192.168.1.5:8787');
+  assert.equal(manualPairingInvitation('', '04829103').invitation.syncApi, 'http://127.0.0.1:8787');
+  assert.equal(manualPairingInvitation('192.168.1.5:9000', '04829103').invitation.syncApi, 'http://192.168.1.5:9000');
+  assert.equal(manualPairingInvitation('https://relay.example.test/sync/', '04829103').invitation.syncApi, 'https://relay.example.test/sync');
+  assert.equal(manualPairingInvitation('192.168.1.5', '1234').invitation, undefined);
+  assert.equal(manualPairingInvitation('bad host', '04829103').invitation, undefined);
+});
+test('pairing claim rewrites a desktop loopback AI endpoint to the host the phone reached', () => {
+  const { PairingClaim, resolvePairingEndpoints } = load('domain/PairingContract');
+  const claim = Object.assign(new PairingClaim(), { syncApi: 'http://127.0.0.1:8787', aiGateway: 'http://127.0.0.1:8788' });
+  assert.deepEqual(resolvePairingEndpoints('http://192.168.1.5:8787', claim), ['http://192.168.1.5:8787', 'http://192.168.1.5:8788']);
+  assert.deepEqual(resolvePairingEndpoints('http://127.0.0.1:8787', claim), ['http://127.0.0.1:8787', 'http://127.0.0.1:8788']);
+  claim.aiGateway = 'https://ai.example.test';
+  assert.deepEqual(resolvePairingEndpoints('http://192.168.1.5:8787', claim), ['http://192.168.1.5:8787', 'https://ai.example.test']);
+});
+test('pairing client maps server rejections, transport failure and malformed claims', async () => {
+  let reply = { responseCode: 200, result: '' }, fail = false, destroyed = 0, sent;
+  const http = { RequestMethod: { POST: 'POST' }, HttpDataType: { STRING: 'STRING' }, createHttp() {
+    return { async request(url, options) { sent = { url, options }; if (fail) throw { code: 2300007 }; return reply; }, destroy() { destroyed++; } };
+  } };
+  const { HttpPairingClient } = loader(true, http)('platform/HttpPairingClient');
+  const { PairingInvitation } = loader(true, http)('domain/PairingContract');
+  const client = new HttpPairingClient();
+  const invitation = Object.assign(new PairingInvitation(), { syncApi: 'http://192.168.1.5:8787', code: '04829103' });
+  reply = { responseCode: 200, result: JSON.stringify({ status: 'claimed', pairing_id: 'p1', computer_name: 'PC', route: 'lan',
+    sync_api: 'http://127.0.0.1:8787', ai_gateway: 'http://127.0.0.1:8788' }) };
+  const claim = await client.claim(invitation, 'phone-1');
+  assert.equal(sent.url, 'http://192.168.1.5:8787/v1/pairing/claims');
+  assert.deepEqual(JSON.parse(sent.options.extraData), { code: '04829103', phone_client_id: 'phone-1' });
+  assert.equal(claim.pairingId, 'p1');
+  for (const [status, code] of [[410, 'PAIRING_CODE_EXPIRED'], [409, 'PAIRING_CODE_USED'], [404, 'PAIRING_CODE_INVALID'], [429, 'PAIRING_RATE_LIMITED']]) {
+    reply = { responseCode: status, result: JSON.stringify({ status: 'rejected', error_code: code }) };
+    await assert.rejects(client.claim(invitation, 'phone-1'), (error) => error.code === code);
+  }
+  reply = { responseCode: 200, result: JSON.stringify({ status: 'claimed', pairing_id: 'p1', sync_api: 'ftp://x', ai_gateway: 'http://y' }) };
+  await assert.rejects(client.claim(invitation, 'phone-1'), (error) => error.code === 'INVALID_RESPONSE');
+  fail = true;
+  await assert.rejects(client.claim(invitation, 'phone-1'), (error) => error.code === 'NETWORK');
+  assert.equal(destroyed, 7);
+});
+test('view model stores claimed endpoints only after a successful claim', async () => {
+  const { DraftWorkspaceViewModel } = load('application/DraftWorkspaceViewModel');
+  const { PairingClaim, PairingInvitation, PairingError } = load('domain/PairingContract');
+  const writes = [];
+  const repository = { setAIBaseUrl(value) { writes.push(['ai', value]); } };
+  const sync = { getClientId: () => 'phone-1', setBaseUrl(value) { writes.push(['sync', value]); } };
+  const vm = new DraftWorkspaceViewModel(repository, sync, { cancel() {} });
+  const invitation = Object.assign(new PairingInvitation(), { syncApi: 'http://192.168.1.5:8787', code: '04829103' });
+  vm.pairingClient = { async claim() { throw new PairingError('PAIRING_CODE_EXPIRED'); } };
+  await assert.rejects(vm.claimPairing(invitation));
+  assert.deepEqual(writes, []);
+  let claimedBy;
+  vm.pairingClient = { async claim(_, clientId) { claimedBy = clientId;
+    return Object.assign(new PairingClaim(), { pairingId: 'p1', syncApi: 'http://127.0.0.1:8787', aiGateway: 'http://127.0.0.1:8788' }); } };
+  const claim = await vm.claimPairing(invitation);
+  assert.equal(claimedBy, 'phone-1');
+  assert.deepEqual(writes, [['sync', 'http://192.168.1.5:8787'], ['ai', 'http://192.168.1.5:8788']]);
+  assert.equal(claim.aiGateway, 'http://192.168.1.5:8788');
+});

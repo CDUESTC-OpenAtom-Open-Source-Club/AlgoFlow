@@ -6,6 +6,9 @@ import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { ResourceIcon, ResourceIconName } from '../components/ResourceIcon';
 import { goBack, openEditor, openHome, PLACEHOLDER_DETAIL_KEY, PLACEHOLDER_DRAFT_ID_KEY, PLACEHOLDER_TITLE_KEY } from '../navigation/AppRoutes';
 import { DEBUG } from 'BuildProfile';
+import { manualPairingInvitation, PairingError, PairingErrorCode, PairingInvitation, PairingRoute, pairingErrorMessage,
+  parsePairingInvitation } from '../domain/PairingContract';
+import { canScanPairingCode, scanPairingCode } from '../platform/PairingScanner';
 
 enum HubTab {
   DRAFTS = 'drafts',
@@ -20,29 +23,6 @@ enum DraftFilter {
   SYNCED = 'synced',
   LOCAL = 'local',
   ISSUE = 'issue'
-}
-
-// Short-code pairing derives both endpoints from one host. A bare host uses
-// the default 8787/8788 ports; an explicit port is only accepted when it is the
-// sync port, so the AI port can be swapped in. Anything else needs manual entry.
-function pairEndpoints(input: string): string[] | undefined {
-  let value = input.trim().length > 0 ? input.trim() : '127.0.0.1';
-  if (value.endsWith('/')) value = value.substring(0, value.length - 1);
-  if (!value.startsWith('http://') && !value.startsWith('https://')) value = `http://${value}`;
-  const match = /^(https?:\/\/[^\/:\s]+)(:\d+)?$/.exec(value);
-  if (match === null) return undefined;
-  const port = match[2];
-  if (port !== undefined && port !== ':8787') return undefined;
-  return [`${match[1]}:8787`, `${match[1]}:8788`];
-}
-
-function stringField(record: Record<string, Object>, key: string): string {
-  const value = record[key];
-  return typeof value === 'string' ? (value as string).trim() : '';
-}
-
-function isHttpUrl(value: string): boolean {
-  return /^https?:\/\/\S+$/.test(value);
 }
 
 @Entry
@@ -82,7 +62,9 @@ struct Placeholder {
   @State syncing: boolean = false;
   @State feedbackMessage: string = '';
   @State advancedExpanded: boolean = false;
-  @State pairMode: string = 'code'; // 'code' | 'paste' | 'endpoints'
+  @State pairMode: string = 'scan'; // 'scan' | 'code' | 'paste' | 'endpoints'
+  @State pairing: boolean = false;
+  private scanAvailable: boolean = canScanPairingCode();
   @State pairRoute: string = 'lan'; // 'lan' | 'relay'
   @State pairShortCode: string = '';
   @State pairHostIp: string = '127.0.0.1';
@@ -245,58 +227,69 @@ struct Placeholder {
     this.saveEndpoints();
   }
 
-  // The short code is only compared by the user against the Web modal; no
-  // server validates it, so the message must not claim the pairing is verified.
-  private async applyShortCodePairing(): Promise<void> {
-    const cleanCode = this.pairShortCode.replace(/\s+/g, '');
-    if (!/^\d{8}$/.test(cleanCode)) {
-      this.feedbackMessage = '请输入电脑端「手机远程」窗口中的 8 位数字配对码';
+  // Scan, manual code and paste all end here: the desktop's sync-api validates
+  // the single-use code and returns the endpoints; only then are they written.
+  private async pairWith(invitation: PairingInvitation): Promise<void> {
+    if (!this.ready || this.pairing) return;
+    this.pairing = true;
+    this.feedbackMessage = '正在向电脑校验配对码...';
+    try {
+      const claim = await this.viewModel.claimPairing(invitation);
+      this.syncBaseUrl = claim.syncApi;
+      this.aiBaseUrl = claim.aiGateway;
+      this.pairedComputerName = claim.computerName.length > 0 ? claim.computerName : 'AlgoFlow-Desktop';
+      this.pairRoute = claim.route === PairingRoute.RELAY ? 'relay' : 'lan';
+      this.pairShortCode = '';
+      this.pairInvitationText = '';
+      this.saveEndpoints();
+    } catch (error) {
+      this.feedbackMessage = pairingErrorMessage(error instanceof PairingError ? error.code : PairingErrorCode.NETWORK);
       return;
+    } finally {
+      this.pairing = false;
     }
-    const endpoints = pairEndpoints(this.pairHostIp);
-    if (endpoints === undefined) {
-      this.feedbackMessage = '只能从主机地址或 :8787 地址推导两个端点，其他地址请使用「手动端点」';
-      return;
-    }
-    this.syncBaseUrl = endpoints[0];
-    this.aiBaseUrl = endpoints[1];
-    this.saveEndpoints();
-    this.feedbackMessage = `配对码 ${cleanCode.substring(0, 4)} ${cleanCode.substring(4, 8)} 仅供人工核对，未经服务端校验；端点已写入，正在同步...`;
+    this.feedbackMessage = `已与「${this.pairedComputerName}」配对，正在执行首次同步...`;
     await this.runSyncNow();
   }
 
-  private async applyPastedInvitation(): Promise<void> {
-    const raw = this.pairInvitationText.trim();
-    if (raw.length === 0) {
-      this.feedbackMessage = '请先粘贴电脑端「复制完整配对信息」的内容';
+  private async applyScanPairing(): Promise<void> {
+    if (this.pairing) return;
+    let text = '';
+    try {
+      text = await scanPairingCode(getContext(this));
+    } catch (error) {
+      this.feedbackMessage = '无法打开扫码，请改用「8 位配对码」或「粘贴配对信息」';
       return;
     }
-    try {
-      // Validate every field before touching state so a malformed invitation
-      // cannot leave half-applied endpoints behind.
-      const parsed = JSON.parse(raw) as Record<string, Object>;
-      if (parsed === null || typeof parsed !== 'object' || stringField(parsed, 'type') !== 'algoflow-pair-v1') {
-        this.feedbackMessage = '不是 AlgoFlow 配对信息（type 应为 algoflow-pair-v1）';
-        return;
-      }
-      const syncApi = stringField(parsed, 'sync_api');
-      const aiGateway = stringField(parsed, 'ai_gateway');
-      const computer = stringField(parsed, 'computer').length > 0 ? stringField(parsed, 'computer') : 'AlgoFlow-Desktop';
-      const route = stringField(parsed, 'route');
-      if (!isHttpUrl(syncApi) || !isHttpUrl(aiGateway)) {
-        this.feedbackMessage = '配对信息中的 sync_api 和 ai_gateway 必须是 http(s) 地址';
-        return;
-      }
-      this.syncBaseUrl = syncApi;
-      this.aiBaseUrl = aiGateway;
-      this.pairedComputerName = computer;
-      this.pairRoute = route === 'relay' ? 'relay' : 'lan';
-      this.saveEndpoints();
-      this.feedbackMessage = `已导入电脑「${computer}」的配对参数，正在执行首次同步...`;
-      await this.runSyncNow();
-    } catch (error) {
-      this.feedbackMessage = '配对码或连接参数无效，请检查粘贴的 JSON 内容';
+    if (text.length === 0) return;
+    const parsed = parsePairingInvitation(text);
+    if (parsed.invitation === undefined) {
+      this.feedbackMessage = parsed.error;
+      return;
     }
+    await this.pairWith(parsed.invitation);
+  }
+
+  private async applyShortCodePairing(): Promise<void> {
+    const parsed = manualPairingInvitation(this.pairHostIp, this.pairShortCode);
+    if (parsed.invitation === undefined) {
+      this.feedbackMessage = parsed.error;
+      return;
+    }
+    await this.pairWith(parsed.invitation);
+  }
+
+  private async applyPastedInvitation(): Promise<void> {
+    if (this.pairInvitationText.trim().length === 0) {
+      this.feedbackMessage = '请先粘贴电脑端「复制配对信息」的内容';
+      return;
+    }
+    const parsed = parsePairingInvitation(this.pairInvitationText);
+    if (parsed.invitation === undefined) {
+      this.feedbackMessage = parsed.error;
+      return;
+    }
+    await this.pairWith(parsed.invitation);
   }
 
   private statusLabel(status: SyncStatus): string {
@@ -799,6 +792,17 @@ struct Placeholder {
   }
 
   @Builder
+  PairModeTab(label: string, mode: string) {
+    Button(label)
+      .type(ButtonType.Normal).layoutWeight(1).height(32).fontSize(11)
+      .fontWeight(this.pairMode === mode ? FontWeight.Bold : FontWeight.Medium)
+      .fontColor(this.pairMode === mode ? '#55745F' : '#64748B')
+      .backgroundColor(this.pairMode === mode ? '#EEF6F3' : '#F8FAFC')
+      .border({ width: 1, color: this.pairMode === mode ? '#55745F' : '#E2E8F0' }).borderRadius(8)
+      .onClick(() => { this.pairMode = mode; })
+  }
+
+  @Builder
   SettingsView() {
     Column({ space: 12 }) {
       // Pebrel-style Computer Connection Hero Card
@@ -818,7 +822,7 @@ struct Placeholder {
             .backgroundColor('#1E3A27').borderRadius(99)
         }.width('100%')
 
-        Text('在电脑上打开 AlgoFlow Web 端，点击顶部「手机远程」，核对 8 位配对码或复制完整配对信息。')
+        Text('在电脑上打开 AlgoFlow Web 端，点击顶部「手机远程」，扫描二维码或输入 8 位配对码。')
           .fontSize(11).fontColor('#94A3B8').lineHeight(17)
 
         // Route segmented toggle: 局域网 vs 服务器中转
@@ -859,35 +863,35 @@ struct Placeholder {
         }.width('100%')
       }.width('100%').padding(16).backgroundColor('#0F172A').borderRadius(16).alignItems(HorizontalAlign.Start)
 
-      // Pairing Method Tabs: 8位配对码 | 粘贴配对信息 | 手动端点
+      // Pairing Method Tabs: 扫码 | 8位配对码 | 粘贴配对信息 | 手动端点
       Column({ space: 12 }) {
-        Row({ space: 6 }) {
-          Button('8 位配对码')
-            .type(ButtonType.Normal).layoutWeight(1).height(32).fontSize(11)
-            .fontWeight(this.pairMode === 'code' ? FontWeight.Bold : FontWeight.Medium)
-            .fontColor(this.pairMode === 'code' ? '#55745F' : '#64748B')
-            .backgroundColor(this.pairMode === 'code' ? '#EEF6F3' : '#F8FAFC')
-            .border({ width: 1, color: this.pairMode === 'code' ? '#55745F' : '#E2E8F0' }).borderRadius(8)
-            .onClick(() => { this.pairMode = 'code'; })
-          Button('粘贴配对信息')
-            .type(ButtonType.Normal).layoutWeight(1).height(32).fontSize(11)
-            .fontWeight(this.pairMode === 'paste' ? FontWeight.Bold : FontWeight.Medium)
-            .fontColor(this.pairMode === 'paste' ? '#55745F' : '#64748B')
-            .backgroundColor(this.pairMode === 'paste' ? '#EEF6F3' : '#F8FAFC')
-            .border({ width: 1, color: this.pairMode === 'paste' ? '#55745F' : '#E2E8F0' }).borderRadius(8)
-            .onClick(() => { this.pairMode = 'paste'; })
-          Button('手动端点')
-            .type(ButtonType.Normal).layoutWeight(1).height(32).fontSize(11)
-            .fontWeight(this.pairMode === 'endpoints' ? FontWeight.Bold : FontWeight.Medium)
-            .fontColor(this.pairMode === 'endpoints' ? '#55745F' : '#64748B')
-            .backgroundColor(this.pairMode === 'endpoints' ? '#EEF6F3' : '#F8FAFC')
-            .border({ width: 1, color: this.pairMode === 'endpoints' ? '#55745F' : '#E2E8F0' }).borderRadius(8)
-            .onClick(() => { this.pairMode = 'endpoints'; })
+        Row({ space: 5 }) {
+          this.PairModeTab('扫码', 'scan')
+          this.PairModeTab('配对码', 'code')
+          this.PairModeTab('粘贴', 'paste')
+          this.PairModeTab('手动端点', 'endpoints')
         }.width('100%')
 
-        if (this.pairMode === 'code') {
+        if (this.pairMode === 'scan') {
           Column({ space: 10 }) {
-            Text('输入电脑端「手机远程」窗口中的 8 位配对码（仅供两端人工核对，不做服务端校验）：')
+            Text('扫描电脑端「手机远程」窗口中的二维码。配对码 10 分钟内有效、只能使用一次，由电脑的同步服务校验。')
+              .fontSize(11).fontColor('#64748B').lineHeight(17)
+            if (this.scanAvailable) {
+              Button(this.pairing ? '正在校验配对码...' : '扫描电脑二维码')
+                .type(ButtonType.Normal).width('100%').height(42).fontSize(13).fontWeight(FontWeight.Bold)
+                .fontColor('#FFFFFF').backgroundColor('#0F172A').borderRadius(10)
+                .enabled(!this.pairing)
+                .onClick(() => { this.applyScanPairing(); })
+              Text('扫码使用 HarmonyOS 系统扫码能力（ScanKit），也可从相册选择二维码图片。')
+                .fontSize(10).fontColor('#94A3B8')
+            } else {
+              Text('当前设备不支持系统扫码，请使用「配对码」或「粘贴」。')
+                .fontSize(11).fontColor('#B5674D')
+            }
+          }.width('100%').alignItems(HorizontalAlign.Start)
+        } else if (this.pairMode === 'code') {
+          Column({ space: 10 }) {
+            Text('输入电脑地址和「手机远程」窗口中的 8 位配对码，由电脑的同步服务校验：')
               .fontSize(11).fontColor('#64748B')
 
             Column({ space: 4 }) {
@@ -901,35 +905,37 @@ struct Placeholder {
 
             Column({ space: 4 }) {
               Text(this.pairRoute === 'lan'
-                ? '电脑局域网 IP 或 USB 回环地址 (默认 127.0.0.1)'
-                : '中转服务器地址 (Relay Host / URL)').fontSize(10).fontColor('#64748B')
+                ? '电脑同步服务地址：局域网 IP、IP:端口，或 hdc rport 后的 127.0.0.1'
+                : '中转同步服务地址 (Relay URL，需自行提供)').fontSize(10).fontColor('#64748B')
               TextInput({ text: this.pairHostIp, placeholder: '127.0.0.1 或 192.168.x.x' })
                 .width('100%').height(38).fontSize(12).fontFamily('monospace').fontColor('#0F172A')
                 .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
                 .onChange((val: string) => { this.pairHostIp = val; })
             }.width('100%').alignItems(HorizontalAlign.Start)
 
-            Button(this.syncing ? '正在连接电脑...' : '配对这台电脑并同步')
+            Button(this.pairing ? '正在校验配对码...' : '配对这台电脑并同步')
               .type(ButtonType.Normal).width('100%').height(38).fontSize(12).fontWeight(FontWeight.Bold)
               .fontColor('#FFFFFF').backgroundColor('#0F172A').borderRadius(10)
+              .enabled(!this.pairing)
               .onClick(() => { this.applyShortCodePairing(); })
           }.width('100%').alignItems(HorizontalAlign.Start)
         } else if (this.pairMode === 'paste') {
           Column({ space: 10 }) {
-            Text('粘贴电脑端点击「复制完整配对信息」生成的 JSON 邀请串：')
+            Text('粘贴电脑端「复制配对信息」的内容（与二维码内容相同）：')
               .fontSize(11).fontColor('#64748B')
 
             TextInput({
               text: this.pairInvitationText,
-              placeholder: '{"type":"algoflow-pair-v1","computer":"AlgoFlow-Desktop","sync_api":"http://127.0.0.1:8787","ai_gateway":"http://127.0.0.1:8788"}'
+              placeholder: '{"type":"algoflow-pair-v1","sync_api":"http://192.168.x.x:8787","code":"00000000"}'
             })
               .width('100%').height(42).fontSize(11).fontFamily('monospace').fontColor('#0F172A')
               .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
               .onChange((val: string) => { this.pairInvitationText = val; })
 
-            Button('读取配置并连接电脑')
+            Button(this.pairing ? '正在校验配对码...' : '读取配置并连接电脑')
               .type(ButtonType.Normal).width('100%').height(38).fontSize(12).fontWeight(FontWeight.Bold)
               .fontColor('#FFFFFF').backgroundColor('#55745F').borderRadius(10)
+              .enabled(!this.pairing)
               .onClick(() => { this.applyPastedInvitation(); })
           }.width('100%').alignItems(HorizontalAlign.Start)
         } else {

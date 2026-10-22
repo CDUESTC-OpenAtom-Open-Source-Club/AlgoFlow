@@ -5,13 +5,20 @@ import { AIProvider } from '../domain/AIProvider';
 import { SyncRepository } from '../domain/SyncRepository';
 import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
 import { HttpAIProvider } from '../platform/HttpAIProvider';
+import { HttpPairingClient } from '../platform/HttpPairingClient';
+import { PairingClaim, PairingInvitation, resolvePairingEndpoints } from '../domain/PairingContract';
 import { IDEAISession } from './IDEAISession';
 import { AIResultRepository, IDEContext } from '../domain/IDEAIModels';
 
 const RULE_VERSION = '1.0.0';
 
+export interface PairingClient {
+  claim(invitation: PairingInvitation, phoneClientId: string): Promise<PairingClaim>;
+}
+
 export class DraftWorkspaceViewModel {
   aiSession: IDEAISession | null = null;
+  pairingClient: PairingClient = new HttpPairingClient();
   private aiFile: string = 'main.cpp';
   private aiDraft: string = '';
   private syncing: boolean = false;
@@ -82,6 +89,18 @@ export class DraftWorkspaceViewModel {
 
   getClientId(): string {
     return this.syncRepository?.getClientId() ?? '';
+  }
+
+  // Claims the desktop's pairing code and stores the handed-over endpoints. It
+  // does not synchronize; the caller decides when to run the first push/pull.
+  async claimPairing(invitation: PairingInvitation): Promise<PairingClaim> {
+    const claim = await this.pairingClient.claim(invitation, this.getClientId());
+    const endpoints = resolvePairingEndpoints(invitation.syncApi, claim);
+    this.setSyncBaseUrl(endpoints[0]);
+    this.setAIBaseUrl(endpoints[1], this.allowTestData);
+    claim.syncApi = endpoints[0];
+    claim.aiGateway = endpoints[1];
+    return claim;
   }
 
   getSyncCursor(): string {

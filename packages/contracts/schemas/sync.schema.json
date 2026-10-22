@@ -34,6 +34,80 @@
         "server_entity": { "type": ["object", "null"] },
         "error_code": { "type": "string", "enum": ["INVALID_REQUEST", "INVALID_AI_ARTIFACT", "INVALID_REVIEW_RESULT", "VERSION_CONFLICT", "OUT_OF_ORDER"] }
       }
+    },
+    "pairingCode": {
+      "description": "Short-lived, single-use 8-digit code issued by sync-api. It authorizes an endpoint handoff only, not account access.",
+      "type": "string",
+      "pattern": "^[0-9]{8}$"
+    },
+    "pairingRoute": { "type": "string", "enum": ["lan", "relay"] },
+    "pairingState": { "type": "string", "enum": ["pending", "claimed", "expired", "revoked"] },
+    "pairingInvitation": {
+      "description": "Payload encoded in the Web QR code and in the copied pairing text. The AI Gateway endpoint is returned by the claim, not carried here.",
+      "type": "object",
+      "required": ["type", "sync_api", "code"],
+      "properties": {
+        "type": { "const": "algoflow-pair-v1" },
+        "sync_api": { "type": "string", "format": "uri", "pattern": "^https?://", "maxLength": 256 },
+        "code": { "$ref": "#/$defs/pairingCode" }
+      },
+      "additionalProperties": false
+    },
+    "pairingSessionRequest": {
+      "type": "object",
+      "required": ["desktop_client_id", "computer_name", "route", "sync_api", "ai_gateway"],
+      "properties": {
+        "desktop_client_id": { "type": "string", "minLength": 1 },
+        "computer_name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "route": { "$ref": "#/$defs/pairingRoute" },
+        "sync_api": { "type": "string", "format": "uri", "pattern": "^https?://", "maxLength": 256 },
+        "ai_gateway": { "type": "string", "format": "uri", "pattern": "^https?://", "maxLength": 256 }
+      },
+      "additionalProperties": false
+    },
+    "pairingSession": {
+      "description": "Desktop-visible session status. `code` is present only in the creation response.",
+      "type": "object",
+      "required": ["pairing_id", "state", "computer_name", "route", "sync_api", "ai_gateway", "created_at", "expires_at", "claimed_at", "phone_client_id"],
+      "properties": {
+        "pairing_id": { "type": "string", "minLength": 1 },
+        "code": { "$ref": "#/$defs/pairingCode" },
+        "state": { "$ref": "#/$defs/pairingState" },
+        "computer_name": { "type": "string" },
+        "route": { "$ref": "#/$defs/pairingRoute" },
+        "sync_api": { "type": "string" },
+        "ai_gateway": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "expires_at": { "type": "string", "format": "date-time" },
+        "claimed_at": { "type": ["string", "null"], "format": "date-time" },
+        "phone_client_id": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "pairingClaimRequest": {
+      "type": "object",
+      "required": ["code", "phone_client_id"],
+      "properties": {
+        "code": { "$ref": "#/$defs/pairingCode" },
+        "phone_client_id": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "pairingClaimResult": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "type": "string", "enum": ["claimed", "rejected"] },
+        "pairing_id": { "type": "string" },
+        "computer_name": { "type": "string" },
+        "route": { "$ref": "#/$defs/pairingRoute" },
+        "sync_api": { "type": "string" },
+        "ai_gateway": { "type": "string" },
+        "error_code": {
+          "type": "string",
+          "enum": ["INVALID_REQUEST", "PAIRING_CODE_INVALID", "PAIRING_CODE_EXPIRED", "PAIRING_CODE_USED", "PAIRING_RATE_LIMITED"]
+        }
+      }
     }
   }
 }

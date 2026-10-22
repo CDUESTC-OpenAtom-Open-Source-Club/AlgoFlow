@@ -23,6 +23,29 @@ code that is compiled without disclosure requires a separate server-side artifac
 store and isolated execution service. Compilation and execution are intentionally
 outside the AI gateway.
 
+## Phone pairing
+
+`sync.schema.json#/$defs/pairing*` describes how the Web workspace hands its
+sync-api and AI Gateway endpoints to a phone.
+
+- `POST /v1/pairing/sessions` (`pairingSessionRequest`) returns a `pairingSession`
+  with an 8-digit `code`. The code is returned only in this response; status
+  polling (`GET /v1/pairing/sessions/{pairing_id}`) never echoes it. Creating a
+  new session revokes the same desktop client's pending one.
+- The QR code and the copied text carry only `pairingInvitation`
+  (`type`, `sync_api`, `code`); unknown fields are rejected so a credential
+  cannot be smuggled in. The AI Gateway endpoint comes back from the claim.
+- `POST /v1/pairing/claims` (`pairingClaimRequest`) consumes the code once.
+  Errors: `400 INVALID_REQUEST`, `404 PAIRING_CODE_INVALID`,
+  `409 PAIRING_CODE_USED`, `410 PAIRING_CODE_EXPIRED`, `429 PAIRING_RATE_LIMITED`.
+  Codes expire after 10 minutes.
+- Desktop-loopback endpoints in a claim are rewritten by the phone to the host
+  it actually reached.
+
+Pairing is an endpoint handoff, not account authentication. The sync API is
+still unauthenticated and sessions live in process memory. `vectors/pairing-invitations.json`
+is shared by the sync-api, Web, and phone tests.
+
 ## IDE review and completion
 
 Two optional, editor-decoupled capabilities extend the transform contract for the

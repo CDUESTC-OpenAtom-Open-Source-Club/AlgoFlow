@@ -119,6 +119,28 @@ export function validateAIArtifactEntity(entity, sourceSegmentIds = undefined) {
   return errors;
 }
 
+// Mirrors sync.schema.json#/$defs/pairingInvitation. The phone parser in
+// entry/src/main/ets/domain/PairingContract.ets must agree on the same vectors.
+export function validatePairingInvitation(invitation) {
+  const errors = [];
+  if (!isObject(invitation)) return ['invitation must be an object'];
+  for (const key of Object.keys(invitation)) {
+    if (!['type', 'sync_api', 'code'].includes(key)) errors.push(`unknown field ${key}`);
+  }
+  if (invitation.type !== 'algoflow-pair-v1') errors.push('type must be algoflow-pair-v1');
+  if (!isHttpEndpoint(invitation.sync_api)) errors.push('sync_api must be an http(s) URL');
+  if (typeof invitation.code !== 'string' || !/^[0-9]{8}$/.test(invitation.code)) errors.push('code must be 8 digits');
+  return errors;
+}
+
+function isHttpEndpoint(value) {
+  if (typeof value !== 'string' || value.length > 256 || !/^https?:\/\//.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.hostname.length > 0 && !url.username && !url.password;
+  } catch { return false; }
+}
+
 function isObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 
 function isSourceRange(value) {
