@@ -243,11 +243,11 @@ struct Index {
   }
 
   private updateDocument(value: string): void {
-    this.editEpoch++;
     this.setCurrentValue(value);
+    if (!this.viewModel.update(this.selectedId, this.title, this.idea, this.code, this.shortCode, this.rewrite)) return;
+    this.editEpoch++;
     this.saved = false;
     this.syncStatus = SyncStatus.LOCAL_ONLY;
-    this.viewModel.update(this.selectedId, this.title, this.idea, this.code, this.shortCode, this.rewrite);
     const draft = this.viewModel.getDraft(this.selectedId);
     if (draft !== undefined) this.segments = draft.ideaSegments;
     this.refreshEditorFeatures();
@@ -506,7 +506,10 @@ struct Index {
   }
 
   private saveDraft(): void {
-    this.viewModel.update(this.selectedId, this.title, this.idea, this.code, this.shortCode, this.rewrite);
+    // No change (for example onChange fired by assigning pulled content): keep
+    // the current sync status and queue nothing.
+    if (!this.viewModel.update(this.selectedId, this.title, this.idea, this.code, this.shortCode, this.rewrite)) return;
+    this.editEpoch++;
     const draft = this.viewModel.getDraft(this.selectedId);
     if (draft !== undefined) this.segments = draft.ideaSegments;
     this.drafts = this.viewModel.listDrafts();
@@ -901,7 +904,7 @@ struct Index {
       TextInput({ text: this.title, placeholder: '草稿标题' }).width('100%').height(36).fontSize(11)
         .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
         .border({ width: 1, color: '#3A3A3D' }).borderRadius(4)
-        .onChange((value: string) => { this.title = value; this.editEpoch++; this.saveDraft(); })
+        .onChange((value: string) => { this.title = value; this.saveDraft(); })
     }.width('100%').backgroundColor('#161618')
   }
 
@@ -937,7 +940,7 @@ struct Index {
       Text('该内容不会覆盖 main.cpp。').fontSize(10).fontColor('#8E8E93').margin({ top: 3, bottom: 8 })
       TextArea({ text: this.shortCode, placeholder: '// 局部 C++ 片段' }).width('100%').height(145)
         .fontSize(12).lineHeight(20).fontFamily('monospace').fontColor('#E8ECE9').backgroundColor('#0A0A0C')
-        .border({ width: 1, color: '#3A3A3D' }).borderRadius(4).onChange((value: string) => { this.shortCode = value; this.editEpoch++; this.saveDraft(); })
+        .border({ width: 1, color: '#3A3A3D' }).borderRadius(4).onChange((value: string) => { this.shortCode = value; this.saveDraft(); })
     }.width('100%').backgroundColor('#161618')
   }
 
