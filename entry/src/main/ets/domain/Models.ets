@@ -233,3 +233,9 @@ export class Draft {
     return this.aiArtifacts.find((artifact: AIArtifact) => artifact.mode === mode);
   }
 }
+
+// ForEach key for draft lists. ArkUI reuses an item whose key is unchanged, so
+// a key of only the id keeps showing the old title/status after a reload.
+export function draftRenderKey(draft: Draft): string {
+  return `${draft.id}|${draft.version}|${draft.updatedAt}|${draft.syncStatus}`;
+}

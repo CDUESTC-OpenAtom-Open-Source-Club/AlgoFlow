@@ -1,5 +1,5 @@
 import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
-import { AIArtifact, AIMode, AIResultStatus, Draft, IdeaSegment, PseudocodeStep, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIMode, AIResultStatus, Draft, draftRenderKey, IdeaSegment, PseudocodeStep, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
 import { saveCardSnapshot } from '../platform/CardSnapshot';
@@ -917,7 +917,7 @@ struct Index {
               .fontColor(draft.id === this.selectedId ? '#07110A' : '#B8B8BD')
               .backgroundColor(draft.id === this.selectedId ? '#30D158' : '#242426')
               .borderRadius(4).onClick(() => this.selectDraft(draft.id))
-          }, (draft: Draft) => draft.id)
+          }, (draft: Draft) => draftRenderKey(draft))
         }
       }.width('100%').height(130).scrollBar(BarState.Auto)
       TextInput({ text: this.title, placeholder: '草稿标题' }).width('100%').height(36).fontSize(11)
@@ -1247,7 +1247,7 @@ struct Index {
                     .backgroundColor(draft.id === this.selectedId ? '#242426' : '#1C1C1E')
                     .border({ width: 1, color: draft.id === this.selectedId ? '#5A5A5F' : '#2A2A2D' })
                     .borderRadius(6).onClick(() => { this.selectDraft(draft.id); this.closeDrawer(); })
-                }, (draft: Draft) => draft.id)
+                }, (draft: Draft) => draftRenderKey(draft))
               }.width('100%')
             }
           }.width('100%')

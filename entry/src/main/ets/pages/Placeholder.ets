@@ -1,5 +1,5 @@
 import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
-import { AIMode, Draft, IdeaSegment, SyncStatus } from '../domain/Models';
+import { AIMode, Draft, draftRenderKey, IdeaSegment, SyncStatus } from '../domain/Models';
 import { IDECapability, IDERecord, IDEState, ReviewKind } from '../domain/IDEAIModels';
 import { SyncOperation } from '../domain/SyncModels';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
@@ -422,7 +422,7 @@ struct Placeholder {
                 .border({ width: 1, color: draft.id === this.selectedDraftId ? '#55745F' : '#E2E8F0' })
                 .borderRadius(8)
                 .onClick(() => { this.selectDraft(draft.id); })
-            }, (draft: Draft) => draft.id)
+            }, (draft: Draft) => draftRenderKey(draft))
           }
         }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
       }.width('100%').padding(12).backgroundColor('#FFFFFF')
@@ -563,7 +563,7 @@ struct Placeholder {
             }
           }.width('100%').padding(14).backgroundColor('#FFFFFF')
             .border({ width: 1, color: '#E5E9F0' }).borderRadius(14)
-        }, (draft: Draft) => draft.id)
+        }, (draft: Draft) => draftRenderKey(draft))
       }
     }.width('100%')
   }
