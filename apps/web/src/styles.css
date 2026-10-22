@@ -97,14 +97,9 @@ input:focus-visible {
 }
 
 .brand-mark {
-  display: grid;
+  display: block;
   width: 29px;
   height: 29px;
-  place-items: center;
-  border-radius: 8px;
-  background: var(--md-primary);
-  color: white;
-  font: 700 10px/1 Consolas, monospace;
 }
 .top-actions {
   display: flex;

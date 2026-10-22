@@ -191,10 +191,7 @@ struct Home {
 
   @Builder
   BrandIcon() {
-    Row() {
-      ResourceIcon({ name: ResourceIconName.FILES, iconSize: 19 })
-    }.width(36).height(36).justifyContent(FlexAlign.Center)
-      .backgroundColor('#0F172A').borderRadius(12);
+    Image($r('app.media.af_logo')).width(36).height(36).objectFit(ImageFit.Contain);
   }
 
   @Builder

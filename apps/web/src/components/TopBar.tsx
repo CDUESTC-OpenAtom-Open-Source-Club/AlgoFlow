@@ -1,4 +1,5 @@
 import { Icon } from './Icon';
+import brandMark from '../assets/brand/algoflow-icon.svg';
 
 interface TopBarProps {
   saved: boolean;
@@ -12,7 +13,7 @@ export function TopBar({ saved, syncState = 'local_only', onSync, onOpenPhoneMod
   return (
     <header className="topbar">
       <div className="brand-lockup">
-        <span className="brand-mark">AF</span>
+        <img className="brand-mark" src={brandMark} alt="" />
         <span>
           <strong>AlgoFlow</strong>
           <small>思路工作台</small>

@@ -1195,10 +1195,7 @@ struct Index {
     Column() {
       Row() {
         Row({ space: 9 }) {
-          Stack({ alignContent: Alignment.Center }) {
-            Row().width(32).height(32).backgroundColor('#1E3A27').borderRadius(8)
-            this.Icon(WorkspaceIcon.CODE, 17, '#9BE7A9')
-          }
+          Image($r('app.media.af_logo')).width(32).height(32).objectFit(ImageFit.Contain)
           Column() {
             Text('AlgoFlow IDE').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
             Text('OpenHarmony 移动端').fontSize(9).fontColor('#8E8E93').margin({ top: 2 })

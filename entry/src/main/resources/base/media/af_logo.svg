@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title">
+  <title id="title">AlgoFlow</title>
+  <defs>
+    <!-- 底板：沿用 Web 代码区色 md-code (#252735) -->
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2c2f40"/>
+      <stop offset="1" stop-color="#1b1d28"/>
+    </linearGradient>
+    <!-- 边：md-primary 鼠尾草绿的提亮版本，自上而下渐深 -->
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b3e3bd"/>
+      <stop offset="1" stop-color="#6c9c78"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 圆角底板 -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#tile)"/>
+  <rect x="8.5" y="8.5" width="239" height="239" rx="55.5" fill="none" stroke="#ffffff" stroke-opacity="0.06"/>
+
+  <!-- “A” 形算法图：顶点是思路，两条边流向两端 -->
+  <path d="M74 190 L128 66 L182 190" fill="none" stroke="url(#edge)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- 横梁：点状数据流，表示两端同步 -->
+  <g fill="#e8b86b">
+    <circle cx="112" cy="150" r="5.5"/>
+    <circle cx="128" cy="150" r="5.5"/>
+    <circle cx="144" cy="150" r="5.5"/>
+  </g>
+
+  <!-- 两端节点：手机 / 电脑 -->
+  <circle cx="74" cy="190" r="17" fill="#1d1f2b" stroke="#6c9c78" stroke-width="8"/>
+  <circle cx="182" cy="190" r="17" fill="#1d1f2b" stroke="#6c9c78" stroke-width="8"/>
+
+  <!-- 顶点节点：用户思路 -->
+  <circle cx="128" cy="66" r="23" fill="#272a39"/>
+  <circle cx="128" cy="66" r="14" fill="#e8b86b"/>
+</svg>
