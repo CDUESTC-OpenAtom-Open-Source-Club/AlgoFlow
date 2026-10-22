@@ -64,8 +64,8 @@ export function createSyncServer(store = new SyncStore(), pairing = new PairingS
     if (request.method === 'GET' && request.url?.startsWith('/v1/sync/changes')) {
       const url = new URL(request.url, 'http://localhost');
       const after = url.searchParams.get('after') ?? '0';
-      const result = store.pull(after);
-      console.log(`[AlgoFlow] Sync pull handled. cursor=${safeLogValue(after)} changes=${result.changes.length} next_cursor=${safeLogValue(result.next_cursor)}`);
+      const result = store.pull(after, url.searchParams.get('epoch') ?? undefined);
+      console.log(`[AlgoFlow] Sync pull handled. cursor=${safeLogValue(after)} changes=${result.changes.length} next_cursor=${safeLogValue(result.next_cursor)} reset=${result.reset}`);
       response.end(JSON.stringify(result));
       return;
     }

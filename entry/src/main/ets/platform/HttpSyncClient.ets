@@ -15,7 +15,9 @@ export class HttpSyncClient {
     this.authToken = authToken;
   }
 
-  async push(operation: SyncOperation): Promise<PushResult> {
+  // baseEpoch is the server_epoch committed with the local cursor ('' before
+  // the first pull); it tells the server which lineage base_version belongs to.
+  async push(operation: SyncOperation, baseEpoch: string = ''): Promise<PushResult> {
     const validationError = validateOperation(operation);
     if (validationError.length > 0) {
       hilog.error(DOMAIN, TAG,
@@ -26,7 +28,7 @@ export class HttpSyncClient {
     hilog.info(DOMAIN, TAG,
       '[AlgoFlow] Sync push started. operation_id=%{public}s entity_type=%{public}s base_version=%{public}s',
       safeLogValue(operation.operation_id), operation.entity_type, operation.base_version.toString());
-    const body = JSON.stringify(new SyncOperationRequestBody(operation));
+    const body = JSON.stringify(new SyncOperationRequestBody(operation, baseEpoch));
     const result = await this.request('/v1/sync/operations', http.RequestMethod.POST, body,
       safeLogValue(operation.operation_id));
     try {
@@ -43,9 +45,10 @@ export class HttpSyncClient {
     }
   }
 
-  async pull(cursor: string): Promise<PullResult> {
+  async pull(cursor: string, epoch: string = ''): Promise<PullResult> {
     hilog.info(DOMAIN, TAG, '[AlgoFlow] Sync pull started. cursor=%{public}s', safeLogValue(cursor));
-    const result = await this.request(`/v1/sync/changes?after=${encodeURIComponent(cursor)}`,
+    const epochQuery = epoch.length > 0 ? `&epoch=${encodeURIComponent(epoch)}` : '';
+    const result = await this.request(`/v1/sync/changes?after=${encodeURIComponent(cursor)}${epochQuery}`,
       http.RequestMethod.GET, '', `cursor-${safeLogValue(cursor)}`);
     try {
       const parsed = JSON.parse(result.body) as PullResult;
@@ -108,8 +111,9 @@ class SyncOperationRequestBody {
   client_id: string;
   occurred_at: string;
   payload: Object;
+  base_epoch?: string;
 
-  constructor(operation: SyncOperation) {
+  constructor(operation: SyncOperation, baseEpoch: string) {
     this.operation_id = operation.operation_id;
     this.entity_type = operation.entity_type;
     this.entity_id = operation.entity_id;
@@ -118,6 +122,7 @@ class SyncOperationRequestBody {
     this.client_id = operation.client_id;
     this.occurred_at = operation.occurred_at;
     this.payload = operation.payload;
+    if (baseEpoch.length > 0) this.base_epoch = baseEpoch;
   }
 }
 

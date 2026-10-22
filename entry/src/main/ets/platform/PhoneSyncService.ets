@@ -1,6 +1,7 @@
 import { SyncRepository } from '../domain/SyncRepository';
 import { Draft, SyncStatus } from '../domain/Models';
-import { AIArtifactPayload, ConflictRecord, DraftPayload, PullChange, ReviewResultPayload, SyncEntityType, SyncResultStatus, payloadToDraft } from '../domain/SyncModels';
+import { AIArtifactPayload, ConflictRecord, DraftPayload, PullChange, ReviewResultPayload, SyncEntityType, SyncErrorCode,
+  SyncResultStatus, payloadToDraft } from '../domain/SyncModels';
 import { IDERecord } from '../domain/IDEAIModels';
 import { HttpSyncClient } from './HttpSyncClient';
 import { util } from '@kit.ArkTS';
@@ -39,12 +40,30 @@ export class PhoneSyncService {
       pending.length.toString(), safeLogValue(this.repository.getCursor()));
     for (const operation of pending) if (entityType(operation.entity_type) === SyncEntityType.DRAFT) this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.SYNCING);
     const client = new HttpSyncClient(this.repository.getBaseUrl());
+    const epoch = this.repository.getServerEpoch?.() ?? '';
     let hadConflict = false;
-    for (const operation of pending) {
+    for (const queued of pending) {
+      let operation = queued;
       try {
         this.repository.markInFlight(operation.operation_id);
-        const result = await client.push(operation);
-        const newer = this.repository.listPendingOperations().find(item => item.entity_id === operation.entity_id && item.operation_id !== operation.operation_id);
+        let result = await client.push(operation, epoch);
+        // The server restarted and no longer has this draft: its base_version
+        // belongs to a lost lineage, so re-create it (version 0) and retry once.
+        if (result.status === SyncResultStatus.CONFLICT && result.error_code === SyncErrorCode.EPOCH_MISMATCH &&
+          (result.server_entity === undefined || result.server_entity === null) &&
+          entityType(operation.entity_type) === SyncEntityType.DRAFT && this.repository.rebaseDraftForNewServer !== undefined) {
+          this.repository.rebaseDraftForNewServer(operation.entity_id);
+          const rebased = this.repository.listPendingOperations().find(item => item.entity_id === queued.entity_id);
+          if (rebased !== undefined) {
+            hilog.warn(DOMAIN, TAG, '[AlgoFlow] Sync epoch changed; re-creating draft. entity_id=%{public}s',
+              safeLogValue(rebased.entity_id));
+            operation = rebased;
+            this.repository.markInFlight(operation.operation_id);
+            result = await client.push(operation, epoch);
+          }
+        }
+        const current = operation;
+        const newer = this.repository.listPendingOperations().find(item => item.entity_id === current.entity_id && item.operation_id !== current.operation_id);
         if (newer !== undefined) {
           this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.LOCAL_ONLY);
           return new SyncRunResult(SyncRunStatus.LOCAL_ONLY, '同步期间产生新编辑，已保留本地内容；再次同步时进行版本检查');
@@ -97,10 +116,23 @@ export class PhoneSyncService {
     }
 
     try {
-      const pull = await client.pull(this.repository.getCursor());
-      await this.applyPulledChanges(pull.changes);
+      // A cursor without a stored epoch (installed before the epoch contract)
+      // cannot be trusted across a possible restart: replay from 0 once.
+      const cursor = epoch.length === 0 && this.repository.getCursor() !== '0' ? '0' : this.repository.getCursor();
+      const pull = await client.pull(cursor, epoch);
+      // Only a server that reports an epoch can confirm a reset; an older
+      // server without one keeps the previous merge behaviour.
+      const hasEpoch = pull.server_epoch !== undefined && pull.server_epoch.length > 0;
+      const reset = hasEpoch && (pull.reset === true || (epoch.length === 0 && cursor !== this.repository.getCursor()));
+      if (reset) {
+        hilog.warn(DOMAIN, TAG, '[AlgoFlow] Sync server epoch changed; rebasing local state. changes=%{public}s',
+          pull.changes.length.toString());
+        await this.applyResetChanges(pull.changes);
+      } else {
+        await this.applyPulledChanges(pull.changes);
+      }
       await this.repository.flush();
-      await this.repository.commitCursor(pull.next_cursor);
+      await this.repository.commitCursor(pull.next_cursor, pull.server_epoch);
     } catch (error) {
       this.markPendingFailed();
       const message = error instanceof Error ? error.message : '拉取变更失败';
@@ -115,6 +147,41 @@ export class PhoneSyncService {
       this.repository.listPendingOperations().length.toString(), safeLogValue(this.repository.getCursor()));
     return new SyncRunResult(this.repository.listPendingOperations().length === 0 ? SyncRunStatus.SYNCED : SyncRunStatus.LOCAL_ONLY,
       '同步完成');
+  }
+
+  // Versions from the old lineage are not comparable with the server's, so the
+  // latest server copy of each entity wins unless a local edit is still queued.
+  // Live drafts the server no longer has are re-created so their content is not
+  // lost. Local-only AI results stay readable; they cannot be re-uploaded
+  // because their source draft versions do not exist on the new server.
+  private async applyResetChanges(changes: PullChange[]): Promise<void> {
+    const latest = new Map<string, PullChange>();
+    for (const change of changes) latest.set(`${entityType(change.entity_type)}:${change.entity.id}`, change);
+    let applied = 0;
+    for (const change of latest.values()) {
+      const type = entityType(change.entity_type);
+      if (this.repository.hasPendingOperation(change.entity.id)) continue;
+      if (type === SyncEntityType.DRAFT) {
+        this.repository.applyServerDraft(payloadToDraft(change.entity as DraftPayload));
+      } else if (type === SyncEntityType.AI_ARTIFACT) {
+        await this.repository.applyServerAIArtifact(change.entity as AIArtifactPayload);
+      } else if (type === SyncEntityType.REVIEW_RESULT) {
+        await this.repository.applyServerReview(change.entity as ReviewResultPayload);
+      } else {
+        continue;
+      }
+      applied += 1;
+    }
+    let recreated = 0;
+    for (const id of this.repository.listDraftIds?.() ?? []) {
+      if (latest.has(`${SyncEntityType.DRAFT}:${id}`) || this.repository.hasPendingOperation(id)) continue;
+      const local = this.repository.getDraft(id);
+      if (local === undefined || local.deleted || local.version === 0) continue;
+      this.repository.rebaseDraftForNewServer?.(id);
+      recreated += 1;
+    }
+    hilog.info(DOMAIN, TAG, '[AlgoFlow] Sync reset merge completed. applied=%{public}s recreated=%{public}s',
+      applied.toString(), recreated.toString());
   }
 
   private async applyPulledChanges(changes: PullChange[]): Promise<void> {

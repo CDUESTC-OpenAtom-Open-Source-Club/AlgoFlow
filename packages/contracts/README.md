@@ -61,10 +61,32 @@ is shared by the sync-api, Web, and phone tests.
   the current version. `server_entity` is the current entity, or `null` when
   the entity does not exist on the server.
 
-The in-memory sync-api forgets every version on restart. A queued operation
-whose `base_version` happens to equal a version re-created after the restart is
-applied normally; preventing that needs a persistent store or a server epoch in
-the contract.
+### Server epoch
+
+Versions and cursors only mean something inside one store lifetime, and the
+in-memory sync-api starts empty after every restart. Each store therefore has a
+random `server_epoch`, returned on every push result and pull result.
+
+- Clients store `server_epoch` together with their cursor, committed only after a
+  whole pull batch is applied. Before the first pull there is no epoch.
+- Pushes carry it as `base_epoch`. A `base_version > 0` from another epoch is a
+  `conflict` with `error_code: EPOCH_MISMATCH`, even when the numbers happen to
+  match. `base_version: 0` (a creation) is not checked.
+- Pulls send it as `?epoch=`. A different epoch returns every change from 0 with
+  `reset: true`. Requests without an epoch keep the plain cursor behaviour.
+- On a reset the latest server copy of each entity wins unless a local operation
+  is still queued, because old-lineage versions are not comparable. Live drafts
+  the server no longer has are re-created (`version` 0, re-queued) and their
+  old snapshots dropped. On `EPOCH_MISMATCH` with `server_entity: null`, a draft
+  is re-created and pushed again once; with a server entity the usual conflict
+  copy is kept.
+- A client upgraded from before this contract has a cursor but no epoch; it
+  replays from 0 once and treats that as a reset when the server reports an
+  epoch.
+
+Not covered: local-only AI artifacts and review results from the old lineage
+stay readable but are not re-uploaded, because their source draft versions no
+longer exist on the server.
 
 ## IDE review and completion
 

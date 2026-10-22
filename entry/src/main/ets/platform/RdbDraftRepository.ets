@@ -229,6 +229,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
   private operations: SyncOperation[] = [];
   private clientId: string = '';
   private cursor: string = '0';
+  private serverEpoch: string = '';
   private baseUrl: string = DEFAULT_BASE_URL;
   private aiBaseUrl: string = DEFAULT_AI_BASE_URL;
   private writeChain: Promise<void> = Promise.resolve();
@@ -315,13 +316,36 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
     this.enqueue(async () => this.persistState('cursor', cursor));
   }
 
-  async commitCursor(cursor: string): Promise<void> {
+  async commitCursor(cursor: string, serverEpoch?: string): Promise<void> {
     await this.flush();
     this.enqueue(async () => {
       await this.persistState('cursor', cursor);
+      if (serverEpoch !== undefined && serverEpoch.length > 0) await this.persistState('server_epoch', serverEpoch);
       this.cursor = cursor;
+      if (serverEpoch !== undefined && serverEpoch.length > 0) this.serverEpoch = serverEpoch;
     });
     await this.flush();
+  }
+
+  getServerEpoch(): string { return this.serverEpoch; }
+
+  listDraftIds(): string[] {
+    return this.drafts.filter((draft: Draft) => !draft.deleted).map((draft: Draft) => draft.id);
+  }
+
+  rebaseDraftForNewServer(id: string): void {
+    const draft = this.drafts.find((item: Draft) => item.id === id && !item.deleted);
+    if (draft === undefined || draft.version === 0) return;
+    const rebased = cloneDraft(draft);
+    rebased.version = 0;
+    rebased.syncStatus = SyncStatus.LOCAL_ONLY;
+    this.sourceHistory.delete(id);
+    this.removePendingOperationForEntity(id);
+    this.replaceDraft(rebased);
+    this.enqueue(async () => {
+      await this.requireStore().executeSql('DELETE FROM draft_source_history WHERE draft_id = ?', [id]);
+    });
+    this.queueOperation(rebased, SyncOperationType.UPSERT);
   }
 
   setBaseUrl(baseUrl: string): void {
@@ -437,6 +461,7 @@ export class RdbDraftRepository implements DraftRepository, SyncRepository {
           const value = resultSet.getString(resultSet.getColumnIndex('state_value'));
           if (key === 'client_id') this.clientId = value;
           if (key === 'cursor') this.cursor = value;
+          if (key === 'server_epoch') this.serverEpoch = value;
           if (key === 'base_url') this.baseUrl = value;
           if (key === 'ai_base_url') this.aiBaseUrl = value;
         } while (resultSet.goToNextRow());
