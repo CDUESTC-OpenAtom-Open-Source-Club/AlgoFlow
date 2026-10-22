@@ -1318,3 +1318,61 @@ test('phone without a stored epoch replays from 0 once, but an epoch-less server
     HttpSyncClient.prototype.pull = oldPull;
   }
 });
+test('issue #20: a read timeout is AI_PROVIDER_TIMEOUT, connect failures stay NETWORK_ERROR, and nothing retries', async () => {
+  let calls = 0, failure;
+  const http = { RequestMethod: { POST: 'POST' }, HttpDataType: { STRING: 'STRING' }, createHttp() {
+    return { async request() { calls++; throw failure; }, destroy() {} };
+  } };
+  const stubbedLoader = loader(true, http);
+  const { HttpAIProvider, classifyTransportError } = stubbedLoader('platform/HttpAIProvider');
+  const provider = new HttpAIProvider('http://test', 5, 10000, true);
+  let clock = 0;
+  provider.now = () => clock;
+  const body = M.buildIDERequest(recordFor(request));
+  const run = async (code, ms) => {
+    failure = { code, message: 'transport' }; clock = 0;
+    const work = provider.request(body, 'transform');
+    clock = ms;
+    return work;
+  };
+
+  let reply = await run(2300028, 10012);
+  assert.equal(reply.errorCode, 'AI_PROVIDER_TIMEOUT');
+  assert.equal(reply.message, 'AI 请求超时');
+  assert.equal(calls, 1, 'a read timeout is not retried');
+
+  reply = await run(2300028, 5003);
+  assert.equal(reply.errorCode, 'AI_PROVIDER_TIMEOUT', 'just past the connect timeout the socket was connected');
+  reply = await run(2300028, 4990);
+  assert.equal(reply.errorCode, 'NETWORK_ERROR', 'a timeout within the connect window is a connect timeout');
+  for (const code of [2300007, 2300006, 2300056, undefined]) {
+    reply = await run(code, 12000);
+    assert.equal(reply.errorCode, 'NETWORK_ERROR', `code ${code}`);
+    assert.match(reply.message, /不可达/);
+  }
+  assert.equal(calls, 7, 'every failure makes exactly one transport call');
+
+  assert.equal(classifyTransportError(2300028, 6000), 'read_timeout');
+  assert.equal(classifyTransportError(2300028, 1000), 'connect_timeout');
+  assert.equal(classifyTransportError(2300007, 6000), 'network');
+});
+test('issue #20: the legacy generate() path reports AI_PROVIDER_TIMEOUT and cancel still wins over a timeout', async () => {
+  let fail;
+  const http = { RequestMethod: { POST: 'POST' }, HttpDataType: { STRING: 'STRING' }, createHttp() {
+    return { request() { return new Promise((_, reject) => { fail = reject; }); }, destroy() {} };
+  } };
+  const { HttpAIProvider } = loader(true, http)('platform/HttpAIProvider');
+  const { AIRequest, AIRequestSegment } = loader(true, http)('domain/Models');
+  const provider = new HttpAIProvider('http://test', 0, 10000, true);
+  let clock = 0; provider.now = () => clock;
+  const aiRequest = new AIRequest('faithful_transform', 'd', 1, 'cpp', '1.0.0', 'p', [new AIRequestSegment('s1', 'idea')], 'pseudocode', 'visible');
+  const pending = provider.generate(aiRequest);
+  clock = 10010; fail({ code: 2300028 });
+  const result = await pending;
+  assert.equal(result.errorCode, 'AI_PROVIDER_TIMEOUT');
+
+  const cancelled = provider.request(M.buildIDERequest(recordFor(request)), 'transform');
+  provider.cancel();
+  clock = 20020; fail({ code: 2300028 });
+  assert.equal((await cancelled).errorCode, 'CANCELLED');
+});

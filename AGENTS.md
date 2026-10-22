@@ -244,6 +244,7 @@ full_solution        完整解题
 - 未配置默认模型时返回明确的“AI 未启用”，不得使用 Mock 冒充真实结果。
 - Gateway 只接受注入的 `AIProvider.generate({ request, templates })`，并在保存/返回前重新校验 provider artifact；provider 异常返回分类错误，不向客户端透传密钥或模型原始日志。
 - 当前 HTTP 状态约定为：未配置 provider 返回 `AI_NOT_ENABLED`，provider 异常返回 `AI_PROVIDER_ERROR`，输出不符合契约或来源映射时返回 `INVALID_AI_ARTIFACT`。
+- 手机端 `HttpAIProvider` 的传输失败分类：`@ohos.net.http` 对连接超时和读超时都抛 `2300028`，已超过 5 s 连接超时的 `2300028` 视为读超时，映射为 `AI_PROVIDER_TIMEOUT`（“AI 请求超时”）；更早的超时、连接失败、DNS 失败和其他传输错误为 `NETWORK_ERROR`。每次请求只发一次，不自动重试；hilog 只记录类别、错误码和耗时。
 - 团队密钥只保存在华为云受控配置中，不进入客户端、GitHub、文档或日志。
 - 用户自带 API 的密钥保存方式未评审前，不实现明文持久化。
 - 外部模型调用意味着内容发送给用户选择的服务，隐私文案必须与真实数据流一致。
