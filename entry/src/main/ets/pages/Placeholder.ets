@@ -22,6 +22,29 @@ enum DraftFilter {
   ISSUE = 'issue'
 }
 
+// Short-code pairing derives both endpoints from one host. A bare host uses
+// the default 8787/8788 ports; an explicit port is only accepted when it is the
+// sync port, so the AI port can be swapped in. Anything else needs manual entry.
+function pairEndpoints(input: string): string[] | undefined {
+  let value = input.trim().length > 0 ? input.trim() : '127.0.0.1';
+  if (value.endsWith('/')) value = value.substring(0, value.length - 1);
+  if (!value.startsWith('http://') && !value.startsWith('https://')) value = `http://${value}`;
+  const match = /^(https?:\/\/[^\/:\s]+)(:\d+)?$/.exec(value);
+  if (match === null) return undefined;
+  const port = match[2];
+  if (port !== undefined && port !== ':8787') return undefined;
+  return [`${match[1]}:8787`, `${match[1]}:8788`];
+}
+
+function stringField(record: Record<string, Object>, key: string): string {
+  const value = record[key];
+  return typeof value === 'string' ? (value as string).trim() : '';
+}
+
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\/\S+$/.test(value);
+}
+
 @Entry
 @Component
 struct Placeholder {
@@ -222,21 +245,23 @@ struct Placeholder {
     this.saveEndpoints();
   }
 
+  // The short code is only compared by the user against the Web modal; no
+  // server validates it, so the message must not claim the pairing is verified.
   private async applyShortCodePairing(): Promise<void> {
     const cleanCode = this.pairShortCode.replace(/\s+/g, '');
-    if (cleanCode.length !== 8) {
-      this.feedbackMessage = '请输入电脑端二维码下方的 8 位数字配对码';
+    if (!/^\d{8}$/.test(cleanCode)) {
+      this.feedbackMessage = '请输入电脑端「手机远程」窗口中的 8 位数字配对码';
       return;
     }
-    const host = this.pairHostIp.trim().length > 0 ? this.pairHostIp.trim() : '127.0.0.1';
-    this.syncBaseUrl = host.startsWith('http://') || host.startsWith('https://')
-      ? host
-      : `http://${host}:8787`;
-    this.aiBaseUrl = host.startsWith('http://') || host.startsWith('https://')
-      ? host.replace(':8787', ':8788')
-      : `http://${host}:8788`;
+    const endpoints = pairEndpoints(this.pairHostIp);
+    if (endpoints === undefined) {
+      this.feedbackMessage = '只能从主机地址或 :8787 地址推导两个端点，其他地址请使用「手动端点」';
+      return;
+    }
+    this.syncBaseUrl = endpoints[0];
+    this.aiBaseUrl = endpoints[1];
     this.saveEndpoints();
-    this.feedbackMessage = `已通过配对码 ${cleanCode.substring(0, 4)} ${cleanCode.substring(4, 8)} 绑定端点，正在同步...`;
+    this.feedbackMessage = `配对码 ${cleanCode.substring(0, 4)} ${cleanCode.substring(4, 8)} 仅供人工核对，未经服务端校验；端点已写入，正在同步...`;
     await this.runSyncNow();
   }
 
@@ -247,13 +272,19 @@ struct Placeholder {
       return;
     }
     try {
-      const parsed = JSON.parse(raw) as Record<string, string>;
-      const syncApi = parsed['sync_api'] ?? '';
-      const aiGateway = parsed['ai_gateway'] ?? '';
-      const computer = parsed['computer'] ?? 'AlgoFlow-Desktop';
-      const route = parsed['route'] ?? 'lan';
-      if (syncApi.length === 0 || aiGateway.length === 0) {
-        this.feedbackMessage = '配对信息缺少 sync_api 或 ai_gateway 字段';
+      // Validate every field before touching state so a malformed invitation
+      // cannot leave half-applied endpoints behind.
+      const parsed = JSON.parse(raw) as Record<string, Object>;
+      if (parsed === null || typeof parsed !== 'object' || stringField(parsed, 'type') !== 'algoflow-pair-v1') {
+        this.feedbackMessage = '不是 AlgoFlow 配对信息（type 应为 algoflow-pair-v1）';
+        return;
+      }
+      const syncApi = stringField(parsed, 'sync_api');
+      const aiGateway = stringField(parsed, 'ai_gateway');
+      const computer = stringField(parsed, 'computer').length > 0 ? stringField(parsed, 'computer') : 'AlgoFlow-Desktop';
+      const route = stringField(parsed, 'route');
+      if (!isHttpUrl(syncApi) || !isHttpUrl(aiGateway)) {
+        this.feedbackMessage = '配对信息中的 sync_api 和 ai_gateway 必须是 http(s) 地址';
         return;
       }
       this.syncBaseUrl = syncApi;
@@ -856,7 +887,7 @@ struct Placeholder {
 
         if (this.pairMode === 'code') {
           Column({ space: 10 }) {
-            Text('输入电脑「设置 → 手机远程」二维码下方的 8 位数字配对码：')
+            Text('输入电脑端「手机远程」窗口中的 8 位配对码（仅供两端人工核对，不做服务端校验）：')
               .fontSize(11).fontColor('#64748B')
 
             Column({ space: 4 }) {

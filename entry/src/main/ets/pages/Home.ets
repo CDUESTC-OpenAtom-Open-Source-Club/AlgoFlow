@@ -20,17 +20,14 @@ struct Home {
   }
 
   onPageShow(): void {
-    if (this.ready) {
-      this.drafts = this.viewModel.listDrafts();
-    }
+    // Index and Placeholder keep their own repository instances; reload so
+    // drafts created, deleted or synced there are current when returning.
+    if (this.ready) this.reloadWorkspace().catch(() => {});
   }
 
   private async initializeWorkspace(): Promise<void> {
     try {
-      const repository = new RdbDraftRepository(getContext(this));
-      this.viewModel = new DraftWorkspaceViewModel(repository, repository);
-      await this.viewModel.initialize();
-      this.drafts = this.viewModel.listDrafts();
+      await this.reloadWorkspace();
       this.ready = true;
 
       const routedDraftId = AppStorage.get<string>('routeDraftId');
@@ -44,6 +41,14 @@ struct Home {
       this.message = '工作区暂时无法打开，请重试';
       console.error(`[AlgoFlow] Home initialization failed: ${error instanceof Error ? error.message : 'unknown'}`);
     }
+  }
+
+  private async reloadWorkspace(): Promise<void> {
+    const repository = new RdbDraftRepository(getContext(this));
+    const viewModel = new DraftWorkspaceViewModel(repository, repository);
+    await viewModel.initialize();
+    this.viewModel = viewModel;
+    this.drafts = viewModel.listDrafts();
   }
 
   private async openDraft(draftId: string): Promise<void> {

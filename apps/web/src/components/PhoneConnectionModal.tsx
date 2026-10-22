@@ -36,8 +36,9 @@ export function PhoneConnectionModal({
   const [syncUrl, setSyncUrl] = useState(config.syncBaseUrl);
   const [aiUrl, setAiUrl] = useState(config.aiBaseUrl);
   const [computerName, setComputerName] = useState(config.computerName);
+  // The short code is only compared by the user on both screens. No server
+  // validates or expires it, so the UI must not present it as authentication.
   const [nonce, setNonce] = useState(() => Math.floor(10000000 + Math.random() * 90000000));
-  const [remainingSec, setRemainingSec] = useState(600);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -47,14 +48,6 @@ export function PhoneConnectionModal({
     setAiUrl(config.aiBaseUrl);
     setComputerName(config.computerName);
   }, [open, config]);
-
-  useEffect(() => {
-    if (!open || !config.enabled) return;
-    const timer = window.setInterval(() => {
-      setRemainingSec((prev) => (prev > 0 ? prev - 1 : 0));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [open, config.enabled]);
 
   const shortCode = useMemo(() => {
     const digits = String(nonce).padStart(8, '0').slice(0, 8);
@@ -77,11 +70,8 @@ export function PhoneConnectionModal({
 
   if (!open) return null;
 
-  const timerText = `${String(Math.floor(remainingSec / 60)).padStart(2, '0')}:${String(remainingSec % 60).padStart(2, '0')}`;
-
-  function handleRefreshQr() {
+  function handleRefreshCode() {
     setNonce(Math.floor(10000000 + Math.random() * 90000000));
-    setRemainingSec(600);
     setCopied(false);
   }
 
@@ -112,7 +102,7 @@ export function PhoneConnectionModal({
           <div>
             <span className="eyebrow">SETTINGS → PHONE REMOTE</span>
             <h2>手机远程与跨端配对</h2>
-            <p className="pebrel-subtitle">在手机端打开「思流 → 设置 → 连接电脑」，扫码、输入 8 位配对码或粘贴完整配对信息以同步端点。</p>
+            <p className="pebrel-subtitle">在手机端打开「设置 → 连接电脑」，输入电脑地址与 8 位配对码，或粘贴完整配对信息以写入同步端点。</p>
           </div>
           <button type="button" className="quiet-button" aria-label="关闭手机连接窗口" onClick={onClose}>
             ✕
@@ -122,7 +112,7 @@ export function PhoneConnectionModal({
         {!config.enabled ? (
           <div className="pebrel-off-card">
             <h3>开启手机远程同步</h3>
-            <p>开启后将生成单次有效的配对二维码与 8 位短配对码，使 OpenHarmony 手机端快速接入当前电脑使用的同步与 AI 服务端点。</p>
+            <p>开启后显示 8 位核对码和完整配对信息，用于把当前电脑使用的同步与 AI 服务端点交给 OpenHarmony 手机端。这只是端点移交，不是经过认证的配对。</p>
             <button
               type="button"
               className="sync-button"
@@ -142,7 +132,7 @@ export function PhoneConnectionModal({
                     {syncState === 'synced' ? '服务就绪' : syncState === 'syncing' ? '同步中' : '等待手机连接'}
                   </span>
                 </div>
-                <p className="pebrel-desc">选择网络拓扑后，在手机端通过扫码、8 位数字配对码或粘贴邀请完成端点绑定。</p>
+                <p className="pebrel-desc">选择网络拓扑后，在手机端输入电脑地址与 8 位配对码，或粘贴完整配对信息完成端点写入。</p>
 
                 <div className="pebrel-segmented" role="tablist" aria-label="连接通道">
                   <button
@@ -173,7 +163,7 @@ export function PhoneConnectionModal({
                       <p>
                         {route === 'lan'
                           ? '真机 USB 联调可执行：hdc rport tcp:8787 tcp:8787 && hdc rport tcp:8788 tcp:8788'
-                          : '不在同一 Wi-Fi 时，可通过云服务器部署 sync-api 与 ai-gateway 进行跨网同步。'}
+                          : '不在同一 Wi-Fi 时，需自行提供两端都能访问的 sync-api 与 ai-gateway 地址；当前未提供云端部署。'}
                       </p>
                     </div>
                   </li>
@@ -181,7 +171,7 @@ export function PhoneConnectionModal({
                     <span className="step-num">2</span>
                     <div>
                       <strong>在手机端打开「设置 → 连接电脑」</strong>
-                      <p>对准右侧二维码扫描，或直接输入二维码下方的 8 位配对码。</p>
+                      <p>输入电脑地址和右侧的 8 位配对码，或粘贴「复制完整配对信息」的内容。</p>
                     </div>
                   </li>
                   <li>
@@ -203,8 +193,14 @@ export function PhoneConnectionModal({
               </div>
 
               <div className="pebrel-pairing-qr-col">
-                <div className="pebrel-qr-box" aria-label="手机配对二维码">
-                  <svg viewBox="0 0 21 21" className="pebrel-qr-svg" shapeRendering="crispEdges">
+                <div className="pebrel-qr-box">
+                  <svg
+                    viewBox="0 0 21 21"
+                    className="pebrel-qr-svg"
+                    shapeRendering="crispEdges"
+                    role="img"
+                    aria-label="配对示意图，非标准二维码，无法扫描"
+                  >
                     {qrMatrix.map((row, rIdx) =>
                       row.map((cell, cIdx) =>
                         cell ? <rect key={`${rIdx}-${cIdx}`} x={cIdx} y={rIdx} width={1} height={1} fill="#0F172A" /> : null,
@@ -214,8 +210,8 @@ export function PhoneConnectionModal({
                 </div>
 
                 <div className="pebrel-qr-timer">
-                  <span>{remainingSec > 0 ? `${timerText} 后失效` : '二维码已过期'}</span>
-                  <button type="button" className="quiet-link" onClick={handleRefreshQr}>
+                  <span>示意图，暂不支持扫码</span>
+                  <button type="button" className="quiet-link" onClick={handleRefreshCode}>
                     刷新配对码
                   </button>
                 </div>

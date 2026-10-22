@@ -31,7 +31,7 @@ export function TopBar({ saved, syncState = 'local_only', onSync, onOpenPhoneMod
           <Icon name="refresh" />
           {saved ? '同步' : '保存并同步'}
         </button>
-        <button className="avatar" type="button" aria-label="用户菜单" onClick={onOpenPhoneModal}>
+        <button className="avatar" type="button" aria-label="手机远程连接设置" onClick={onOpenPhoneModal}>
           <Icon name="user" />
         </button>
       </div>
