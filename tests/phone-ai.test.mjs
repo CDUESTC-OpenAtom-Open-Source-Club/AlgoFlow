@@ -1160,3 +1160,161 @@ test('phone sync keeps an operation when a duplicate arrives without server_enti
     HttpSyncClient.prototype.pull = oldPull;
   }
 });
+test('phone sends base_epoch and the epoch query once a server epoch is committed', async () => {
+  const sent = [];
+  const http = { RequestMethod: { POST: 'POST', GET: 'GET' }, HttpDataType: { STRING: 'STRING' }, createHttp() {
+    return { async request(url, options) { sent.push({ url, body: options.extraData });
+      return { responseCode: 200, result: JSON.stringify(url.includes('/changes') ? { changes: [], next_cursor: '0', server_epoch: 'e1', reset: false }
+        : { operation_id: 'op', status: 'applied', server_epoch: 'e1' }) }; }, destroy() {} };
+  } };
+  const { HttpSyncClient } = loader(true, http)('platform/HttpSyncClient');
+  const { SyncOperation } = loader(true, http)('domain/SyncModels');
+  const op = Object.assign(new SyncOperation(), { operation_id: 'op', entity_id: 'd', base_version: 2, client_id: 'phone', occurred_at: '2026-10-22T00:00:00.000Z' });
+  const sync = new HttpSyncClient('http://sync');
+  await sync.push(op, 'e1');
+  await sync.push(op);
+  await sync.pull('3', 'e1');
+  await sync.pull('3');
+  assert.equal(JSON.parse(sent[0].body).base_epoch, 'e1');
+  assert.equal('base_epoch' in JSON.parse(sent[1].body), false, 'no epoch is sent before the first pull');
+  assert.equal(sent[2].url, 'http://sync/v1/sync/changes?after=3&epoch=e1');
+  assert.equal(sent[3].url, 'http://sync/v1/sync/changes?after=3');
+});
+test('RDB repository stores the server epoch with the cursor and rebases a draft for a new server', async () => {
+  const { RdbDraftRepository } = load('platform/RdbDraftRepository');
+  const { Draft } = load('domain/Models');
+  const sql = [];
+  const repo = new RdbDraftRepository({});
+  repo.store = { version: 3, async executeSql(statement, args) { sql.push([statement, args]); } };
+  repo.clientId = 'phone';
+  await repo.commitCursor('5', 'epoch-a');
+  assert.equal(repo.getCursor(), '5');
+  assert.equal(repo.getServerEpoch(), 'epoch-a');
+  assert.ok(sql.some(([statement, args]) => statement.includes('sync_state') && args[0] === 'server_epoch' && args[1] === 'epoch-a'));
+  await repo.commitCursor('6');
+  assert.equal(repo.getServerEpoch(), 'epoch-a', 'a pull without an epoch keeps the stored one');
+
+  const draft = new Draft('d', 'kept'); draft.code = 'content'; draft.version = 4;
+  repo.applyServerDraft(draft);
+  assert.deepEqual(repo.getDraftSourceVersions('d'), [4]);
+  repo.rebaseDraftForNewServer('d');
+  await repo.flush();
+  const rebased = repo.getDraft('d');
+  assert.equal(rebased.version, 0);
+  assert.equal(rebased.code, 'content');
+  assert.equal(rebased.syncStatus, 'local_only');
+  assert.deepEqual(repo.getDraftSourceVersions('d'), [], 'old-lineage snapshots are dropped');
+  const queued = repo.listPendingOperations();
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].base_version, 0);
+  assert.ok(sql.some(([statement, args]) => statement.startsWith('DELETE FROM draft_source_history') && args[0] === 'd'));
+  assert.deepEqual(repo.listDraftIds(), ['d']);
+});
+function epochRepository(drafts, operations = []) {
+  return {
+    drafts: new Map(drafts.map((draft) => [draft.id, draft])), operations, epoch: 'epoch-a', cursor: '9', applied: [], rebased: [], statuses: [],
+    getClientId: () => 'phone', getBaseUrl: () => 'http://sync',
+    getCursor() { return this.cursor; }, getServerEpoch() { return this.epoch; },
+    listPendingOperations() { return this.operations.map((op) => ({ ...op })); }, markInFlight() {},
+    hasPendingOperation(id) { return this.operations.some((op) => op.entity_id === id); },
+    removeOperation(id) { this.operations = this.operations.filter((op) => op.operation_id !== id); },
+    setDraftSyncStatus(id, status) { this.statuses.push([id, status]); },
+    getDraft(id) { return this.drafts.get(id); },
+    listDraftIds() { return [...this.drafts.keys()]; },
+    applyServerDraft(draft) { this.applied.push(`${draft.id}@${draft.version}`); this.drafts.set(draft.id, draft); },
+    rebaseDraftForNewServer(id) {
+      this.rebased.push(id);
+      const draft = this.drafts.get(id); draft.version = 0;
+      this.operations = this.operations.filter((op) => op.entity_id !== id);
+      this.operations.push({ operation_id: `rebased-${id}`, entity_type: 'draft', entity_id: id, operation_type: 'upsert', base_version: 0,
+        client_id: 'phone', occurred_at: '2026-10-22T00:00:00.000Z', payload: { id, version: 0, code: draft.code } });
+    },
+    saveConflictDraft() {}, flush: () => Promise.resolve(),
+    commitCursor(cursor, epoch) { this.cursor = cursor; if (epoch) this.epoch = epoch; return Promise.resolve(); }
+  };
+}
+test('phone re-creates a draft the restarted server lost and retries the push once', async () => {
+  const { PhoneSyncService } = load('platform/PhoneSyncService');
+  const { HttpSyncClient } = load('platform/HttpSyncClient');
+  const repo = epochRepository([{ id: 'd', version: 3, code: 'local', deleted: false }],
+    [{ operation_id: 'old', entity_type: 'draft', entity_id: 'd', operation_type: 'upsert', base_version: 3, client_id: 'phone',
+      occurred_at: '2026-10-22T00:00:00.000Z', payload: { id: 'd', version: 3, code: 'local' } }]);
+  const pushes = [];
+  const oldPush = HttpSyncClient.prototype.push;
+  const oldPull = HttpSyncClient.prototype.pull;
+  HttpSyncClient.prototype.push = async (op, epoch) => {
+    pushes.push([op.operation_id, op.base_version, epoch]);
+    return op.base_version > 0
+      ? { operation_id: op.operation_id, status: 'conflict', error_code: 'EPOCH_MISMATCH', server_entity: null, server_epoch: 'epoch-b' }
+      : { operation_id: op.operation_id, status: 'applied', version: 1, server_entity: { id: 'd', version: 1, code: 'local' }, server_epoch: 'epoch-b' };
+  };
+  HttpSyncClient.prototype.pull = async () => ({
+    changes: [{ cursor: '1', entity_type: 'draft', entity: { id: 'd', version: 1, code: 'local', last_modified_client_id: 'phone' } }],
+    next_cursor: '1', server_epoch: 'epoch-b', reset: true });
+  try {
+    const result = await new PhoneSyncService(repo).synchronize();
+    assert.deepEqual(pushes, [['old', 3, 'epoch-a'], ['rebased-d', 0, 'epoch-a']]);
+    assert.equal(result.status, 'synced');
+    assert.deepEqual(repo.rebased, ['d']);
+    assert.equal(repo.operations.length, 0);
+    assert.equal(repo.drafts.get('d').version, 1);
+    assert.equal(repo.epoch, 'epoch-b');
+    assert.equal(repo.cursor, '1');
+  } finally {
+    HttpSyncClient.prototype.push = oldPush;
+    HttpSyncClient.prototype.pull = oldPull;
+  }
+});
+test('phone reset pull adopts the latest server copy and re-creates drafts the server lost', async () => {
+  const { PhoneSyncService } = load('platform/PhoneSyncService');
+  const { HttpSyncClient } = load('platform/HttpSyncClient');
+  const repo = epochRepository([
+    { id: 'shared', version: 5, code: 'old lineage v5', deleted: false },
+    { id: 'lost', version: 2, code: 'only here', deleted: false },
+    { id: 'blank', version: 0, code: '', deleted: false }
+  ]);
+  const pulls = [];
+  const oldPull = HttpSyncClient.prototype.pull;
+  HttpSyncClient.prototype.pull = async (cursor, epoch) => {
+    pulls.push([cursor, epoch]);
+    return { changes: [
+      { cursor: '1', entity_type: 'draft', entity: { id: 'shared', version: 1, code: 'reseeded v1', last_modified_client_id: 'phone' } },
+      { cursor: '2', entity_type: 'draft', entity: { id: 'shared', version: 2, code: 'reseeded v2', last_modified_client_id: 'web' } }
+    ], next_cursor: '2', server_epoch: 'epoch-b', reset: true };
+  };
+  try {
+    const result = await new PhoneSyncService(repo).synchronize();
+    assert.deepEqual(pulls, [['9', 'epoch-a']]);
+    assert.deepEqual(repo.applied, ['shared@2'], 'the server copy wins over the old-lineage v5, latest change only');
+    assert.equal(repo.drafts.get('shared').code, 'reseeded v2');
+    assert.deepEqual(repo.rebased, ['lost'], 'version-0 drafts are not re-created');
+    assert.equal(result.status, 'local_only', 'the re-created draft is uploaded on the next run');
+    assert.equal(repo.epoch, 'epoch-b');
+  } finally {
+    HttpSyncClient.prototype.pull = oldPull;
+  }
+});
+test('phone without a stored epoch replays from 0 once, but an epoch-less server keeps the old merge', async () => {
+  const { PhoneSyncService } = load('platform/PhoneSyncService');
+  const { HttpSyncClient } = load('platform/HttpSyncClient');
+  const oldPull = HttpSyncClient.prototype.pull;
+  try {
+    const upgraded = epochRepository([{ id: 'x', version: 4, code: 'x', deleted: false }]);
+    upgraded.epoch = '';
+    let asked;
+    HttpSyncClient.prototype.pull = async (cursor) => { asked = cursor; return { changes: [], next_cursor: '0', server_epoch: 'epoch-b', reset: false }; };
+    await new PhoneSyncService(upgraded).synchronize();
+    assert.equal(asked, '0');
+    assert.deepEqual(upgraded.rebased, ['x'], 'the server has nothing for x, so it is re-created');
+    assert.equal(upgraded.epoch, 'epoch-b');
+
+    const legacy = epochRepository([{ id: 'y', version: 4, code: 'y', deleted: false }]);
+    legacy.epoch = '';
+    HttpSyncClient.prototype.pull = async () => ({ changes: [], next_cursor: '9' });
+    await new PhoneSyncService(legacy).synchronize();
+    assert.deepEqual(legacy.rebased, [], 'without a server epoch nothing is rebased');
+    assert.equal(legacy.epoch, '');
+  } finally {
+    HttpSyncClient.prototype.pull = oldPull;
+  }
+});

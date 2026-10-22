@@ -82,6 +82,7 @@ export enum SyncResultStatus {
 export enum SyncErrorCode {
   INVALID_REQUEST = 'INVALID_REQUEST',
   VERSION_CONFLICT = 'VERSION_CONFLICT',
+  EPOCH_MISMATCH = 'EPOCH_MISMATCH',
   OUT_OF_ORDER = 'OUT_OF_ORDER'
 }
 
@@ -122,6 +123,7 @@ export class PushResult {
   version?: number;
   server_entity?: DraftPayload | AIArtifactPayload | ReviewResultPayload | null;
   error_code?: string;
+  server_epoch?: string;
 }
 
 export class PullChange {
@@ -133,6 +135,9 @@ export class PullChange {
 export class PullResult {
   changes: PullChange[] = [];
   next_cursor: string = '0';
+  // Absent from servers older than the epoch contract; treated as "no epoch".
+  server_epoch?: string;
+  reset?: boolean;
 }
 
 export class ConflictRecord {

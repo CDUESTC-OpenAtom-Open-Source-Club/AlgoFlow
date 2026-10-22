@@ -97,7 +97,7 @@ test('supports cursor recovery after consuming a batch and later changes', () =>
 });
 
 test('rejects malformed operations as a negative contract case', () => {
-  const store = new SyncStore();
+  const store = new SyncStore('epoch-test');
   const result = store.apply({
     ...operation,
     operation_id: '',
@@ -106,7 +106,8 @@ test('rejects malformed operations as a negative contract case', () => {
   assert.deepEqual(result, {
     operation_id: '',
     status: 'rejected',
-    error_code: 'INVALID_REQUEST'
+    error_code: 'INVALID_REQUEST',
+    server_epoch: 'epoch-test'
   });
 });
 
@@ -757,4 +758,78 @@ test('Web sync keeps a duplicate without server_entity queued and reports failur
   assert.equal(result.status, 'failed');
   assert.equal(result.state.operations.length, 1);
   assert.notEqual(result.state.drafts[0].sync_status, 'synced');
+});
+
+test('a base_version from another epoch conflicts even when the version numbers match', () => {
+  const store = new SyncStore('epoch-b');
+  store.apply({ ...operation, operation_id: 'reseed', payload: { title: 'Reseeded by another client' } });
+  const stale = store.apply({ ...operation, operation_id: 'stale', base_version: 1, base_epoch: 'epoch-a', payload: { title: 'Old lineage edit' } });
+  assert.equal(stale.status, 'conflict');
+  assert.equal(stale.error_code, 'EPOCH_MISMATCH');
+  assert.equal(stale.server_entity.title, 'Reseeded by another client');
+  assert.equal(stale.server_epoch, 'epoch-b');
+  assert.equal(store.pull('0').changes.length, 1, 'the old-lineage edit must not be applied');
+
+  const missing = store.apply({ ...operation, operation_id: 'gone', entity_id: 'draft-gone', base_version: 3, base_epoch: 'epoch-a' });
+  assert.equal(missing.error_code, 'EPOCH_MISMATCH');
+  assert.equal(missing.server_entity, null);
+
+  const recreate = store.apply({ ...operation, operation_id: 'recreate', entity_id: 'draft-gone', base_version: 0, base_epoch: 'epoch-a' });
+  assert.equal(recreate.status, 'applied', 'a creation does not depend on the old lineage');
+  assert.equal(store.apply({ ...operation, operation_id: 'same', base_version: 1, base_epoch: 'epoch-b', payload: { title: 'v2' } }).status, 'applied');
+});
+
+test('pull replays everything and flags a reset for a cursor from another epoch', () => {
+  const store = new SyncStore('epoch-b');
+  store.apply(operation);
+  store.apply({ ...operation, operation_id: 'second', entity_id: 'draft-2' });
+  assert.deepEqual({ ...store.pull('2', 'epoch-b'), changes: undefined }, { changes: undefined, next_cursor: '2', server_epoch: 'epoch-b', reset: false });
+  const stale = store.pull('7', 'epoch-a');
+  assert.equal(stale.reset, true);
+  assert.equal(stale.changes.length, 2);
+  const legacy = store.pull('1');
+  assert.equal(legacy.reset, false, 'clients without an epoch keep the old cursor behaviour');
+  assert.equal(legacy.changes.length, 1);
+});
+
+test('Web rebases a lost draft and adopts the re-seeded server copy after a sync-api restart', async (context) => {
+  let server = createSyncServer(new SyncStore('epoch-a'));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  let client = new LocalSyncClient(`http://127.0.0.1:${server.address().port}`);
+  let web = makeWorkspace('web-epoch', makeDraft('draft-kept', 'kept', 'web-epoch'));
+  web.drafts.push(makeDraft('draft-shared', 'shared', 'web-epoch'));
+  queueUpsert(web, { ...web.drafts[0], code: 'kept v1' });
+  queueUpsert(web, { ...web.drafts[1], code: 'shared v1' });
+  web = (await synchronizeWorkspace(web, client)).state;
+  assert.equal(web.server_epoch, 'epoch-a');
+  assert.deepEqual(web.drafts.map((draft) => draft.version), [1, 1]);
+
+  // "Restart": a new empty store (new epoch) behind the same base URL concept.
+  // A new port and client avoid fetch reusing a pooled socket of the old process.
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+  const fresh = new SyncStore('epoch-b');
+  // Another client re-seeds draft-shared as v1 on the new server.
+  fresh.apply({ operation_id: 'phone-seed', entity_type: 'draft', entity_id: 'draft-shared', operation_type: 'upsert', base_version: 0,
+    client_id: 'phone', occurred_at: '2026-10-22T00:00:00.000Z', payload: { ...makeDraft('draft-shared', 'phone content', 'phone'), title: 'Phone' } });
+  server = createSyncServer(fresh);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => server.close());
+  client = new LocalSyncClient(`http://127.0.0.1:${server.address().port}`);
+
+  // A stale edit of draft-shared at base_version 1 must not overwrite the phone's v1.
+  queueUpsert(web, { ...web.drafts.find((draft) => draft.id === 'draft-shared'), code: 'stale web edit' });
+  const first = await synchronizeWorkspace(web, client);
+  assert.equal(first.status, 'conflict');
+  assert.equal(first.state.server_epoch, 'epoch-b');
+  assert.equal(first.state.drafts.find((draft) => draft.id === 'draft-shared').code, 'phone content');
+  const copyId = first.state.conflicts[0].local_copy_id;
+  assert.equal(first.state.drafts.find((draft) => draft.id === copyId).code, 'stale web edit', 'the stale edit is kept as a conflict copy');
+  // draft-kept is not on the new server: re-created, then uploaded on the next run.
+  const kept = first.state.drafts.find((draft) => draft.id === 'draft-kept');
+  assert.equal(kept.version, 0);
+  assert.equal(first.state.operations.find((op) => op.entity_id === 'draft-kept').base_version, 0);
+  const second = await synchronizeWorkspace({ ...first.state, conflicts: [] }, client);
+  assert.equal(second.state.drafts.find((draft) => draft.id === 'draft-kept').version, 1);
+  assert.equal(fresh.pull('0').changes.find((change) => change.entity.id === 'draft-kept').entity.code, 'kept v1');
 });

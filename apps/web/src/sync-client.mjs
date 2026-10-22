@@ -1,5 +1,5 @@
 const API_BASE = import.meta.env?.VITE_SYNC_API_BASE ?? 'http://127.0.0.1:8787';
-import { assertReviewResult, createAIArtifactConflictCopy, createReviewResultConflictCopy, queueAIArtifact, queueReviewResult, recordDraftSnapshot, recomputeReviewFreshness } from './storage.mjs';
+import { assertReviewResult, createAIArtifactConflictCopy, createReviewResultConflictCopy, queueAIArtifact, queueReviewResult, queueUpsert, recordDraftSnapshot, recomputeReviewFreshness } from './storage.mjs';
 
 export { assertReviewResult } from './storage.mjs';
 
@@ -21,9 +21,10 @@ export class LocalSyncClient {
     return result;
   }
 
-  /** @param {string} cursor @returns {Promise<import('./types').PullResult>} */
-  async pull(cursor) {
-    const response = await fetch(`${this.apiBase}/v1/sync/changes?after=${encodeURIComponent(cursor)}`);
+  /** @param {string} cursor @param {string} [epoch] @returns {Promise<import('./types').PullResult>} */
+  async pull(cursor, epoch = '') {
+    const epochQuery = epoch ? `&epoch=${encodeURIComponent(epoch)}` : '';
+    const response = await fetch(`${this.apiBase}/v1/sync/changes?after=${encodeURIComponent(cursor)}${epochQuery}`);
     if (!response.ok) throw new Error('SYNC_FAILED');
     return response.json();
   }
@@ -42,14 +43,28 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
   let next = { ...state, drafts: [...state.drafts], draft_history: [...(state.draft_history ?? [])], ai_artifacts: [...(state.ai_artifacts ?? [])], review_results: [...(state.review_results ?? [])], operations: [...state.operations], conflicts: [...state.conflicts], online: true };
   let hadConflict = false;
   let hadFailure = false;
+  const epoch = next.server_epoch ?? '';
+  /** @param {import('./types').SyncOperation} item */
+  const withEpoch = (item) => (epoch ? { ...item, base_epoch: epoch } : item);
 
-  for (const operation of [...next.operations]) {
+  for (const queued of [...next.operations]) {
+    let operation = queued;
     try {
       if (operation.entity_type === 'ai_artifact') {
         assertAIArtifact(operation.payload, sourceIdsForArtifact(next, /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (operation.payload))));
       }
       if (operation.entity_type === 'review_result') assertReviewResult(operation.payload, next);
-      const result = await client.push(operation);
+      let result = await client.push(withEpoch(operation));
+      // The server restarted and no longer has this draft: its base_version
+      // belongs to a lost lineage, so re-create it (version 0) and retry once.
+      if (result.status === 'conflict' && result.error_code === 'EPOCH_MISMATCH' && !result.server_entity && operation.entity_type === 'draft') {
+        next = rebaseDraftForNewServer(next, operation.entity_id);
+        const rebased = next.operations.find((item) => item.entity_type === 'draft' && item.entity_id === queued.entity_id);
+        if (rebased) {
+          operation = rebased;
+          result = await client.push(withEpoch(operation));
+        }
+      }
       if (result.status === 'conflict') {
         if (operation.entity_type === 'review_result') {
           if (!result.server_entity) { hadFailure = true; continue; }
@@ -133,10 +148,15 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
 
   if (!hadFailure) {
     try {
-      const pullCursor = shouldReplayForPlaceholder(next) ? '0' : next.cursor;
-      const pull = await client.pull(pullCursor);
-      const merged = applyPulledChanges(next, pull.changes, next.client_id);
-      next = { ...merged, cursor: pull.next_cursor };
+      // A cursor without a stored epoch (saved before the epoch contract)
+      // cannot be trusted across a possible restart: replay from 0 once.
+      const untrustedCursor = !epoch && next.cursor !== '0';
+      const pullCursor = untrustedCursor || shouldReplayForPlaceholder(next) ? '0' : next.cursor;
+      const pull = await client.pull(pullCursor, epoch);
+      // Only a server that reports an epoch can confirm a reset.
+      const reset = Boolean(pull.server_epoch) && (pull.reset === true || untrustedCursor);
+      const merged = reset ? applyResetChanges(next, pull.changes) : applyPulledChanges(next, pull.changes, next.client_id);
+      next = { ...merged, cursor: pull.next_cursor, ...(pull.server_epoch ? { server_epoch: pull.server_epoch } : {}) };
     } catch {
       hadFailure = true;
     }
@@ -207,6 +227,64 @@ function replaceDraft(state, draft) {
     ...state,
     drafts: found ? state.drafts.map((item) => item.id === draft.id ? draft : item) : [...state.drafts, draft],
   };
+}
+
+/**
+ * After a server reset the draft no longer exists there: re-queue it as a
+ * creation (version 0) and drop its old-lineage snapshots.
+ * @param {import('./types').WorkspaceState} state
+ * @param {string} draftId
+ * @returns {import('./types').WorkspaceState}
+ */
+export function rebaseDraftForNewServer(state, draftId) {
+  const draft = state.drafts.find((item) => item.id === draftId && !item.deleted);
+  if (!draft || draft.version === 0) return state;
+  const rebased = { ...draft, version: 0, sync_status: /** @type {const} */ ('local_only') };
+  const next = {
+    ...state,
+    drafts: state.drafts.map((item) => (item.id === draftId ? rebased : item)),
+    draft_history: (state.draft_history ?? []).filter((item) => item.draft_id !== draftId),
+    operations: state.operations.filter((item) => !(item.entity_type === 'draft' && item.entity_id === draftId)),
+  };
+  queueUpsert(next, rebased);
+  return next;
+}
+
+/**
+ * Versions from the old lineage are not comparable with the server's, so the
+ * latest server copy of each entity wins unless a local edit is still queued.
+ * Live drafts the server no longer has are re-created so their content is not
+ * lost. Local-only AI results stay readable; they cannot be re-uploaded
+ * because their source draft versions do not exist on the new server.
+ * @param {import('./types').WorkspaceState} state
+ * @param {import('./types').PullChange[]} changes
+ * @returns {import('./types').WorkspaceState}
+ */
+export function applyResetChanges(state, changes) {
+  /** @type {Map<string, import('./types').PullChange>} */
+  const latest = new Map();
+  for (const change of changes) latest.set(`${change.entity_type}:${change.entity.id}`, change);
+  /** @param {string} type @param {string} id */
+  const pending = (type, id) => state.operations.some((operation) => operation.entity_type === type && operation.entity_id === id);
+  /** @type {import('./types').WorkspaceState} */
+  let next = { ...state, draft_history: (state.draft_history ?? []).filter((item) => !latest.has(`draft:${item.draft_id}`)) };
+  for (const change of latest.values()) {
+    if (pending(change.entity_type, change.entity.id)) continue;
+    if (change.entity_type === 'draft') {
+      const draft = /** @type {import('./types').Draft} */ (/** @type {unknown} */ (change.entity));
+      recordDraftSnapshot(next, draft);
+      next = replaceDraft(next, { ...draft, sync_status: 'synced' });
+    } else if (change.entity_type === 'ai_artifact') {
+      next = replaceAIArtifact(next, /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (change.entity)));
+    } else if (change.entity_type === 'review_result') {
+      next = replaceReviewResult(next, /** @type {import('./types').ReviewResult} */ (/** @type {unknown} */ (change.entity)));
+    }
+  }
+  for (const draft of state.drafts) {
+    if (draft.deleted || draft.version === 0 || latest.has(`draft:${draft.id}`) || pending('draft', draft.id)) continue;
+    next = rebaseDraftForNewServer(next, draft.id);
+  }
+  return next;
 }
 
 /**

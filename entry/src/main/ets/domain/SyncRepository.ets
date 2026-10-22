@@ -7,7 +7,13 @@ export interface SyncRepository {
   getDraft(id: string): Draft | undefined;
   getCursor(): string;
   setCursor(cursor: string): void;
-  commitCursor(cursor: string): Promise<void>;
+  // serverEpoch is stored with the cursor so both always describe one lineage.
+  commitCursor(cursor: string, serverEpoch?: string): Promise<void>;
+  getServerEpoch?(): string;
+  // After a server reset: the draft no longer exists on the server, so it is
+  // re-queued as a creation (version 0) and its old-lineage snapshots dropped.
+  rebaseDraftForNewServer?(id: string): void;
+  listDraftIds?(): string[];
   flush(): Promise<void>;
   getBaseUrl(): string;
   setBaseUrl(baseUrl: string): void;

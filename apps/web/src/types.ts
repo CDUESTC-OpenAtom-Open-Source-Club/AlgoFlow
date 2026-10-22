@@ -279,11 +279,14 @@ export interface SyncOperation {
   client_id: string;
   occurred_at: string;
   payload: Record<string, unknown>;
+  base_epoch?: string;
 }
 
 export interface WorkspaceState {
   client_id: string;
   cursor: string;
+  /** server_epoch committed together with cursor; absent before the first pull. */
+  server_epoch?: string;
   online: boolean;
   selected_id: string;
   drafts: Draft[];
@@ -310,6 +313,7 @@ export interface PushResult {
   version?: number;
   server_entity?: Draft | AIArtifact | ReviewResult | null;
   error_code?: string;
+  server_epoch?: string;
 }
 
 export interface PullChange {
@@ -321,6 +325,8 @@ export interface PullChange {
 export interface PullResult {
   changes: PullChange[];
   next_cursor: string;
+  server_epoch?: string;
+  reset?: boolean;
 }
 
 export interface SyncRunResult {

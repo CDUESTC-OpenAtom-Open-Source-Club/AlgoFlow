@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { validateAIArtifactEntity, validateReviewResultEntity } from '../../../packages/contracts/validate.mjs';
 
 export class SyncStore {
@@ -6,9 +7,27 @@ export class SyncStore {
   #operations = new Map();
   #changes = [];
 
+  // Versions and cursors only mean something inside one store lifetime. The
+  // in-memory store starts empty after a restart, so a new random epoch lets
+  // clients detect that their base_version / cursor belong to a lost lineage.
+  /** @param {string} [epoch] */
+  constructor(epoch = randomUUID()) {
+    this.epoch = epoch;
+  }
+
   apply(operation) {
+    return { ...this.#apply(operation), server_epoch: this.epoch };
+  }
+
+  #apply(operation) {
     const validationError = validateOperation(operation);
     if (validationError) return { operation_id: operation?.operation_id ?? '', status: 'rejected', error_code: 'INVALID_REQUEST' };
+    // A base_version > 0 from another lineage cannot be compared with this
+    // store's versions. It is a conflict even if the numbers happen to match.
+    if (operation.base_version > 0 && typeof operation.base_epoch === 'string' && operation.base_epoch !== this.epoch) {
+      const current = this.#entities.get(`${operation.entity_type}:${operation.entity_id}`);
+      return { operation_id: operation.operation_id, status: 'conflict', error_code: 'EPOCH_MISMATCH', server_entity: current ?? null };
+    }
     // Only applied operations are remembered, so `duplicate` always means "this
     // operation_id already changed the entity" and carries that server_entity.
     if (this.#operations.has(operation.operation_id)) {
@@ -76,10 +95,13 @@ export class SyncStore {
     return result;
   }
 
-  pull(afterCursor = '0') {
-    const position = Number.parseInt(afterCursor, 10);
+  // A cursor from another epoch points into a change log that no longer
+  // exists; replay everything and tell the client to rebase its local state.
+  pull(afterCursor = '0', clientEpoch = undefined) {
+    const reset = typeof clientEpoch === 'string' && clientEpoch.length > 0 && clientEpoch !== this.epoch;
+    const position = reset ? 0 : Number.parseInt(afterCursor, 10);
     const safePosition = Number.isFinite(position) && position >= 0 ? position : 0;
-    return { changes: this.#changes.slice(safePosition), next_cursor: String(this.#changes.length) };
+    return { changes: this.#changes.slice(safePosition), next_cursor: String(this.#changes.length), server_epoch: this.epoch, reset };
   }
 }
 
@@ -90,6 +112,7 @@ export function validateOperation(operation) {
   if (!Number.isInteger(operation.base_version) || operation.base_version < 0) return 'base_version is invalid';
   if (!['draft', 'ai_artifact', 'review_result'].includes(operation.entity_type)) return 'entity_type is invalid';
   if (!['upsert', 'delete'].includes(operation.operation_type)) return 'operation_type is invalid';
+  if (operation.base_epoch !== undefined && (typeof operation.base_epoch !== 'string' || operation.base_epoch.length === 0)) return 'base_epoch is invalid';
   if (!operation.payload || typeof operation.payload !== 'object' || Array.isArray(operation.payload)) return 'payload is required';
   return null;
 }

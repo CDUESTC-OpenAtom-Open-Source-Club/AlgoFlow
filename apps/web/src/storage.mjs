@@ -1,6 +1,8 @@
 const STORAGE_KEY = 'algoflow.workspace.v1';
 const QUEUE_KEY_PREFIX = 'algoflow.sync.queue.v1.';
 const CURSOR_KEY_PREFIX = 'algoflow.sync.cursor.v1.';
+// Stored per client next to the cursor: both describe one server lineage.
+const EPOCH_KEY_PREFIX = 'algoflow.sync.epoch.v1.';
 
 export class BrowserWorkspaceRepository {
   /** @param {string | null} [clientId] */
@@ -18,6 +20,7 @@ export class BrowserWorkspaceRepository {
           ...value,
           client_id: clientId,
           cursor: localStorage.getItem(`${CURSOR_KEY_PREFIX}${clientId}`) ?? value.cursor ?? '0',
+          server_epoch: localStorage.getItem(`${EPOCH_KEY_PREFIX}${clientId}`) ?? undefined,
           operations: readOperations(clientId, value.operations),
           conflicts: Array.isArray(value.conflicts) ? value.conflicts : [],
           ai_artifacts: Array.isArray(value.ai_artifacts) ? value.ai_artifacts : [],
@@ -44,10 +47,11 @@ export class BrowserWorkspaceRepository {
   /** @param {import('./types').WorkspaceState} state */
   save(state) {
     recomputeReviewFreshness(state);
-    const { operations, client_id: clientId, cursor, ...sharedState } = state;
+    const { operations, client_id: clientId, cursor, server_epoch: serverEpoch, ...sharedState } = state;
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...sharedState, operations: [] }));
     localStorage.setItem(`${QUEUE_KEY_PREFIX}${clientId}`, JSON.stringify(operations));
     localStorage.setItem(`${CURSOR_KEY_PREFIX}${clientId}`, cursor);
+    if (serverEpoch) localStorage.setItem(`${EPOCH_KEY_PREFIX}${clientId}`, serverEpoch);
   }
 }
 

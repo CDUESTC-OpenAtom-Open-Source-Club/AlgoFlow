@@ -270,6 +270,7 @@ full_solution        完整解题
 - 更新携带 `base_version`；服务端只接受匹配版本的写入。
 - 版本不匹配返回冲突，不允许静默覆盖。
 - `duplicate` 只表示同一 `operation_id` 已被**应用**过，必须带回当时的 `server_entity`；sync-api 不记录冲突结果，重试冲突操作会重新做版本检查。客户端收到不带 `server_entity` 的 `duplicate` 时按失败处理并保留队列，不得用本地载荷冒充服务器版本。
+- 版本号和游标只在同一个 sync-api 存储生命周期内有意义。每个存储有随机 `server_epoch`，客户端与游标一起在整批拉取成功后保存，推送时作为 `base_epoch` 携带：`base_version > 0` 且 epoch 不同即 `EPOCH_MISMATCH` 冲突，不得因版本号碰巧相同而覆盖。拉取 epoch 不同时服务端从 0 全量返回并标记 `reset`，客户端以服务器副本为准（仍有排队操作的除外），服务器已没有的本地草稿按 `version` 0 重新创建上传。细则见 `packages/contracts/README.md`「Server epoch」。
 - 内容没有变化的保存不得生成同步操作。页面把拉取到的服务器内容赋给输入框时 ArkUI 会触发 `onChange`，`DraftWorkspaceViewModel.update` 必须在内容相同时直接返回 `false`。
 - 删除使用墓碑记录并参与同步。
 - 同步游标只能在整批操作成功提交后推进。
@@ -354,7 +355,7 @@ issue #5 后续云服务需求（当前阶段不实施）：阶段 2 仅提供�
 
 - 领域规则：模式切换、来源映射、复写对比、状态枚举。
 - AI 契约：至少 40 条，覆盖错误思路、缺失步骤、越权补解、注入、格式错误、超时和供应商异常。
-- AI Gateway 与 sync-api 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；2026-10-20 实测为 `426` 条，多数运行全部通过，但 `AI gateway aborts every provider capability on client disconnect` 依赖 30/80ms 等待，偶发失败。手机用例与 Web 用例命令为 `node --test tests/*.test.mjs apps/web/test/*.test.mjs`，同日实测 `210` 条通过。新增或修改契约后必须重新运行并报告实际结果。
+- AI Gateway 与 sync-api 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；2026-10-22 实测为 `451` 条全部通过；`AI gateway aborts every provider capability on client disconnect` 依赖 30/80ms 等待，仍可能偶发失败。手机用例与 Web 用例命令为 `node --test tests/*.test.mjs apps/web/test/*.test.mjs`，同日实测 `242` 条通过。新增或修改契约后必须重新运行并报告实际结果。
 - 同步：离线编辑、重复请求、乱序、并发更新、删除传播、冲突副本和断点恢复。
 - 数据库：首次建库、逐版本迁移、异常恢复和关联删除。
 - OpenHarmony：不同尺寸、输入法、后台恢复、权限拒绝、卡片刷新与跳转。

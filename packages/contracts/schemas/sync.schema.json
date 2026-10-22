@@ -20,9 +20,27 @@
         "base_version": { "type": "integer", "minimum": 0 },
         "client_id": { "type": "string", "minLength": 1 },
         "occurred_at": { "type": "string", "format": "date-time" },
-        "payload": { "type": "object" }
+        "payload": { "type": "object" },
+        "base_epoch": {
+          "description": "server_epoch the client last committed with its cursor. A base_version > 0 from another epoch is a conflict (EPOCH_MISMATCH). Omitted before the first pull.",
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
+    },
+    "pullResult": {
+      "type": "object",
+      "required": ["changes", "next_cursor", "server_epoch", "reset"],
+      "properties": {
+        "changes": { "type": "array" },
+        "next_cursor": { "type": "string" },
+        "server_epoch": { "type": "string", "minLength": 1 },
+        "reset": {
+          "description": "true when the requested epoch is not the current one: changes start from 0 and the client must rebase its local versions.",
+          "type": "boolean"
+        }
+      }
     },
     "result": {
       "type": "object",
@@ -32,7 +50,8 @@
         "status": { "type": "string", "enum": ["applied", "duplicate", "conflict", "rejected"] },
         "version": { "type": "integer", "minimum": 1 },
         "server_entity": { "type": ["object", "null"] },
-        "error_code": { "type": "string", "enum": ["INVALID_REQUEST", "INVALID_AI_ARTIFACT", "INVALID_REVIEW_RESULT", "VERSION_CONFLICT", "OUT_OF_ORDER"] }
+        "error_code": { "type": "string", "enum": ["INVALID_REQUEST", "INVALID_AI_ARTIFACT", "INVALID_REVIEW_RESULT", "VERSION_CONFLICT", "EPOCH_MISMATCH", "OUT_OF_ORDER"] },
+        "server_epoch": { "type": "string", "minLength": 1 }
       }
     },
     "pairingCode": {
