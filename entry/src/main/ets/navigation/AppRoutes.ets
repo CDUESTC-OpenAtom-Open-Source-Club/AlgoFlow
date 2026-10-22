@@ -6,6 +6,7 @@ export const PLACEHOLDER_ROUTE: string = 'pages/Placeholder';
 
 export const PLACEHOLDER_TITLE_KEY: string = 'placeholderTitle';
 export const PLACEHOLDER_DETAIL_KEY: string = 'placeholderDetail';
+export const PLACEHOLDER_DRAFT_ID_KEY: string = 'placeholderDraftId';
 
 // Service card launches are delivered to Home through this AppStorage key. The
 // value carries a nonce so a repeated tap on the same card still triggers @Watch.
@@ -90,9 +91,10 @@ export async function openHome(): Promise<void> {
   await router.pushUrl({ url: HOME_ROUTE });
 }
 
-export async function openPlaceholder(title: string, detail: string): Promise<void> {
+export async function openPlaceholder(title: string, detail: string, draftId: string = ''): Promise<void> {
   AppStorage.setOrCreate<string>(PLACEHOLDER_TITLE_KEY, title);
   AppStorage.setOrCreate<string>(PLACEHOLDER_DETAIL_KEY, detail);
+  AppStorage.setOrCreate<string>(PLACEHOLDER_DRAFT_ID_KEY, draftId);
   await router.pushUrl({ url: PLACEHOLDER_ROUTE });
 }
 

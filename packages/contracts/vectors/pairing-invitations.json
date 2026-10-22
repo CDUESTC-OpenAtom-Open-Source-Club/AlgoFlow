@@ -1,0 +1,64 @@
+{
+  "invitations": [
+    {
+      "name": "LAN invitation",
+      "valid": true,
+      "text": "{\"type\":\"algoflow-pair-v1\",\"sync_api\":\"http://192.168.1.20:8787\",\"code\":\"04829103\"}"
+    },
+    {
+      "name": "loopback invitation for hdc rport",
+      "valid": true,
+      "text": "{\"type\":\"algoflow-pair-v1\",\"sync_api\":\"http://127.0.0.1:8787\",\"code\":\"12345678\"}"
+    },
+    {
+      "name": "https relay invitation",
+      "valid": true,
+      "text": "{\"type\":\"algoflow-pair-v1\",\"sync_api\":\"https://relay.example.test/sync\",\"code\":\"99999999\"}"
+    },
+    {
+      "name": "wrong type tag",
+      "valid": false,
+      "text": "{\"type\":\"algoflow-pair-v0\",\"sync_api\":\"http://192.168.1.20:8787\",\"code\":\"04829103\"}"
+    },
+    {
+      "name": "seven digit code",
+      "valid": false,
+      "text": "{\"type\":\"algoflow-pair-v1\",\"sync_api\":\"http://192.168.1.20:8787\",\"code\":\"1234567\"}"
+    },
+    {
+      "name": "numeric code",
+      "valid": false,
+      "text": "{\"type\":\"algoflow-pair-v1\",\"sync_api\":\"http://192.168.1.20:8787\",\"code\":4829103}"
+    },
+    {
+      "name": "non-http endpoint",
+      "valid": false,
+      "text": "{\"type\":\"algoflow-pair-v1\",\"sync_api\":\"ftp://192.168.1.20\",\"code\":\"04829103\"}"
+    },
+    {
+      "name": "endpoint with credentials",
+      "valid": false,
+      "text": "{\"type\":\"algoflow-pair-v1\",\"sync_api\":\"http://user:pass@192.168.1.20:8787\",\"code\":\"04829103\"}"
+    },
+    {
+      "name": "unknown field",
+      "valid": false,
+      "text": "{\"type\":\"algoflow-pair-v1\",\"sync_api\":\"http://192.168.1.20:8787\",\"code\":\"04829103\",\"token\":\"secret\"}"
+    },
+    {
+      "name": "JSON array",
+      "valid": false,
+      "text": "[\"algoflow-pair-v1\"]"
+    },
+    {
+      "name": "JSON null",
+      "valid": false,
+      "text": "null"
+    },
+    {
+      "name": "not JSON",
+      "valid": false,
+      "text": "https://example.test/not-a-pairing-code"
+    }
+  ]
+}

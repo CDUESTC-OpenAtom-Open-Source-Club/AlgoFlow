@@ -130,6 +130,7 @@ src/
 - Web 已能将离线队列 push 到本地 sync-api、pull 服务端变更并应用到当前选中的草稿。保存未提交内容时，顶部操作会先写入队列再同步；409 冲突必须保留服务器版本和本地冲突副本，由用户选择采用服务器版本或继续提交冲突副本；pull 的 `next_cursor` 只能在整批变更应用成功后持久化。
 - OpenHarmony 端已使用 `RdbDraftRepository` 作为 `DraftRepository`/同步仓储适配器，并通过 `HttpSyncClient` 和 `PhoneSyncService` 接入同一 `/v1/sync/operations`、`/v1/sync/changes` 契约。两端首个工作草稿统一使用 `draft-local`；空白的本地占位草稿不会上传，历史遗留的空占位操作会在启动迁移时移除但不删除草稿数据。
 - 当前 sync-api 仍为进程内存储，只适合局域网联调；该链路可以验收手机与 Web 的普通 HTTP 双向同步，但不得描述为生产云同步或 OpenHarmony 分布式能力已完成。真机不能使用 `127.0.0.1`，应配置运行 sync-api 电脑的局域网地址。
+- 手机配对：Web「手机远程」向 sync-api `POST /v1/pairing/sessions` 申请 8 位配对码，用 `uqr`（MIT，精确版本）渲染标准二维码，内容为 `{type:"algoflow-pair-v1", sync_api, code}`；手机扫码、手输或粘贴后 `POST /v1/pairing/claims`，由服务端校验后返回 `sync_api`/`ai_gateway`，手机才写入端点并首次同步。配对码 10 分钟有效、一次性，刷新会作废旧码，失败认领按分钟限流，日志不记录配对码。契约见 `sync.schema.json#/$defs/pairing*` 与 `vectors/pairing-invitations.json`，三端测试共用同一组向量。配对只移交端点，不是账号认证；sync-api 本身仍无鉴权，配对会话仅存于进程内存，重启即失效。
 - `apps/web/package.json` 保持 React、React DOM、Vite、TypeScript 与已核验的 CodeMirror 6 编辑器依赖。新增 npm 包前必须核验包名、官方仓库、许可证和包体积，并说明用途；小功能优先使用浏览器或 React 原生能力。当前 CodeMirror 依赖均为 MIT 许可证并已执行 `npm audit`。
 - UI 使用本地 `assets/game-icons` 资源和 `icon-assets.ts` 语义映射；不得改用未确认来源的图标库或用字母/仿制图形替代指定资源。界面字体目标为 `max32002/maruko-gothic`，代码编辑区必须使用等宽字体。
 - CSS 必须保持分区、多行和可读格式；不得重新提交压缩成单行的整文件样式。视觉令牌、布局和 Web/ArkUI 映射以 `docs/WEB_UI_GUIDE.md` 为共同参考。
@@ -164,6 +165,7 @@ ets/
 - `Draft.code` 表示主 `main.cpp`，`Draft.shortCode` 表示独立的 C++ 短代码片段；二者不得混用或互相覆盖。
 - `IdeaSegment` 为思路行提供稳定 ID、内容和位置；页面展示来源标识，后续 AI 请求必须使用这些稳定 ID 生成 `source_refs`。
 - `RdbDraftRepository` 负责显式建库/迁移、草稿持久化、离线操作队列和同步游标；`HttpSyncClient` 只使用 `packages/contracts/schemas/sync.schema.json` 定义的字段命名和枚举，禁止手机端另造同步契约。`PhoneSyncService` 在 push 后 pull，并在应用服务端版本后更新本地 `Draft.code`（对应 `main.cpp`）。
+- 「设置 → 连接电脑」的配对解析与端点推导在 `domain/PairingContract.ets`，认领在 `platform/HttpPairingClient.ets`，经 `DraftWorkspaceViewModel.claimPairing` 调用；认领成功前不得写入任何端点。扫码使用 `platform/PairingScanner.ets` 中的 `@kit.ScanKit`（`scanBarcode.startScanForResult`，系统扫码界面，不声明相机权限），这是 HarmonyOS 专有能力，不是纯 OpenHarmony 公共 API；设备不支持时隐藏扫码入口，保留配对码与粘贴方式。扫码状态为 `开发中`，模拟器可能没有相机，只能验证到界面拉起和相册识别。
 - 空白首个草稿仅作为本地编辑入口；只有用户实际保存内容后才生成可上传的 `upsert` 操作。同步失败保留队列和本地草稿，不能把 HTTP 成功或空队列单独解释为两端当前内容一致。
 
 ## 4. AI 模式契约
@@ -329,6 +331,13 @@ full_solution        完整解题
 - 不在浏览器中暴露团队模型密钥、数据库凭据或管理接口。
 
 ### 7.2 华为云
+
+云端部署的定位（2026-10-22 开发者确认）：云端部署是产品需要的能力，但**不是当前主线**。
+
+- 主线仍是本地闭环：OpenHarmony 手机端、Web 工作台与本机/局域网 sync-api、AI Gateway 的双端同步与 AI 契约。主线功能不得以“等云端上线”为由搁置，也不得依赖云端才能验收。
+- 云端承担的职责是让不在同一局域网的手机与电脑通过受控服务器中转同步（Web「手机远程」与手机「连接电脑」中的 `relay` 通道），以及后续共享 sync-api、AI Gateway 和真实模型调用。
+- 客户端与服务端代码必须保持端点可配置、与部署位置无关：`relay` 只是用户填写的另一组 http(s) 端点，客户端不得写死云端域名、账号或凭据，本地实现也不得为云端另造同步或配对契约。
+- 云端交付以独立 issue/PR 推进，不混入主线功能 PR。在下文前置条件完成前，界面和文档只能写“需自行提供可访问的端点 / 云端部署待预研”，不得描述为已提供云端中转。
 
 issue #5 后续云服务需求（当前阶段不实施）：阶段 2 仅提供本地独立测试 Provider，不部署华为云、不新增云资源或生产凭据。后续云端接入前必须另行确认受控账号、环境隔离、域名／证书、认证授权、限流、审计、密钥托管、数据保留期限、隐私文案、成本预算、回滚与监控方案，并完成本地 Provider 行为评测和 Web／OpenHarmony 双端验收。任何云部署不得把测试响应标记或本地联调结果当作真实模型能力；在这些前置条件完成前，云服务状态保持“待预研”，不得填入生产值。
 

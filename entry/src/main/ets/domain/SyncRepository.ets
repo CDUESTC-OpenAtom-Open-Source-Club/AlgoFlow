@@ -25,4 +25,5 @@ export interface SyncRepository {
   saveConflictAIRecord(record: IDERecord, conflict: ConflictRecord): Promise<void>;
   getDraftSourceCode(draftId: string, version: number): string | undefined;
   getDraftSourceSegments(draftId: string, version: number): IdeaSegment[] | undefined;
+  getDraftSourceVersions?(draftId: string): number[];
 }

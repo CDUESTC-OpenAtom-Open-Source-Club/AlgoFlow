@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import { ActivityBar } from './components/ActivityBar';
 import { EditorStage } from './components/EditorStage';
 import { InspectorPanel } from './components/InspectorPanel';
+import { PhoneConnectionModal, type PhoneConnectionConfig } from './components/PhoneConnectionModal';
 import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { initialDocuments } from './data';
@@ -47,6 +48,14 @@ export function App() {
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
   const [artifactBusy, setArtifactBusy] = useState(false);
   const [artifactMessage, setArtifactMessage] = useState('');
+  const [phoneModalOpen, setPhoneModalOpen] = useState(false);
+  const [phoneConfig, setPhoneConfig] = useState<PhoneConnectionConfig>(() => ({
+    enabled: true,
+    route: 'lan',
+    computerName: 'AlgoFlow-Desktop',
+    syncBaseUrl: syncClient.apiBase,
+    aiBaseUrl: aiClient.baseUrl,
+  }));
   const [aiSession] = useState(() => new AISession(aiClient, new BrowserAIResultRepository()));
   const aiState = useSyncExternalStore(aiSession.subscribe, aiSession.getSnapshot, aiSession.getSnapshot);
   const artifactHistory = useMemo(() => currentDraft
@@ -314,12 +323,33 @@ export function App() {
     setSyncState('synced');
   }
 
+  function handleSavePhoneConfig(next: PhoneConnectionConfig) {
+    syncClient.apiBase = next.syncBaseUrl;
+    aiClient.baseUrl = next.aiBaseUrl.replace(/\/$/, '');
+    setPhoneConfig(next);
+  }
+
   const bodyClassName = inspectorHidden ? 'ide-body inspector-collapsed' : 'ide-body';
   const reviewIssues = activeFile.endsWith('.cpp') ? reviewCpp(documents[activeFile]) : [];
 
   return (
     <div className={conflict ? 'ide-shell has-conflict' : 'ide-shell'}>
-      <TopBar saved={saved} syncState={syncState} onSync={syncNow} />
+      <TopBar
+        saved={saved}
+        syncState={syncState}
+        onSync={syncNow}
+        onOpenPhoneModal={() => setPhoneModalOpen(true)}
+      />
+      <PhoneConnectionModal
+        open={phoneModalOpen}
+        onClose={() => setPhoneModalOpen(false)}
+        clientId={clientId}
+        cursor={workspace.cursor}
+        pendingCount={workspace.operations.length}
+        config={phoneConfig}
+        onSaveConfig={handleSavePhoneConfig}
+        onSyncNow={syncNow}
+      />
       {conflict && (
         <div className="sync-conflict-banner" role="alert">
           <div>

@@ -5,13 +5,20 @@ import { AIProvider } from '../domain/AIProvider';
 import { SyncRepository } from '../domain/SyncRepository';
 import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
 import { HttpAIProvider } from '../platform/HttpAIProvider';
+import { HttpPairingClient } from '../platform/HttpPairingClient';
+import { PairingClaim, PairingInvitation, resolvePairingEndpoints } from '../domain/PairingContract';
 import { IDEAISession } from './IDEAISession';
 import { AIResultRepository, IDEContext } from '../domain/IDEAIModels';
 
 const RULE_VERSION = '1.0.0';
 
+export interface PairingClient {
+  claim(invitation: PairingInvitation, phoneClientId: string): Promise<PairingClaim>;
+}
+
 export class DraftWorkspaceViewModel {
   aiSession: IDEAISession | null = null;
+  pairingClient: PairingClient = new HttpPairingClient();
   private aiFile: string = 'main.cpp';
   private aiDraft: string = '';
   private syncing: boolean = false;
@@ -78,6 +85,45 @@ export class DraftWorkspaceViewModel {
 
   setSyncBaseUrl(baseUrl: string): void {
     this.syncRepository?.setBaseUrl(baseUrl);
+  }
+
+  getClientId(): string {
+    return this.syncRepository?.getClientId() ?? '';
+  }
+
+  // Claims the desktop's pairing code and stores the handed-over endpoints. It
+  // does not synchronize; the caller decides when to run the first push/pull.
+  async claimPairing(invitation: PairingInvitation): Promise<PairingClaim> {
+    const claim = await this.pairingClient.claim(invitation, this.getClientId());
+    const endpoints = resolvePairingEndpoints(invitation.syncApi, claim);
+    this.setSyncBaseUrl(endpoints[0]);
+    this.setAIBaseUrl(endpoints[1], this.allowTestData);
+    claim.syncApi = endpoints[0];
+    claim.aiGateway = endpoints[1];
+    return claim;
+  }
+
+  getSyncCursor(): string {
+    return this.syncRepository?.getCursor() ?? '0';
+  }
+
+  getPendingOperationCount(): number {
+    return this.syncRepository?.listPendingOperations().length ?? 0;
+  }
+
+  getDraftSourceVersions(draftId: string): number[] {
+    if (this.syncRepository?.getDraftSourceVersions !== undefined) {
+      return this.syncRepository.getDraftSourceVersions(draftId);
+    }
+    return [];
+  }
+
+  getDraftSourceCode(draftId: string, version: number): string | undefined {
+    return this.syncRepository?.getDraftSourceCode(draftId, version);
+  }
+
+  getDraftSourceSegments(draftId: string, version: number): IdeaSegment[] | undefined {
+    return this.syncRepository?.getDraftSourceSegments(draftId, version);
   }
 
   setAIBaseUrl(baseUrl: string, allowTestData: boolean = false): void {
