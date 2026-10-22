@@ -1016,3 +1016,47 @@ test('view model stores claimed endpoints only after a successful claim', async 
   assert.deepEqual(writes, [['sync', 'http://192.168.1.5:8787'], ['ai', 'http://192.168.1.5:8788']]);
   assert.equal(claim.aiGateway, 'http://192.168.1.5:8788');
 });
+test('view model ignores an unchanged update so pulled content is not re-queued as an edit', () => {
+  const { DraftWorkspaceViewModel } = load('application/DraftWorkspaceViewModel');
+  const { Draft } = load('domain/Models');
+  const draft = new Draft('d', 'Server title'); draft.code = 'server code'; draft.version = 2;
+  draft.updatedAt = '2026-10-22T00:00:00.000Z';
+  let saves = 0, cancels = 0;
+  const vm = new DraftWorkspaceViewModel({ get: (id) => (id === 'd' ? draft : undefined), save() { saves++; } }, undefined,
+    { cancel() { cancels++; } });
+  assert.equal(vm.update('d', 'Server title', '', 'server code', '', ''), false);
+  assert.equal(saves, 0);
+  assert.equal(cancels, 0, 'an unchanged update must not cancel a running AI request');
+  assert.equal(draft.updatedAt, '2026-10-22T00:00:00.000Z');
+  assert.equal(vm.update('d', 'User title', '', 'server code', '', ''), true);
+  assert.equal(saves, 1);
+  assert.equal(vm.update('missing', 'x', '', '', '', ''), false);
+});
+test('phone sync keeps an operation when a duplicate arrives without server_entity', async () => {
+  const { PhoneSyncService } = load('platform/PhoneSyncService');
+  const { HttpSyncClient } = load('platform/HttpSyncClient');
+  const operation = { operation_id: 'op-dup', entity_type: 'draft', entity_id: 'd', operation_type: 'upsert',
+    base_version: 1, client_id: 'phone', occurred_at: '2026-10-22T00:00:00.000Z', payload: { id: 'd', title: 'Local edit', version: 1 } };
+  const statuses = [];
+  const repository = {
+    operations: [operation], listPendingOperations() { return this.operations.slice(); }, markInFlight() {},
+    getBaseUrl: () => 'http://sync', getCursor: () => '0', getClientId: () => 'phone',
+    setDraftSyncStatus(id, status) { statuses.push(status); }, removeOperation(id) { this.operations = this.operations.filter(o => o.operation_id !== id); },
+    applyServerDraft() { this.applied = true; }, flush: () => Promise.resolve(), commitCursor() { this.committed = true; return Promise.resolve(); }
+  };
+  const oldPush = HttpSyncClient.prototype.push;
+  const oldPull = HttpSyncClient.prototype.pull;
+  HttpSyncClient.prototype.push = async (op) => ({ operation_id: op.operation_id, status: 'duplicate' });
+  HttpSyncClient.prototype.pull = async () => { throw new Error('pull must not run'); };
+  try {
+    const result = await new PhoneSyncService(repository).synchronize();
+    assert.equal(result.status, 'failed');
+    assert.equal(repository.operations.length, 1, 'the unconfirmed edit stays queued');
+    assert.equal(repository.applied, undefined, 'the local payload must not be applied as the server version');
+    assert.equal(statuses.at(-1), 'failed');
+    assert.equal(repository.committed, undefined);
+  } finally {
+    HttpSyncClient.prototype.push = oldPush;
+    HttpSyncClient.prototype.pull = oldPull;
+  }
+});

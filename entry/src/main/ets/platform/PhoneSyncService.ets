@@ -70,6 +70,13 @@ export class PhoneSyncService {
           this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.FAILED);
           return new SyncRunResult(SyncRunStatus.FAILED, result.error_code ?? '同步操作被拒绝');
         }
+        // A duplicate without the stored server entity cannot prove the edit
+        // reached the server; never fall back to the local payload for it.
+        if (result.status === SyncResultStatus.DUPLICATE &&
+          (result.server_entity === undefined || result.server_entity === null)) {
+          this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.FAILED);
+          return new SyncRunResult(SyncRunStatus.FAILED, '服务器未返回已提交版本，本地修改已保留');
+        }
         const serverPayload = result.server_entity ?? operation.payload;
         if (entityType(operation.entity_type) === SyncEntityType.AI_ARTIFACT) {
           await this.repository.applyServerAIArtifact(serverPayload as AIArtifactPayload);

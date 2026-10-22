@@ -265,6 +265,8 @@ full_solution        完整解题
 - 客户端每次写入生成唯一 `operation_id`，重试复用同一 ID。
 - 更新携带 `base_version`；服务端只接受匹配版本的写入。
 - 版本不匹配返回冲突，不允许静默覆盖。
+- `duplicate` 只表示同一 `operation_id` 已被**应用**过，必须带回当时的 `server_entity`；sync-api 不记录冲突结果，重试冲突操作会重新做版本检查。客户端收到不带 `server_entity` 的 `duplicate` 时按失败处理并保留队列，不得用本地载荷冒充服务器版本。
+- 内容没有变化的保存不得生成同步操作。页面把拉取到的服务器内容赋给输入框时 ArkUI 会触发 `onChange`，`DraftWorkspaceViewModel.update` 必须在内容相同时直接返回 `false`。
 - 删除使用墓碑记录并参与同步。
 - 同步游标只能在整批操作成功提交后推进。
 - 首版冲突策略为保留服务器版本和本地冲突副本，由用户选择/合并；不实现 CRDT 或实时多人协作。

@@ -46,6 +46,26 @@ Pairing is an endpoint handoff, not account authentication. The sync API is
 still unauthenticated and sessions live in process memory. `vectors/pairing-invitations.json`
 is shared by the sync-api, Web, and phone tests.
 
+## Sync write results
+
+`sync.schema.json#/$defs/result.status` has strict meanings:
+
+- `applied`: this operation changed the entity; `server_entity` is the new version.
+- `duplicate`: this `operation_id` was already **applied** earlier. sync-api only
+  remembers applied operations, so a duplicate always carries the
+  `server_entity` that operation produced. Clients must treat a duplicate
+  without `server_entity` as a failure and keep the operation queued; never
+  substitute the local payload, because nothing proves the server has it.
+- `conflict`: `base_version` does not match. A conflict changes nothing and is
+  not remembered, so a retry of the same `operation_id` is checked again against
+  the current version. `server_entity` is the current entity, or `null` when
+  the entity does not exist on the server.
+
+The in-memory sync-api forgets every version on restart. A queued operation
+whose `base_version` happens to equal a version re-created after the restart is
+applied normally; preventing that needs a persistent store or a server epoch in
+the contract.
+
 ## IDE review and completion
 
 Two optional, editor-decoupled capabilities extend the transform contract for the

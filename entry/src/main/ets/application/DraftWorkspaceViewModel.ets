@@ -212,10 +212,18 @@ export class DraftWorkspaceViewModel {
   listDrafts(): Draft[] { return this.repository.list(); }
   getDraft(id: string): Draft | undefined { return this.repository.get(id); }
 
-  update(id: string, title: string, idea: string, code: string, shortCode: string, rewrite: string): void {
-    this.cancelAI();
+  // Returns false when nothing changed. ArkUI fires onChange when the page
+  // assigns pulled server content to an input; treating that as an edit would
+  // queue an upsert the user never made and overwrite another device's version.
+  update(id: string, title: string, idea: string, code: string, shortCode: string, rewrite: string): boolean {
     const draft = this.repository.get(id);
-    if (draft === undefined) return;
+    if (draft === undefined) {
+      this.cancelAI();
+      return false;
+    }
+    if (draft.title === title && draft.idea === idea && draft.code === code &&
+      draft.shortCode === shortCode && draft.rewrite === rewrite) return false;
+    this.cancelAI();
     draft.title = title;
     draft.idea = idea;
     draft.code = code;
@@ -226,6 +234,7 @@ export class DraftWorkspaceViewModel {
     draft.syncStatus = SyncStatus.LOCAL_ONLY;
     this.repository.save(draft);
     this.selectAIContext(id, this.aiFile);
+    return true;
   }
 
   private buildIdeaSegments(draft: Draft, idea: string): IdeaSegment[] {
