@@ -510,9 +510,13 @@ struct Index {
   }
 
   private saveDraft(): void {
-    // No change (for example onChange fired by assigning pulled content): keep
-    // the current sync status and queue nothing.
-    if (!this.viewModel.update(this.selectedId, this.title, this.idea, this.code, this.shortCode, this.rewrite)) return;
+    // No change: editor edits were already persisted by updateDocument, or the
+    // onChange came from assigning pulled content. Clear the "未保存" marker but
+    // keep the current sync status and queue nothing.
+    if (!this.viewModel.update(this.selectedId, this.title, this.idea, this.code, this.shortCode, this.rewrite)) {
+      this.saved = true;
+      return;
+    }
     this.editEpoch++;
     const draft = this.viewModel.getDraft(this.selectedId);
     if (draft !== undefined) this.segments = draft.ideaSegments;
@@ -1166,27 +1170,32 @@ struct Index {
     }.width('100%').backgroundColor('#161618')
   }
 
+  // The panel keeps a fixed height so the editor does not jump; content taller
+  // than that (AI results, review lists) scrolls inside it instead of being
+  // drawn under the floating toolbar.
   @Builder
   ToolPanel() {
-    Column() {
-      if (this.activeTool === WorkspaceTool.FILES) {
-        this.FilesPanel()
-      } else if (this.activeTool === WorkspaceTool.IDEA) {
-        this.IdeaPanel()
-      } else if (this.activeTool === WorkspaceTool.SNIPPET) {
-        this.SnippetPanel()
-      } else if (this.activeTool === WorkspaceTool.AI) {
-        this.AIPanel()
-      } else if (this.activeTool === WorkspaceTool.REWRITE) {
-        this.RewritePanel()
-      } else if (this.activeTool === WorkspaceTool.REVIEW) {
-        this.ReviewPanel()
-      } else if (this.activeTool === WorkspaceTool.SEARCH) {
-        this.SearchPanel()
-      } else if (this.activeTool === WorkspaceTool.SYNC) {
-        this.SyncPanel()
-      }
-    }.width('100%').height(230).padding({ left: 14, right: 14, top: 12, bottom: 12 })
+    Scroll() {
+      Column() {
+        if (this.activeTool === WorkspaceTool.FILES) {
+          this.FilesPanel()
+        } else if (this.activeTool === WorkspaceTool.IDEA) {
+          this.IdeaPanel()
+        } else if (this.activeTool === WorkspaceTool.SNIPPET) {
+          this.SnippetPanel()
+        } else if (this.activeTool === WorkspaceTool.AI) {
+          this.AIPanel()
+        } else if (this.activeTool === WorkspaceTool.REWRITE) {
+          this.RewritePanel()
+        } else if (this.activeTool === WorkspaceTool.REVIEW) {
+          this.ReviewPanel()
+        } else if (this.activeTool === WorkspaceTool.SEARCH) {
+          this.SearchPanel()
+        } else if (this.activeTool === WorkspaceTool.SYNC) {
+          this.SyncPanel()
+        }
+      }.width('100%').padding({ left: 14, right: 14, top: 12, bottom: 12 })
+    }.width('100%').height(230).align(Alignment.Top).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.None)
       .backgroundColor('#161618').border({ width: { top: 1 }, color: '#2A2A2D' })
   }
 
