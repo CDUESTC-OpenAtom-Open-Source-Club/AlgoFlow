@@ -6,6 +6,10 @@ import { publishCardSnapshot } from '../platform/CardSnapshot';
 import { DEBUG } from 'BuildProfile';
 import { IDECapability, IDERecord, IDEState, ReviewKind, SourceCursor } from '../domain/IDEAIModels';
 import { rangeOffsets } from '../domain/IDEAIContract';
+import { assignRewriteLines, compareRewrite, resolveRewriteMapping, RewriteCodeLine, RewriteCompareSource, RewriteCompareStep, RewriteComparison, RewriteDiffLine,
+  RewriteDiffOp, RewriteLineMapping, RewriteLineRange, RewriteMappingRecord, RewriteMappingState, RewriteMappingStatus,
+  RewriteStepComparison, RewriteStepStatus, selectionLines } from '../domain/RewriteCompare';
+import { PreferencesRewriteMappingStore } from '../platform/RewriteMappingStore';
 
 enum WorkspaceTool {
   NONE = 'none', FILES = 'files', IDEA = 'idea', SNIPPET = 'snippet', AI = 'ai',
@@ -129,6 +133,11 @@ struct Index {
   @State drawerAIExpanded: boolean = false;
   @State drawerToolsExpanded: boolean = false;
   @State drawerSyncExpanded: boolean = false;
+  @State transformOutput: string = 'pseudocode';
+  @State rewriteMappingRecord: RewriteMappingRecord | null = null;
+  @State rewriteSelection: RewriteLineRange = new RewriteLineRange(1, 1);
+  @State revealedCompareId: string = '';
+  @State compareMessage: string = '';
   private aiRepository: RdbDraftRepository | null = null;
   private editEpoch: number = 0;
 
@@ -149,10 +158,10 @@ struct Index {
     this.viewModel.selectAIContext(this.selectedId, this.activeFile);
   }
 
-  private requestIDE(capability: IDECapability, kind: ReviewKind = ReviewKind.EXPLANATION): void {
+  private requestIDE(capability: IDECapability, kind: ReviewKind = ReviewKind.EXPLANATION, transformOutput: string = 'pseudocode'): void {
     this.viewModel.selectAIContext(this.selectedId, this.activeFile);
     const cursor = new SourceCursor(); cursor.line = this.activeLine + 1; cursor.char = this.activeColumn;
-    this.viewModel.aiSession?.request(capability, kind, cursor);
+    this.viewModel.aiSession?.request(capability, kind, cursor, transformOutput);
   }
 
   private resultText(record: IDERecord): string {
@@ -175,6 +184,7 @@ struct Index {
       const repository = new RdbDraftRepository(getContext(this));
       this.viewModel = new DraftWorkspaceViewModel(repository, repository);
       await this.viewModel.initialize();
+      this.viewModel.configureRewriteMappings(new PreferencesRewriteMappingStore(getContext(this)));
       this.aiRepository = repository;
       this.configureAISession();
       const routedDraftId = AppStorage.get<string>('routeDraftId');
@@ -214,6 +224,130 @@ struct Index {
     this.saved = true;
     this.resetEditorPosition();
     this.refreshEditorFeatures();
+    this.loadRewriteMapping();
+  }
+
+  private async loadRewriteMapping(): Promise<void> {
+    const draftId = this.selectedId;
+    const record = await this.viewModel.loadRewriteMapping(draftId);
+    if (draftId === this.selectedId) this.rewriteMappingRecord = record;
+  }
+
+  // Reads @State (aiRecords, rewrite, rewriteMappingRecord), so builders that
+  // call these helpers re-render when the session or partition changes.
+  private compareRecord(): IDERecord | null {
+    return this.viewModel.latestCompareRecord(this.aiRecords);
+  }
+
+  private compareSource(): RewriteCompareSource | null {
+    const record = this.compareRecord();
+    return record === null ? null : this.viewModel.compareSource(record);
+  }
+
+  private compareMapping(): RewriteMappingState {
+    const record = this.compareRecord();
+    return resolveRewriteMapping(this.rewriteMappingRecord, record === null ? '' : record.id, this.rewrite);
+  }
+
+  private compareHidden(): boolean {
+    const record = this.compareRecord();
+    return record !== null && record.hidden && this.revealedCompareId !== record.id;
+  }
+
+  private comparison(): RewriteComparison | null {
+    const source = this.compareSource();
+    const mapping = this.compareMapping();
+    if (source === null || this.compareHidden() || mapping.status === RewriteMappingStatus.OUTDATED) return null;
+    return compareRewrite(source, this.rewrite, mapping.mappings);
+  }
+
+  private async storeRewriteMapping(mappings: RewriteLineMapping[]): Promise<void> {
+    const record = this.compareRecord();
+    if (record === null) return;
+    const draftId = this.selectedId;
+    try {
+      const stored = await this.viewModel.saveRewriteMapping(draftId, record.id, this.rewrite, mappings);
+      if (draftId === this.selectedId) { this.rewriteMappingRecord = stored; this.compareMessage = ''; }
+    } catch (error) {
+      this.compareMessage = '复写划分保存失败，请检查存储空间后重试';
+    }
+  }
+
+  private assignRewrite(stepId: string | null): void {
+    const mapping = this.compareMapping();
+    if (mapping.status === RewriteMappingStatus.OUTDATED) return;
+    this.storeRewriteMapping(assignRewriteLines(mapping.mappings, this.rewriteSelection.start_line, this.rewriteSelection.end_line, stepId));
+  }
+
+  private async clearRewriteMapping(): Promise<void> {
+    const draftId = this.selectedId;
+    try {
+      await this.viewModel.clearRewriteMapping(draftId);
+      if (draftId === this.selectedId) this.rewriteMappingRecord = null;
+    } catch (error) {
+      this.compareMessage = '复写划分清空失败，请重试';
+    }
+  }
+
+  private rewriteRangeText(stepId: string): string {
+    const ranges = this.compareMapping().mappings.filter((mapping: RewriteLineMapping) => mapping.step_id === stepId)
+      .map((mapping: RewriteLineMapping) => mapping.start_line === mapping.end_line ? `${mapping.start_line}` : `${mapping.start_line}-${mapping.end_line}`);
+    return ranges.length > 0 ? `第 ${ranges.join('、')} 行` : '未划分';
+  }
+
+  private compareSummaryText(): string {
+    const comparison = this.comparison();
+    if (comparison === null) return '';
+    return `一致 ${comparison.summary.same} · 有差异 ${comparison.summary.different} · 遗漏 ${comparison.summary.missing} · AI 无代码 ${comparison.summary.no_ai_code}`;
+  }
+
+  private compareSteps(): RewriteCompareStep[] {
+    const source = this.compareSource();
+    return source === null ? [] : source.steps;
+  }
+
+  private comparisonSteps(): RewriteStepComparison[] {
+    const comparison = this.comparison();
+    return comparison === null ? [] : comparison.steps;
+  }
+
+  private aiUnmappedLines(): RewriteCodeLine[] {
+    const comparison = this.comparison();
+    return comparison === null ? [] : comparison.ai_unmapped;
+  }
+
+  private rewriteExtraLines(): RewriteCodeLine[] {
+    const comparison = this.comparison();
+    return comparison === null ? [] : comparison.rewrite_extra;
+  }
+
+  private canAssignRewrite(): boolean {
+    return this.activeFile === EditorFile.REWRITE && this.compareMapping().status !== RewriteMappingStatus.OUTDATED;
+  }
+
+  private rewriteSelectionText(): string {
+    if (this.activeFile !== EditorFile.REWRITE) return '先打开 rewrite.cpp，选中要划分的行';
+    const range = this.rewriteSelection;
+    return `选中复写的第 ${range.start_line}${range.end_line === range.start_line ? '' : `-${range.end_line}`} 行，归到：`;
+  }
+
+  // Session-only: shows a hidden AI result here without changing its hidden flag.
+  private revealCompare(): void {
+    const record = this.compareRecord();
+    this.revealedCompareId = record === null ? '' : record.id;
+  }
+
+  private compareStepText(index: number): string {
+    const steps = this.compareSource()?.steps ?? [];
+    return index >= 1 && index <= steps.length ? steps[index - 1].step : '';
+  }
+
+  private compareProvenance(): string {
+    const record = this.compareRecord();
+    if (record === null) return '';
+    const draft = this.viewModel.getDraft(this.selectedId);
+    const current = draft === undefined || draft.version === record.context.version ? '' : `（当前 v${draft.version}）`;
+    return `AI 片段基于草稿 v${record.context.version}${current} · ${record.context.mode}${record.isTestData ? ' · 测试数据' : ''}`;
   }
 
   private resetEditorPosition(): void {
@@ -284,6 +418,7 @@ struct Index {
     const value = this.currentValue();
     this.selectionStart = Math.max(0, Math.min(start, value.length));
     this.selectionEnd = Math.max(this.selectionStart, Math.min(end, value.length));
+    if (this.activeFile === EditorFile.REWRITE) this.rewriteSelection = selectionLines(value, this.selectionStart, this.selectionEnd);
     const before = value.substring(0, this.selectionStart);
     this.activeLine = before.split('\n').length - 1;
     const lastBreak = before.lastIndexOf('\n');
@@ -593,7 +728,7 @@ struct Index {
   }
 
   private async runAI(): Promise<void> {
-    this.requestIDE(IDECapability.TRANSFORM);
+    this.requestIDE(IDECapability.TRANSFORM, ReviewKind.EXPLANATION, this.transformOutput);
   }
 
   private toggleArtifact(): void {
@@ -1021,6 +1156,14 @@ struct Index {
       if (this.mode !== AIMode.FAITHFUL_TRANSFORM) {
         Text('该模式尚未接入，保持显式不可用，不会自动降级为忠实转换。').fontSize(10).fontColor('#FF9F0A').margin({ top: 2 })
       }
+      Row({ space: 7 }) {
+        Text('输出').fontSize(10).fontColor('#8E8E93')
+        this.OutputKindButton('伪代码', 'pseudocode')
+        this.OutputKindButton('代码片段', 'code_snippet')
+      }.width('100%').margin({ top: 4 })
+      if (this.transformOutput === 'code_snippet') {
+        Text('代码片段只读展示，用于和 rewrite.cpp 复写对比，不会写入任何 .cpp 文件。').fontSize(10).fontColor('#8E8E93')
+      }
       if (this.aiLoading) {
         Row({ space: 8 }) {
           Text('正在请求 AI Gateway...').fontSize(10).fontColor('#79C0FF').layoutWeight(1)
@@ -1089,7 +1232,109 @@ struct Index {
         }
       }.height(34).fontColor('#07110A').backgroundColor('#30D158').borderRadius(4)
         .onClick(() => { this.selectFile(EditorFile.REWRITE); this.activeTool = WorkspaceTool.NONE; })
+      this.RewriteComparePanel()
     }.width('100%')
+  }
+
+  @Builder
+  OutputKindButton(label: string, kind: string) {
+    Button(label).height(30).fontSize(10)
+      .fontColor(this.transformOutput === kind ? '#07110A' : '#9BE7A9')
+      .backgroundColor(this.transformOutput === kind ? '#30D158' : '#1E3A27').borderRadius(4)
+      .onClick(() => { this.transformOutput = kind; })
+  }
+
+  @Builder
+  RewriteComparePanel() {
+    Column({ space: 6 }) {
+      Text('复写对比').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+      if (this.compareSource() === null) {
+        Text('当前模式还没有 AI 代码片段。在 AI 面板把输出切到“代码片段”并发起忠实转换。伪代码不参与对比。')
+          .fontSize(10).lineHeight(16).fontColor('#8E8E93')
+      } else {
+        Text(this.compareProvenance()).fontSize(9).fontColor('#8E8E93')
+        Text('划分只保存在本机，不同步到其他设备。').fontSize(9).fontColor('#8E8E93')
+        if (this.compareMessage.length > 0) {
+          Text(this.compareMessage).fontSize(10).fontColor('#FF9A94')
+        }
+        if (this.compareMapping().status === RewriteMappingStatus.OUTDATED) {
+          Text('rewrite.cpp 在划分后改过，原有行号可能错位。核对下面的行范围后确认，或清空重新划分。')
+            .fontSize(10).lineHeight(16).fontColor('#FFD60A')
+          Row({ space: 7 }) {
+            Button('划分仍然有效').height(30).fontSize(10).fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4)
+              .onClick(() => { this.storeRewriteMapping(this.compareMapping().mappings); })
+            Button('清空划分').height(30).fontSize(10).fontColor('#FF9A94').backgroundColor('#2A1B1C').borderRadius(4)
+              .onClick(() => { this.clearRewriteMapping(); })
+          }
+        }
+        Text(this.rewriteSelectionText()).fontSize(10).fontColor('#ECECED')
+        Scroll() {
+          Row({ space: 6 }) {
+            ForEach(this.compareSteps(), (step: RewriteCompareStep, index: number) => {
+              Button(`步骤 ${index + 1}`).height(30).fontSize(10).fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4)
+                .enabled(this.canAssignRewrite())
+                .onClick(() => this.assignRewrite(step.id))
+            }, (step: RewriteCompareStep) => step.id)
+            Button('移出步骤').height(30).fontSize(10).fontColor('#B8B8BD').backgroundColor('#242426').borderRadius(4)
+              .enabled(this.canAssignRewrite())
+              .onClick(() => this.assignRewrite(null))
+          }
+        }.width('100%').height(36).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+        if (this.compareHidden()) {
+          Text('AI 结果已隐藏。划分时只显示步骤编号，不显示步骤内容和 AI 代码。').fontSize(10).lineHeight(16).fontColor('#8E8E93')
+          ForEach(this.compareSteps(), (step: RewriteCompareStep, index: number) => {
+            Text(`步骤 ${index + 1}：复写 ${this.rewriteRangeText(step.id)}`).fontSize(10).fontColor('#ECECED')
+          }, (step: RewriteCompareStep) => `hidden-${step.id}-${this.rewriteRangeText(step.id)}`)
+          Button('开始对比').height(32).fontSize(10).fontColor('#07110A').backgroundColor('#30D158').borderRadius(4)
+            .onClick(() => { this.revealCompare(); })
+          Text('开始对比只在本页显示 AI 内容，不会改变结果的隐藏状态。').fontSize(9).fontColor('#8E8E93')
+        } else if (this.comparison() === null) {
+          ForEach(this.compareSteps(), (step: RewriteCompareStep, index: number) => {
+            Text(`步骤 ${index + 1}：${step.step} · 复写 ${this.rewriteRangeText(step.id)}`).fontSize(10).fontColor('#ECECED')
+          }, (step: RewriteCompareStep) => `outdated-${step.id}-${this.rewriteRangeText(step.id)}`)
+        } else {
+          Text(this.compareSummaryText()).fontSize(10).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+          ForEach(this.comparisonSteps(), (item: RewriteStepComparison) => {
+            this.RewriteStepCard(item)
+          }, (item: RewriteStepComparison) => `${item.step_id}-${item.status}-${JSON.stringify(item.diff)}`)
+          if (this.aiUnmappedLines().length > 0) {
+            Text('AI 片段中未映射到步骤的行').fontSize(10).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+            ForEach(this.aiUnmappedLines(), (line: RewriteCodeLine) => {
+              this.RewriteDiffRow(new RewriteDiffLine(RewriteDiffOp.AI_ONLY, line.line, null, line.text))
+            }, (line: RewriteCodeLine) => `ai-${line.line}-${line.text}`)
+          }
+          if (this.rewriteExtraLines().length > 0) {
+            Text('复写新增（未划分到步骤）').fontSize(10).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+            ForEach(this.rewriteExtraLines(), (line: RewriteCodeLine) => {
+              this.RewriteDiffRow(new RewriteDiffLine(RewriteDiffOp.REWRITE_ONLY, null, line.line, line.text))
+            }, (line: RewriteCodeLine) => `rw-${line.line}-${line.text}`)
+          }
+        }
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 12 })
+  }
+
+  @Builder
+  RewriteStepCard(item: RewriteStepComparison) {
+    Column({ space: 3 }) {
+      Row({ space: 6 }) {
+        Text(`步骤 ${item.index}`).fontSize(11).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+        Text(rewriteStatusLabel(item.status)).fontSize(9).fontColor(rewriteStatusColor(item.status))
+          .padding({ left: 6, right: 6, top: 1, bottom: 1 }).backgroundColor('#242426').borderRadius(8)
+      }
+      Text(this.compareStepText(item.index)).fontSize(10).fontColor('#B8B8BD')
+      ForEach(item.diff, (line: RewriteDiffLine) => {
+        this.RewriteDiffRow(line)
+      }, (line: RewriteDiffLine) => `${item.step_id}-${line.op}-${line.ai_line}-${line.rewrite_line}`)
+    }.width('100%').alignItems(HorizontalAlign.Start).padding(8).backgroundColor('#1C1C1E').borderRadius(4)
+      .border({ width: { left: 3 }, color: rewriteStatusColor(item.status) })
+  }
+
+  @Builder
+  RewriteDiffRow(line: RewriteDiffLine) {
+    Text(`${rewriteDiffTag(line.op)} ${lineLabel(line.ai_line)} ${lineLabel(line.rewrite_line)}  ${line.text}`)
+      .width('100%').fontSize(10).lineHeight(16).fontFamily('monospace').fontColor(rewriteDiffColor(line.op))
+      .backgroundColor(rewriteDiffBackground(line.op))
   }
 
   @Builder
@@ -1414,6 +1659,43 @@ struct Index {
       }
     }.width('100%').height('100%').backgroundColor('#0A0A0C')
   }
+}
+
+function rewriteStatusLabel(status: RewriteStepStatus): string {
+  if (status === RewriteStepStatus.SAME) return '一致';
+  if (status === RewriteStepStatus.DIFFERENT) return '有差异';
+  if (status === RewriteStepStatus.MISSING) return '遗漏';
+  return 'AI 无代码';
+}
+
+function rewriteStatusColor(status: RewriteStepStatus): string {
+  if (status === RewriteStepStatus.SAME) return '#30D158';
+  if (status === RewriteStepStatus.DIFFERENT) return '#FFD60A';
+  if (status === RewriteStepStatus.MISSING) return '#FF9A94';
+  return '#8E8E93';
+}
+
+// Text tags keep the diff readable without relying on color alone.
+function rewriteDiffTag(op: RewriteDiffOp): string {
+  if (op === RewriteDiffOp.AI_ONLY) return 'AI  ';
+  if (op === RewriteDiffOp.REWRITE_ONLY) return '复写';
+  return '    ';
+}
+
+function rewriteDiffColor(op: RewriteDiffOp): string {
+  if (op === RewriteDiffOp.AI_ONLY) return '#FFB4A9';
+  if (op === RewriteDiffOp.REWRITE_ONLY) return '#9BE7A9';
+  return '#ECECED';
+}
+
+function rewriteDiffBackground(op: RewriteDiffOp): string {
+  if (op === RewriteDiffOp.AI_ONLY) return '#2A1B1C';
+  if (op === RewriteDiffOp.REWRITE_ONLY) return '#1E3A27';
+  return '#00000000';
+}
+
+function lineLabel(line: number | null): string {
+  return line === null ? '  ' : line.toString().padStart(2, ' ');
 }
 
 function diagnosticLevelLabel(level: string): string {

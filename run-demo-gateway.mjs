@@ -9,7 +9,9 @@ import { createAIGateway } from './services/ai-gateway/src/server.mjs';
 
 const mode = process.env.PROVIDER ?? 'ok';
 
+// output_kind=code_snippet：每个思路片段回显成一行占位调用，step_N 映射到第 N 行，用于复写对比联调。
 function buildArtifact(request, violate) {
+  const snippet = request.output_kind === 'code_snippet';
   return {
     mode: request.mode,
     pseudocode: request.idea_segments.map((seg, i) => ({
@@ -17,8 +19,8 @@ function buildArtifact(request, violate) {
       step: `[demo] ${seg.content}`,
       source_refs: [seg.id]
     })),
-    code_snippet: null,
-    code_mappings: [],
+    code_snippet: snippet ? request.idea_segments.map((seg, i) => `step_${i + 1}();  // ${seg.content}`).join('\n') : null,
+    code_mappings: snippet ? request.idea_segments.map((_, i) => ({ step_id: `step_${i + 1}`, start_line: i + 1, end_line: i + 1 })) : [],
     assumptions: ['demo provider：仅回显思路，不做真实推理'],
     missing_information: [],
     risk_flags: [],

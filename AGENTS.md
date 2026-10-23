@@ -131,6 +131,7 @@ src/
 - OpenHarmony 端已使用 `RdbDraftRepository` 作为 `DraftRepository`/同步仓储适配器，并通过 `HttpSyncClient` 和 `PhoneSyncService` 接入同一 `/v1/sync/operations`、`/v1/sync/changes` 契约。两端首个工作草稿统一使用 `draft-local`；空白的本地占位草稿不会上传，历史遗留的空占位操作会在启动迁移时移除但不删除草稿数据。
 - 当前 sync-api 仍为进程内存储，只适合局域网联调；该链路可以验收手机与 Web 的普通 HTTP 双向同步，但不得描述为生产云同步或 OpenHarmony 分布式能力已完成。真机不能使用 `127.0.0.1`，应配置运行 sync-api 电脑的局域网地址。
 - 手机配对：Web「手机远程」向 sync-api `POST /v1/pairing/sessions` 申请 8 位配对码，用 `uqr`（MIT，精确版本）渲染标准二维码，内容为 `{type:"algoflow-pair-v1", sync_api, code}`；手机扫码、手输或粘贴后 `POST /v1/pairing/claims`，由服务端校验后返回 `sync_api`/`ai_gateway`，手机才写入端点并首次同步。配对码 10 分钟有效、一次性，刷新会作废旧码，失败认领按分钟限流，日志不记录配对码。契约见 `sync.schema.json#/$defs/pairing*` 与 `vectors/pairing-invitations.json`，三端测试共用同一组向量。配对只移交端点，不是账号认证；sync-api 本身仍无鉴权，配对会话仅存于进程内存，重启即失效。
+- 复写对比（MVP D）：忠实转换可选输出 `pseudocode` 或 `code_snippet`；代码片段只读展示，不写入任何 `.cpp`。`rewrite.cpp` 与当前模式最新 `code_snippet` 按 `code_mappings` 逐步骤对比（`rewrite-compare.mjs`、`RewriteComparePanel.tsx`），伪代码不参与对比。复写行到步骤的划分由用户在对比面板手动完成，只存本机 `localStorage`（`rewrite-mapping-storage.mjs`），不进入 `Draft`、`DraftPayload` 或任何 `SyncOperation`；复写内容变化后划分标记为可能错位，需用户确认或清空。AI 结果隐藏时只显示步骤编号，“开始对比”不改变结果可见性。算法与 `entry/.../domain/RewriteCompare.ets` 共用 `packages/contracts/vectors/rewrite-compare.json`。
 - `apps/web/package.json` 保持 React、React DOM、Vite、TypeScript 与已核验的 CodeMirror 6 编辑器依赖。新增 npm 包前必须核验包名、官方仓库、许可证和包体积，并说明用途；小功能优先使用浏览器或 React 原生能力。当前 CodeMirror 依赖均为 MIT 许可证并已执行 `npm audit`。
 - UI 使用本地 `assets/game-icons` 资源和 `icon-assets.ts` 语义映射；不得改用未确认来源的图标库或用字母/仿制图形替代指定资源。界面字体目标为 `max32002/maruko-gothic`，代码编辑区必须使用等宽字体。
 - CSS 必须保持分区、多行和可读格式；不得重新提交压缩成单行的整文件样式。视觉令牌、布局和 Web/ArkUI 映射以 `docs/WEB_UI_GUIDE.md` 为共同参考。
@@ -166,6 +167,7 @@ ets/
 - `IdeaSegment` 为思路行提供稳定 ID、内容和位置；页面展示来源标识，后续 AI 请求必须使用这些稳定 ID 生成 `source_refs`。
 - `RdbDraftRepository` 负责显式建库/迁移、草稿持久化、离线操作队列和同步游标；`HttpSyncClient` 只使用 `packages/contracts/schemas/sync.schema.json` 定义的字段命名和枚举，禁止手机端另造同步契约。`PhoneSyncService` 在 push 后 pull，并在应用服务端版本后更新本地 `Draft.code`（对应 `main.cpp`）。
 - 「设置 → 连接电脑」的配对解析与端点推导在 `domain/PairingContract.ets`，认领在 `platform/HttpPairingClient.ets`，经 `DraftWorkspaceViewModel.claimPairing` 调用；认领成功前不得写入任何端点。扫码使用 `platform/PairingScanner.ets` 中的 `@kit.ScanKit`（`scanBarcode.startScanForResult`，系统扫码界面，不声明相机权限），这是 HarmonyOS 专有能力，不是纯 OpenHarmony 公共 API；设备不支持时隐藏扫码入口，保留配对码与粘贴方式。扫码状态为 `开发中`，模拟器可能没有相机，只能验证到界面拉起和相册识别。
+- 复写面板内含“复写对比”：AI 面板可切换输出为代码片段（`IDERecord.transformOutput`，回复 `output_kind` 不符即拒绝），对比逻辑在 `domain/RewriteCompare.ets`，划分经 `DraftWorkspaceViewModel` 存入 `platform/RewriteMappingStore.ets`（Preferences，本机，不同步）。选区来自 `rewrite.cpp` 的 `onTextSelectionChange`，划分按钮仅在打开 `rewrite.cpp` 时可用。
 - 空白首个草稿仅作为本地编辑入口；只有用户实际保存内容后才生成可上传的 `upsert` 操作。同步失败保留队列和本地草稿，不能把 HTTP 成功或空队列单独解释为两端当前内容一致。
 
 ## 4. AI 模式契约

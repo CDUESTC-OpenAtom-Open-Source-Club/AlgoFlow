@@ -1376,3 +1376,62 @@ test('issue #20: the legacy generate() path reports AI_PROVIDER_TIMEOUT and canc
   clock = 20020; fail({ code: 2300028 });
   assert.equal((await cancelled).errorCode, 'CANCELLED');
 });
+
+// Rewrite comparison: the ArkTS mirror must produce the Web results for the
+// same shared vectors. Class instances are compared through JSON.
+const rewriteVectors = JSON.parse(readFileSync('packages/contracts/vectors/rewrite-compare.json'));
+const RC = load('domain/RewriteCompare');
+const plain = value => JSON.parse(JSON.stringify(value));
+test('phone rewrite comparison matches the shared vectors', () => {
+  for (const vector of rewriteVectors.compare) {
+    const source = Object.assign(new RC.RewriteCompareSource(), vector.source);
+    assert.deepEqual(plain(RC.compareRewrite(source, vector.rewrite, vector.rewrite_mappings)), vector.expected, vector.name);
+  }
+  for (const vector of rewriteVectors.assign) {
+    assert.deepEqual(plain(RC.assignRewriteLines(vector.mappings, vector.start, vector.end, vector.step_id)), vector.expected, vector.name);
+  }
+  for (const vector of rewriteVectors.fingerprint) assert.equal(RC.rewriteFingerprint(vector.text), vector.expected);
+  for (const vector of rewriteVectors.selection) assert.deepEqual(plain(RC.selectionLines(vector.text, vector.from, vector.to)), vector.expected, vector.name);
+});
+
+test('phone rewrite partition records decode strictly and resolve per artifact', () => {
+  const record = RC.createRewriteMappingRecord('d', 'ai-1', 'x;\ny;', [new RC.RewriteLineMapping('step_1', 1, 2)]);
+  const decoded = RC.decodeRewriteMappingRecord(JSON.stringify(record));
+  assert.deepEqual(plain(decoded), plain(record));
+  assert.equal(RC.resolveRewriteMapping(decoded, 'ai-1', 'x;\r\ny;').status, 'current');
+  assert.equal(RC.resolveRewriteMapping(decoded, 'ai-1', 'x;').status, 'outdated');
+  assert.equal(RC.resolveRewriteMapping(decoded, 'ai-2', 'x;\ny;').status, 'empty');
+  assert.equal(RC.decodeRewriteMappingRecord('{broken'), null);
+  assert.equal(RC.decodeRewriteMappingRecord(JSON.stringify({ ...plain(record), mappings: [{ step_id: 's', start_line: 2, end_line: 1 }] })), null);
+  assert.equal(RC.decodeRewriteMappingRecord(JSON.stringify({ ...plain(record), artifact_id: '' })), null);
+});
+
+test('phone transform requests the chosen output kind and rejects a mismatched reply', async () => {
+  const sent = [];
+  const snippetBody = {
+    mode: 'faithful_transform', pseudocode: [{ id: 'step_1', step: 'Sort', source_refs: [request.idea_segments[0].id] }],
+    code_snippet: 'sort(a, a + n);', code_mappings: [{ step_id: 'step_1', start_line: 1, end_line: 1 }],
+    assumptions: [], missing_information: [], risk_flags: [], added_algorithm_steps: [],
+    source_draft_version: request.draft_version, model_id: 'fixture', rule_version: '1.0.0',
+    output_kind: 'code_snippet', visibility: 'visible', template_id: null,
+  };
+  let body = snippetBody;
+  const provider = { cancel() {}, async request(payload) { sent.push(payload.output_kind); return Object.assign(new M.IDEReply(), { body: JSON.stringify(body) }); } };
+  const repo = { async list() { return []; }, async save() {}, async removeDraft() {} };
+  const session = new IDEAISession(provider, repo);
+  await session.setContext(recordFor(request, 'transform').context);
+  await session.request('transform', 'explanation', new M.SourceCursor(), 'code_snippet');
+  assert.deepEqual(sent, ['code_snippet']);
+  const record = session.records.at(-1);
+  assert.equal(record.state, 'success');
+  const source = RC.compareSourceFromBody(record.body);
+  assert.equal(source.code_snippet, 'sort(a, a + n);');
+  assert.deepEqual(plain(source.code_mappings), [{ step_id: 'step_1', start_line: 1, end_line: 1 }]);
+  await session.request('transform');
+  assert.equal(sent.at(-1), 'pseudocode');
+  assert.equal(session.records.at(-1).errorCode, 'INVALID_AI_ARTIFACT');
+  body = { ...snippetBody, code_snippet: null, code_mappings: [], output_kind: 'pseudocode' };
+  await session.request('transform', 'explanation', new M.SourceCursor(), 'code_snippet');
+  assert.equal(session.records.at(-1).errorCode, 'INVALID_AI_ARTIFACT');
+  assert.equal(RC.compareSourceFromBody(JSON.stringify(body)), null);
+});

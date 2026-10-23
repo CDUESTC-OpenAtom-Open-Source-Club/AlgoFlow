@@ -11,6 +11,7 @@ export const fileLabels: Record<FileId, string> = {
   'main.cpp': 'C++',
   'idea.md': 'Markdown',
   'cases.txt': '样例',
+  'rewrite.cpp': '复写 C++',
 };
 
 const initialCode = `#include <algorithm>
@@ -52,10 +53,12 @@ export const initialDocuments: Documents = {
     '输入：[(0, 2), (2, 5), (4, 7)]',
     '待确认闭区间语义。',
   ].join('\n'),
+  'rewrite.cpp': '',
 };
 
 export const files: Array<{ id: FileId; label: string; icon: string }> = [
   { id: 'main.cpp', label: 'main.cpp', icon: 'cpp' },
   { id: 'idea.md', label: 'idea.md', icon: 'md' },
   { id: 'cases.txt', label: 'cases.txt', icon: 'test' },
+  { id: 'rewrite.cpp', label: 'rewrite.cpp', icon: 'cpp' },
 ];

@@ -6,7 +6,7 @@ export type Mode =
   | 'progressive_hint'
   | 'full_solution';
 
-export type FileId = 'main.cpp' | 'idea.md' | 'cases.txt';
+export type FileId = 'main.cpp' | 'idea.md' | 'cases.txt' | 'rewrite.cpp';
 
 export type Documents = Record<FileId, string>;
 
@@ -50,8 +50,11 @@ export interface AIReviewRequest extends AISourceRequest {
   review_kind: ReviewKind;
 }
 
-export interface AITransformRequest extends AISourceRequest {
-  output_kind: 'pseudocode';
+export type TransformOutputKind = 'pseudocode' | 'code_snippet';
+
+// ai.schema.json#/$defs/request has no code field and closed idea segments.
+export interface AITransformRequest extends Omit<AISourceRequest, 'code'> {
+  output_kind: TransformOutputKind;
 }
 
 export interface AICompletionRequest extends AISourceRequest {
@@ -332,4 +335,62 @@ export interface PullResult {
 export interface SyncRunResult {
   state: WorkspaceState;
   status: SyncStatus;
+}
+
+// Rewrite comparison. Mappings are local-only: they never enter Draft,
+// DraftPayload or a SyncOperation.
+export interface RewriteLineMapping {
+  step_id: string;
+  start_line: number;
+  end_line: number;
+}
+
+export interface RewriteMappingRecord {
+  draft_id: string;
+  artifact_id: string;
+  rewrite_fingerprint: string;
+  mappings: RewriteLineMapping[];
+  updated_at: string;
+}
+
+export interface RewriteCompareSource {
+  steps: { id: string; step: string }[];
+  code_snippet: string;
+  code_mappings: RewriteLineMapping[];
+}
+
+export type RewriteDiffOp = 'same' | 'ai_only' | 'rewrite_only';
+export type RewriteStepStatus = 'same' | 'different' | 'missing' | 'no_ai_code';
+
+export interface RewriteDiffLine {
+  op: RewriteDiffOp;
+  ai_line: number | null;
+  rewrite_line: number | null;
+  text: string;
+}
+
+export interface RewriteStepComparison {
+  step_id: string;
+  index: number;
+  status: RewriteStepStatus;
+  ai_lines: number[];
+  rewrite_lines: number[];
+  diff: RewriteDiffLine[];
+}
+
+export interface RewriteCodeLine {
+  line: number;
+  text: string;
+}
+
+export interface RewriteComparison {
+  steps: RewriteStepComparison[];
+  ai_unmapped: RewriteCodeLine[];
+  rewrite_extra: RewriteCodeLine[];
+  summary: Record<RewriteStepStatus, number>;
+}
+
+export interface RewriteMappingState {
+  status: 'empty' | 'current' | 'outdated';
+  mappings: RewriteLineMapping[];
 }

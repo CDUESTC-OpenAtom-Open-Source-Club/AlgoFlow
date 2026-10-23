@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { fileLabels } from '../data';
 import type { ApplyAIEditorChange, FileId, Mode } from '../types';
 import { CodeEditor } from './CodeEditor';
@@ -18,12 +19,18 @@ interface EditorStageProps {
   onFileChange: (file: FileId) => void;
   editorKey: string;
   onEditorReady: (apply: ApplyAIEditorChange | null) => void;
+  onSelectionLines?: (startLine: number, endLine: number) => void;
+  /** Shown beside the editor, e.g. the rewrite comparison. */
+  sidePanel?: ReactNode;
+  compareOpen?: boolean;
+  onCompareToggle?: () => void;
 }
 
 const editorFiles: Array<{ id: FileId; icon: string }> = [
   { id: 'main.cpp', icon: 'code' },
   { id: 'idea.md', icon: 'note' },
   { id: 'cases.txt', icon: 'test' },
+  { id: 'rewrite.cpp', icon: 'code' },
 ];
 
 export function EditorStage({
@@ -41,6 +48,10 @@ export function EditorStage({
   onFileChange,
   editorKey,
   onEditorReady,
+  onSelectionLines,
+  sidePanel,
+  compareOpen = false,
+  onCompareToggle,
 }: EditorStageProps) {
   const modeLabel = getModeLabel(mode);
 
@@ -56,8 +67,13 @@ export function EditorStage({
         onBottomToggle={onBottomToggle}
         onFileChange={onFileChange}
         onSaveFile={() => downloadFile(activeFile, code)}
+        compareOpen={compareOpen}
+        onCompareToggle={activeFile === 'rewrite.cpp' ? onCompareToggle : undefined}
       />
-      <CodeEditor key={editorKey} activeFile={activeFile} value={code} onChange={onChange} onSave={onSave} jumpToLine={jumpToLine} onCursorChange={onCursorChange} onEditorReady={onEditorReady} />
+      <div className={sidePanel ? 'editor-body with-side-panel' : 'editor-body'}>
+        <CodeEditor key={editorKey} activeFile={activeFile} value={code} onChange={onChange} onSave={onSave} jumpToLine={jumpToLine} onCursorChange={onCursorChange} onEditorReady={onEditorReady} onSelectionLines={onSelectionLines} />
+        {sidePanel}
+      </div>
       {bottomOpen && <BottomPanel />}
       <footer className="statusbar">
         <span><i className="status-ok" /> {activeFile}</span>
@@ -89,6 +105,8 @@ interface EditorBreadcrumbProps {
   onBottomToggle: () => void;
   onFileChange: (file: FileId) => void;
   onSaveFile: () => void;
+  compareOpen: boolean;
+  onCompareToggle?: () => void;
 }
 
 function EditorBreadcrumb({
@@ -98,6 +116,8 @@ function EditorBreadcrumb({
   onBottomToggle,
   onFileChange,
   onSaveFile,
+  compareOpen,
+  onCompareToggle,
 }: EditorBreadcrumbProps) {
   return (
     <div className="breadcrumb">
@@ -123,6 +143,11 @@ function EditorBreadcrumb({
         </button>
       </nav>
       <span className="breadcrumb-spacer" />
+      {onCompareToggle && (
+        <button type="button" className="editor-tool" onClick={onCompareToggle} aria-pressed={compareOpen}>
+          {compareOpen ? '收起对比' : '复写对比'}
+        </button>
+      )}
       <button type="button" className="editor-tool" onClick={onBottomToggle}>
         <Icon name="panel" />
         {bottomOpen ? '收起面板' : '问题与同步'}
