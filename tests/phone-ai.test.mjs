@@ -1411,7 +1411,7 @@ test('phone transform requests the chosen output kind and rejects a mismatched r
   const snippetBody = {
     mode: 'faithful_transform', pseudocode: [{ id: 'step_1', step: 'Sort', source_refs: [request.idea_segments[0].id] }],
     code_snippet: 'sort(a, a + n);', code_mappings: [{ step_id: 'step_1', start_line: 1, end_line: 1 }],
-    assumptions: [], missing_information: [], risk_flags: [], added_algorithm_steps: [],
+    assumptions: [], missing_information: [], risk_flags: ['未检查空输入'], added_algorithm_steps: [],
     source_draft_version: request.draft_version, model_id: 'fixture', rule_version: '1.0.0',
     output_kind: 'code_snippet', visibility: 'visible', template_id: null,
   };
@@ -1427,6 +1427,7 @@ test('phone transform requests the chosen output kind and rejects a mismatched r
   const source = RC.compareSourceFromBody(record.body);
   assert.equal(source.code_snippet, 'sort(a, a + n);');
   assert.deepEqual(plain(source.code_mappings), [{ step_id: 'step_1', start_line: 1, end_line: 1 }]);
+  assert.deepEqual(source.risk_flags, ['未检查空输入']);
   await session.request('transform');
   assert.equal(sent.at(-1), 'pseudocode');
   assert.equal(session.records.at(-1).errorCode, 'INVALID_AI_ARTIFACT');

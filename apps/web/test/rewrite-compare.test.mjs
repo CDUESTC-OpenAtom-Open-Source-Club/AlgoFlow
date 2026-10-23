@@ -71,11 +71,11 @@ test('code_snippet transform request and artifact keep the requested output kind
   const response = {
     mode: 'faithful_transform', pseudocode: [{ id: 'step_1', step: 'sum', source_refs: ['idea-1'] }],
     code_snippet: 'total += x;', code_mappings: [{ step_id: 'step_1', start_line: 1, end_line: 1 }],
-    assumptions: [], missing_information: [], risk_flags: [], added_algorithm_steps: [], source_draft_version: 2,
+    assumptions: [], missing_information: [], risk_flags: ['未检查空输入'], added_algorithm_steps: [], source_draft_version: 2,
     model_id: 'fixture', rule_version: '1.0.0', output_kind: 'code_snippet', visibility: 'visible', template_id: null,
   };
   const artifact = artifactFromGateway(response, draft, 'web-client', ['idea-1'], '1.0.0', 'code_snippet');
-  assert.deepEqual(compareSourceFromArtifact(artifact), { steps: [{ id: 'step_1', step: 'sum' }], code_snippet: 'total += x;', code_mappings: [{ step_id: 'step_1', start_line: 1, end_line: 1 }] });
+  assert.deepEqual(compareSourceFromArtifact(artifact), { steps: [{ id: 'step_1', step: 'sum' }], code_snippet: 'total += x;', code_mappings: [{ step_id: 'step_1', start_line: 1, end_line: 1 }], risk_flags: ['未检查空输入'] });
   assert.throws(() => artifactFromGateway(response, draft, 'web-client', ['idea-1'], '1.0.0', 'pseudocode'), /INVALID_AI_ARTIFACT/);
   assert.throws(() => artifactFromGateway({ ...response, code_mappings: [{ step_id: 'step_1', start_line: 1, end_line: 2 }] }, draft, 'web-client', ['idea-1'], '1.0.0', 'code_snippet'), /INVALID_AI_ARTIFACT/);
   assert.equal(compareSourceFromArtifact({ ...artifact, output_kind: 'pseudocode', code_snippet: null, code_mappings: [] }), null);
