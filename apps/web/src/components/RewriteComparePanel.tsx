@@ -93,6 +93,12 @@ export function RewriteComparePanel({
           <p className="rewrite-compare-summary" role="status">
             {(Object.keys(statusLabels) as RewriteStepStatus[]).map(status => `${statusLabels[status]} ${comparison.summary[status]}`).join(' · ')}
           </p>
+          <section className="rewrite-risk" aria-label="AI 风险标记">
+            <strong>AI 风险标记</strong>
+            {source.risk_flags.length > 0
+              ? <ul>{source.risk_flags.map((flag, index) => <li key={index}>{flag}</li>)}</ul>
+              : <p>AI 未标记风险。这不代表复写或 AI 片段正确。</p>}
+          </section>
           {comparison.steps.map(step => (
             <article key={step.step_id} className={`rewrite-step ${step.status}`}>
               <div className="rewrite-step-heading">

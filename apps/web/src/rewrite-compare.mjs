@@ -193,7 +193,7 @@ export function resolveRewriteMapping(record, artifactId, rewrite) {
 
 /**
  * The comparable part of an AI artifact; null for pseudocode-only results.
- * @param {Pick<import('./types').AIArtifact, 'output_kind' | 'code_snippet' | 'pseudocode' | 'code_mappings'>} artifact
+ * @param {Pick<import('./types').AIArtifact, 'output_kind' | 'code_snippet' | 'pseudocode' | 'code_mappings' | 'risk_flags'>} artifact
  * @returns {RewriteCompareSource | null}
  */
 export function compareSourceFromArtifact(artifact) {
@@ -202,6 +202,7 @@ export function compareSourceFromArtifact(artifact) {
     steps: artifact.pseudocode.map(step => ({ id: step.id, step: step.step })),
     code_snippet: artifact.code_snippet,
     code_mappings: artifact.code_mappings.map(mapping => ({ ...mapping })),
+    risk_flags: [...artifact.risk_flags],
   };
 }
 

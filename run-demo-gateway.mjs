@@ -23,7 +23,7 @@ function buildArtifact(request, violate) {
     code_mappings: snippet ? request.idea_segments.map((_, i) => ({ step_id: `step_${i + 1}`, start_line: i + 1, end_line: i + 1 })) : [],
     assumptions: ['demo provider：仅回显思路，不做真实推理'],
     missing_information: [],
-    risk_flags: [],
+    risk_flags: snippet ? ['demo provider：未检查空输入和端点相等的边界'] : [],
     added_algorithm_steps: violate ? ['（越界）改用动态规划'] : [],
     source_draft_version: request.draft_version,
     model_id: 'demo-provider',

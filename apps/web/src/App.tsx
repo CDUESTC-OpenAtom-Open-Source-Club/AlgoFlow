@@ -11,7 +11,7 @@ import { BrowserWorkspaceRepository, getAIArtifactFreshness, queueAIArtifact, qu
 import { LocalSyncClient, synchronizeWorkspace } from './sync-client.mjs';
 import type { AIArtifact, AIResultRecord, ConflictRecord, Documents, Draft, FileId, Mode, Panel, ReviewResult, SyncStatus, TransformOutputKind, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
-import { artifactFromGateway, buildAIRequest, WebAIClient, toCursor } from './ai-client.mjs';
+import { artifactFromGateway, buildAIRequest, transformErrorMessage, WebAIClient, toCursor } from './ai-client.mjs';
 import { assertAIArtifact } from './sync-client.mjs';
 import { BrowserAIResultRepository } from './ai-result-storage.mjs';
 import { AISession } from './ai-session.mjs';
@@ -80,6 +80,7 @@ export function App() {
     [currentDraft?.id, mappingRevision]);
   const rewriteMapping = useMemo(() => resolveRewriteMapping(mappingRecord, compareArtifact?.id ?? '', documents['rewrite.cpp']),
     [mappingRecord, compareArtifact, documents]);
+  const artifactAbort = useRef<AbortController | null>(null);
   const editorApply = useRef<ApplyAIEditorChange | null>(null);
   const editEpoch = useRef(0);
   const hasUnsavedEdits = useRef(false);
@@ -256,9 +257,11 @@ export function App() {
     }
     setArtifactBusy(true); setArtifactMessage('正在请求 AI Gateway…');
     const source = currentDraft;
+    const controller = new AbortController();
+    artifactAbort.current = controller;
     try {
       const request = buildAIRequest(source, documents, mode, transformOutput);
-      const response = await aiClient.requestTransform(request, {});
+      const response = await aiClient.requestTransform(request, { signal: controller.signal });
       if (response.isTestData) {
         setArtifactMessage('测试数据仅供本地调试，不进入跨端同步。');
         return;
@@ -273,8 +276,15 @@ export function App() {
       setWorkspace(state); setArtifactMessage('忠实转换结果已保存，可同步到手机端。');
       if (navigator.onLine) void flushQueue();
     } catch (error) {
-      setArtifactMessage(error instanceof Error ? error.message : 'AI 请求失败');
-    } finally { setArtifactBusy(false); }
+      setArtifactMessage(transformErrorMessage(error));
+    } finally {
+      if (artifactAbort.current === controller) artifactAbort.current = null;
+      setArtifactBusy(false);
+    }
+  }
+
+  function cancelArtifact() {
+    artifactAbort.current?.abort();
   }
 
   function toggleArtifact(artifact: AIArtifact) {
@@ -464,6 +474,7 @@ export function App() {
           transformOutput={transformOutput}
           onTransformOutputChange={setTransformOutput}
           onArtifact={requestArtifact}
+          onCancelArtifact={cancelArtifact}
           onToggleArtifact={toggleArtifact}
           mode={mode}
           activeFile={activeFile}
