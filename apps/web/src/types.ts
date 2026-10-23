@@ -357,6 +357,8 @@ export interface RewriteCompareSource {
   steps: { id: string; step: string }[];
   code_snippet: string;
   code_mappings: RewriteLineMapping[];
+  /** The artifact's own risk_flags, shown beside the comparison as-is. */
+  risk_flags: string[];
 }
 
 export type RewriteDiffOp = 'same' | 'ai_only' | 'rewrite_only';
