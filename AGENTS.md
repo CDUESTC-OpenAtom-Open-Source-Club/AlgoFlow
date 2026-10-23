@@ -359,14 +359,14 @@ issue #5 后续云服务需求（当前阶段不实施）：阶段 2 仅提供�
 
 - 领域规则：模式切换、来源映射、复写对比、状态枚举。
 - AI 契约：至少 40 条，覆盖错误思路、缺失步骤、越权补解、注入、格式错误、超时和供应商异常。
-- AI Gateway 与 sync-api 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；2026-10-22 实测为 `451` 条全部通过；`AI gateway aborts every provider capability on client disconnect` 依赖 30/80ms 等待，仍可能偶发失败。手机用例与 Web 用例命令为 `node --test tests/*.test.mjs apps/web/test/*.test.mjs`，同日实测 `242` 条通过。新增或修改契约后必须重新运行并报告实际结果。
+- AI Gateway 与 sync-api 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；2026-10-23 实测为 `459` 条全部通过（`/requests` 新增错误思路、缺失步骤补写、提示注入和模式升级用例；断开连接测试改为事件驱动，连续 15 次通过）。手机用例与 Web 用例命令为 `node --test tests/*.test.mjs apps/web/test/*.test.mjs`，同日实测 `279` 条通过。新增或修改契约后必须重新运行并报告实际结果。
 - 同步：离线编辑、重复请求、乱序、并发更新、删除传播、冲突副本和断点恢复。
 - 数据库：首次建库、逐版本迁移、异常恢复和关联删除。
 - OpenHarmony：不同尺寸、输入法、后台恢复、权限拒绝、卡片刷新与跳转。
 - OpenHarmony IDE：行号与代码滚动同步、光标所在整行描边、长代码稳定滚动、左侧抽屉灰黑遮罩与灰色选中态、底部浮动工具胶囊，以及工具面板展开/关闭后编辑区尺寸恢复。
 - Web：主流浏览器、键盘操作、离线队列、长代码和未保存离开。
 - Web 工程基线：在 `apps/web` 执行 `npx tsc -p tsconfig.app.json --noEmit`、`npx tsc -p tsconfig.node.json --noEmit` 和 `npm run build`；没有实际执行的命令不得写成已通过。
-- 发布：Release 构建、Mock 关闭、密钥扫描、权限清单、日志脱敏和安装验证。
+- 发布：Release 构建、Mock 关闭、密钥扫描、权限清单、日志脱敏和安装验证。2026-10-23 已在本机执行：`assembleHap` Release（`BuildProfile.DEBUG=false`，测试响应与缓存因此被拒绝）构建并在模拟器安装成功（未签名）；跟踪文件密钥扫描无命中；日志只输出 ID、状态、版本和经 `safeLogValue` 清洗的值。正式签名、权限清单终审和真机安装仍待完成。
 
 AI 完成任务后必须报告实际运行的命令、环境和结果。没有执行的测试必须明确说明，不能写成“已通过”。
 
