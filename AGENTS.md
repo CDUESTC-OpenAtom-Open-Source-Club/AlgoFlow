@@ -359,7 +359,7 @@ issue #5 后续云服务需求（当前阶段不实施）：阶段 2 仅提供�
 
 - 领域规则：模式切换、来源映射、复写对比、状态枚举。
 - AI 契约：至少 40 条，覆盖错误思路、缺失步骤、越权补解、注入、格式错误、超时和供应商异常。
-- AI Gateway 与 sync-api 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；2026-10-23 实测为 `459` 条全部通过（`/requests` 新增错误思路、缺失步骤补写、提示注入和模式升级用例；断开连接测试改为事件驱动，连续 15 次通过）。手机用例与 Web 用例命令为 `node --test tests/*.test.mjs apps/web/test/*.test.mjs`，同日实测 `254` 条通过。新增或修改契约后必须重新运行并报告实际结果。
+- AI Gateway 与 sync-api 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；2026-10-23 实测为 `459` 条全部通过（`/requests` 新增错误思路、缺失步骤补写、提示注入和模式升级用例；断开连接测试改为事件驱动，连续 15 次通过）。手机用例与 Web 用例命令为 `node --test tests/*.test.mjs apps/web/test/*.test.mjs`，同日实测 `279` 条通过。新增或修改契约后必须重新运行并报告实际结果。
 - 同步：离线编辑、重复请求、乱序、并发更新、删除传播、冲突副本和断点恢复。
 - 数据库：首次建库、逐版本迁移、异常恢复和关联删除。
 - OpenHarmony：不同尺寸、输入法、后台恢复、权限拒绝、卡片刷新与跳转。
