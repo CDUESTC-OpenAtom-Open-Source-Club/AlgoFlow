@@ -409,3 +409,55 @@ function gatewayReview(request) {
     visibility: 'visible',
   };
 }
+
+// A sync-api restart loses the source Draft versions of queued AI results; the
+// server then rejects them for good. That must not block the rest of the queue.
+test('a queued AI result the server permanently rejects is dropped so the queue and pull continue', async () => {
+  const draft = { ...makeDraft('draft-1', 'int main() {}', 'web-a'), version: 1, idea_segments: [{ id: 'segment-1', content: 'sort' }] };
+  const state = makeWorkspace('web-a', draft);
+  state.cursor = '3'; state.server_epoch = 'epoch-old';
+  const artifact = {
+    id: 'artifact-lost-source', version: 0, server_sequence: 0, created_at: '2026-09-15T00:00:00.000Z', updated_at: '2026-09-15T00:00:00.000Z',
+    deleted: false, last_modified_client_id: 'web-a', draft_id: draft.id, mode: 'faithful_transform',
+    pseudocode: [{ id: 'step_1', step: 'sort', source_refs: ['segment-1'] }], code_snippet: null, code_mappings: [], assumptions: [],
+    missing_information: [], risk_flags: [], added_algorithm_steps: [], source_draft_version: 1, model_id: 'm', rule_version: '1.0.0',
+    output_kind: 'pseudocode', visibility: 'visible', template_id: null,
+  };
+  const review = { ...makeReview('review-lost-source', 0, 'web-a', 'risk', null), draft_id: draft.id };
+  state.ai_artifacts = [artifact]; state.review_results = [review];
+  state.operations = [
+    { operation_id: 'op-artifact', entity_type: 'ai_artifact', entity_id: artifact.id, operation_type: 'upsert', base_version: 0, client_id: 'web-a', occurred_at: artifact.updated_at, payload: artifact },
+    { operation_id: 'op-review', entity_type: 'review_result', entity_id: review.id, operation_type: 'upsert', base_version: 0, client_id: 'web-a', occurred_at: review.updated_at, payload: review },
+    { operation_id: 'op-draft', entity_type: 'draft', entity_id: draft.id, operation_type: 'upsert', base_version: 1, client_id: 'web-a', occurred_at: draft.updated_at, payload: { ...draft, code: 'edited' } },
+  ];
+  const pushed = [];
+  let pulled = false;
+  const result = await synchronizeWorkspace(state, {
+    async push(operation) {
+      pushed.push(operation.operation_id);
+      if (operation.entity_type === 'ai_artifact') throw new Error('INVALID_AI_ARTIFACT');
+      if (operation.entity_type === 'review_result') throw new Error('INVALID_REVIEW_RESULT');
+      return { operation_id: operation.operation_id, status: 'applied', version: 2, server_entity: { ...operation.payload, version: 2 } };
+    },
+    async pull() { pulled = true; return { changes: [], next_cursor: '4', server_epoch: 'epoch-old', reset: false }; },
+  });
+  assert.deepEqual(pushed, ['op-artifact', 'op-review', 'op-draft']);
+  assert.equal(pulled, true);
+  assert.equal(result.status, 'synced');
+  assert.equal(result.state.cursor, '4');
+  assert.deepEqual(result.state.operations, []);
+  // The results stay readable on this device; only their upload is abandoned.
+  assert.deepEqual(result.state.ai_artifacts.map((item) => item.id), [artifact.id]);
+  assert.deepEqual(result.state.review_results.map((item) => item.id), [review.id]);
+});
+
+test('a transient failure of a queued AI result still keeps it queued', async () => {
+  const draft = { ...makeDraft('draft-1', 'x', 'web-a'), version: 1 };
+  const state = makeWorkspace('web-a', draft);
+  const review = { ...makeReview('review-retry', 0, 'web-a', 'risk', null), draft_id: draft.id };
+  state.review_results = [review];
+  state.operations = [{ operation_id: 'op-review', entity_type: 'review_result', entity_id: review.id, operation_type: 'upsert', base_version: 0, client_id: 'web-a', occurred_at: review.updated_at, payload: review }];
+  const result = await synchronizeWorkspace(state, { async push() { throw new Error('SYNC_FAILED'); }, async pull() { throw new Error('not expected'); } });
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(result.state.operations.map((item) => item.operation_id), ['op-review']);
+});

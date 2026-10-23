@@ -277,6 +277,7 @@ full_solution        完整解题
 - 内容没有变化的保存不得生成同步操作。页面把拉取到的服务器内容赋给输入框时 ArkUI 会触发 `onChange`，`DraftWorkspaceViewModel.update` 必须在内容相同时直接返回 `false`。
 - 删除使用墓碑记录并参与同步。
 - 同步游标只能在整批操作成功提交后推进。
+- 服务端对排队中的 `ai_artifact`、`review_result` 返回 `INVALID_AI_ARTIFACT`（422）或 `INVALID_REVIEW_RESULT`（400）属于永久拒绝（典型原因是 sync-api 重启后不再有其来源草稿版本）：两端客户端移除该上传操作、保留本机结果并继续后续操作和重置拉取，不得因此阻塞队列；网络错误、5xx 及本地校验失败仍保留在队列中。
 - 首版冲突策略为保留服务器版本和本地冲突副本，由用户选择/合并；不实现 CRDT 或实时多人协作。
 
 ### 5.3 本地存储
