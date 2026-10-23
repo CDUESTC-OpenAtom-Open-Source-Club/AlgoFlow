@@ -106,8 +106,18 @@ export class PhoneSyncService {
         }
         this.repository.removeOperation(operation.operation_id);
       } catch (error) {
-        this.markPendingFailed();
         const message = error instanceof Error ? error.message : '网络请求失败';
+        // The server permanently rejects an AI result whose source Draft
+        // version it no longer has (for example after a sync-api restart).
+        // Retrying can never succeed and would block every later operation and
+        // the rebase pull, so the upload is abandoned; the result stays local.
+        if (isPermanentAIResultRejection(entityType(operation.entity_type), message)) {
+          hilog.warn(DOMAIN, TAG, '[AlgoFlow] Sync dropped a rejected AI result. entity_type=%{public}s operation_id=%{public}s',
+            entityType(operation.entity_type), safeLogValue(operation.operation_id));
+          this.repository.removeOperation(operation.operation_id);
+          continue;
+        }
+        this.markPendingFailed();
         hilog.error(DOMAIN, TAG,
           '[AlgoFlow] Sync push phase failed. operation_id=%{public}s cause=%{public}s',
           safeLogValue(operation.operation_id), safeLogValue(message));
@@ -271,6 +281,12 @@ export class PhoneSyncService {
 
 function safeLogValue(value: string): string {
   return value.replace(/[^a-zA-Z0-9._:-]/g, '_').substring(0, 96);
+}
+
+// HttpSyncClient reports a 4xx as SYNC_HTTP_<status>_<error_code>.
+function isPermanentAIResultRejection(type: string, message: string): boolean {
+  return (type === SyncEntityType.AI_ARTIFACT && message === 'SYNC_HTTP_422_INVALID_AI_ARTIFACT') ||
+    (type === SyncEntityType.REVIEW_RESULT && message === 'SYNC_HTTP_400_INVALID_REVIEW_RESULT');
 }
 
 function entityType(value: string | undefined): string {

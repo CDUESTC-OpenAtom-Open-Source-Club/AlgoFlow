@@ -278,6 +278,7 @@ full_solution        完整解题
 - 内容没有变化的保存不得生成同步操作。页面把拉取到的服务器内容赋给输入框时 ArkUI 会触发 `onChange`，`DraftWorkspaceViewModel.update` 必须在内容相同时直接返回 `false`。
 - 删除使用墓碑记录并参与同步。
 - 同步游标只能在整批操作成功提交后推进。
+- 服务端对排队中的 `ai_artifact`、`review_result` 返回 `INVALID_AI_ARTIFACT`（422）或 `INVALID_REVIEW_RESULT`（400）属于永久拒绝（典型原因是 sync-api 重启后不再有其来源草稿版本）：两端客户端移除该上传操作、保留本机结果并继续后续操作和重置拉取，不得因此阻塞队列；网络错误、5xx 及本地校验失败仍保留在队列中。
 - 首版冲突策略为保留服务器版本和本地冲突副本，由用户选择/合并；不实现 CRDT 或实时多人协作。
 
 ### 5.3 本地存储
@@ -359,7 +360,7 @@ issue #5 后续云服务需求（当前阶段不实施）：阶段 2 仅提供�
 
 - 领域规则：模式切换、来源映射、复写对比、状态枚举。
 - AI 契约：至少 40 条，覆盖错误思路、缺失步骤、越权补解、注入、格式错误、超时和供应商异常。
-- AI Gateway 与 sync-api 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；2026-10-23 实测为 `459` 条全部通过（`/requests` 新增错误思路、缺失步骤补写、提示注入和模式升级用例；断开连接测试改为事件驱动，连续 15 次通过）。手机用例与 Web 用例命令为 `node --test tests/*.test.mjs apps/web/test/*.test.mjs`，同日实测 `279` 条通过。新增或修改契约后必须重新运行并报告实际结果。
+- AI Gateway 与 sync-api 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；2026-10-23 实测为 `459` 条全部通过（`/requests` 新增错误思路、缺失步骤补写、提示注入和模式升级用例；断开连接测试改为事件驱动，连续 15 次通过）。手机用例与 Web 用例命令为 `node --test tests/*.test.mjs apps/web/test/*.test.mjs`，同日实测 `283` 条通过。新增或修改契约后必须重新运行并报告实际结果。
 - 同步：离线编辑、重复请求、乱序、并发更新、删除传播、冲突副本和断点恢复。
 - 数据库：首次建库、逐版本迁移、异常恢复和关联删除。
 - OpenHarmony：不同尺寸、输入法、后台恢复、权限拒绝、卡片刷新与跳转。

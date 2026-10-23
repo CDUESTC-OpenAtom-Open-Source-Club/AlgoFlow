@@ -1436,3 +1436,62 @@ test('phone transform requests the chosen output kind and rejects a mismatched r
   assert.equal(session.records.at(-1).errorCode, 'INVALID_AI_ARTIFACT');
   assert.equal(RC.compareSourceFromBody(JSON.stringify(body)), null);
 });
+
+test('phone sync drops a queued AI result the server permanently rejects and keeps going', async () => {
+  const { PhoneSyncService } = load('platform/PhoneSyncService');
+  const { HttpSyncClient } = load('platform/HttpSyncClient');
+  const artifact = { id: 'phone-artifact-lost', version: 0, draft_id: 'draft-local', source_draft_version: 1 };
+  const operations = [
+    { operation_id: 'op-artifact', entity_type: 'ai_artifact', entity_id: artifact.id, operation_type: 'upsert', base_version: 0, client_id: 'phone', occurred_at: '2026-10-23T00:00:00.000Z', payload: artifact },
+    { operation_id: 'op-review', entity_type: 'review_result', entity_id: 'phone-review-lost', operation_type: 'upsert', base_version: 0, client_id: 'phone', occurred_at: '2026-10-23T00:00:00.000Z', payload: { id: 'phone-review-lost' } },
+    { operation_id: 'op-draft', entity_type: 'draft', entity_id: 'draft-local', operation_type: 'upsert', base_version: 1, client_id: 'phone', occurred_at: '2026-10-23T00:00:00.000Z', payload: { id: 'draft-local', version: 1 } },
+  ];
+  const statuses = [];
+  const repository = {
+    listPendingOperations: () => operations.slice(), markInFlight() {}, getBaseUrl: () => 'http://sync', getCursor: () => repository.cursor, cursor: '3',
+    getServerEpoch: () => 'epoch-old', getClientId: () => 'phone', getDraft: () => undefined,
+    commitCursor: async (cursor) => { repository.cursor = cursor; }, flush: async () => {},
+    setDraftSyncStatus(id, status) { statuses.push(`${id}:${status}`); }, hasPendingOperation: (id) => operations.some((operation) => operation.entity_id === id),
+    removeOperation(id) { const index = operations.findIndex((operation) => operation.operation_id === id); if (index >= 0) operations.splice(index, 1); },
+    applyServerDraft() { repository.draftApplied = true; }, applyServerAIArtifact: async () => {}, applyServerReview: async () => {},
+  };
+  const pushed = [];
+  const oldPush = HttpSyncClient.prototype.push;
+  const oldPull = HttpSyncClient.prototype.pull;
+  HttpSyncClient.prototype.push = async (operation) => {
+    pushed.push(operation.operation_id);
+    if (operation.entity_type === 'ai_artifact') throw new Error('SYNC_HTTP_422_INVALID_AI_ARTIFACT');
+    if (operation.entity_type === 'review_result') throw new Error('SYNC_HTTP_400_INVALID_REVIEW_RESULT');
+    return { status: 'applied', version: 2, server_entity: { ...operation.payload, version: 2 } };
+  };
+  HttpSyncClient.prototype.pull = async () => ({ changes: [], next_cursor: '4', server_epoch: 'epoch-old', reset: false });
+  try {
+    const result = await new PhoneSyncService(repository).synchronize();
+    assert.deepEqual(pushed, ['op-artifact', 'op-review', 'op-draft']);
+    assert.equal(result.status, 'synced');
+    assert.equal(repository.cursor, '4');
+    assert.equal(repository.draftApplied, true);
+    assert.deepEqual(operations, []);
+    assert.equal(statuses.some((status) => status.endsWith(':failed')), false);
+  } finally {
+    HttpSyncClient.prototype.push = oldPush;
+    HttpSyncClient.prototype.pull = oldPull;
+  }
+});
+
+test('phone sync keeps a queued AI result after a transient failure', async () => {
+  const { PhoneSyncService } = load('platform/PhoneSyncService');
+  const { HttpSyncClient } = load('platform/HttpSyncClient');
+  const operations = [{ operation_id: 'op-artifact', entity_type: 'ai_artifact', entity_id: 'a', operation_type: 'upsert', base_version: 0, client_id: 'phone', occurred_at: '2026-10-23T00:00:00.000Z', payload: { id: 'a' } }];
+  const repository = {
+    listPendingOperations: () => operations.slice(), markInFlight() {}, getBaseUrl: () => 'http://sync', getCursor: () => '3', getClientId: () => 'phone',
+    setDraftSyncStatus() {}, removeOperation(id) { operations.splice(operations.findIndex((operation) => operation.operation_id === id), 1); },
+  };
+  const oldPush = HttpSyncClient.prototype.push;
+  HttpSyncClient.prototype.push = async () => { throw new Error('SYNC_NETWORK_2300007'); };
+  try {
+    const result = await new PhoneSyncService(repository).synchronize();
+    assert.equal(result.status, 'failed');
+    assert.equal(operations.length, 1);
+  } finally { HttpSyncClient.prototype.push = oldPush; }
+});

@@ -49,12 +49,15 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
 
   for (const queued of [...next.operations]) {
     let operation = queued;
+    let pushing = false;
     try {
       if (operation.entity_type === 'ai_artifact') {
         assertAIArtifact(operation.payload, sourceIdsForArtifact(next, /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (operation.payload))));
       }
       if (operation.entity_type === 'review_result') assertReviewResult(operation.payload, next);
+      pushing = true;
       let result = await client.push(withEpoch(operation));
+      pushing = false;
       // The server restarted and no longer has this draft: its base_version
       // belongs to a lost lineage, so re-create it (version 0) and retry once.
       if (result.status === 'conflict' && result.error_code === 'EPOCH_MISMATCH' && !result.server_entity && operation.entity_type === 'draft') {
@@ -141,7 +144,16 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
         continue;
       }
       hadFailure = true;
-    } catch {
+    } catch (error) {
+      // The server permanently rejects an AI result whose source Draft version
+      // it no longer has (for example after a sync-api restart). Retrying can
+      // never succeed and would block every later operation and the rebase
+      // pull, so the upload is abandoned; the result stays readable locally.
+      if (pushing && isPermanentAIResultRejection(operation, error)) {
+        console.warn(`[AlgoFlow] Sync dropped a rejected AI result. entity_type=${operation.entity_type} operation_id=${operation.operation_id}`);
+        next.operations = next.operations.filter((item) => item.operation_id !== operation.operation_id);
+        continue;
+      }
       hadFailure = true;
     }
   }
@@ -343,6 +355,13 @@ function sourceIdsForArtifact(state, artifact) {
   const draft = state.drafts.find((item) => item.id === artifact.draft_id);
   if (!draft || draft.version !== artifact.source_draft_version) return undefined;
   return new Set((draft.idea_segments ?? []).map((segment) => segment.id));
+}
+
+/** @param {import('./types').SyncOperation} operation @param {unknown} error */
+function isPermanentAIResultRejection(operation, error) {
+  const code = error instanceof Error ? error.message : '';
+  return (operation.entity_type === 'ai_artifact' && code === 'INVALID_AI_ARTIFACT') ||
+    (operation.entity_type === 'review_result' && code === 'INVALID_REVIEW_RESULT');
 }
 
 /** @param {unknown} value @param {Set<string>} [sourceSegmentIds] */
