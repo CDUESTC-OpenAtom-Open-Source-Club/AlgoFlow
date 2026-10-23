@@ -33,6 +33,8 @@ export class RewriteCompareSource {
   steps: RewriteCompareStep[] = [];
   code_snippet: string = '';
   code_mappings: RewriteLineMapping[] = [];
+  // The artifact's own risk_flags, shown beside the comparison as-is.
+  risk_flags: string[] = [];
 }
 
 export class RewriteDiffLine {
@@ -315,6 +317,9 @@ export function compareSourceFromBody(body: string): RewriteCompareSource | null
       const mapping = item as Record<string, Object>;
       source.code_mappings.push(new RewriteLineMapping(String(mapping['step_id']), Number(mapping['start_line']), Number(mapping['end_line'])));
     });
+    if (Array.isArray(value['risk_flags'])) {
+      (value['risk_flags'] as Object[]).forEach((item: Object) => { source.risk_flags.push(String(item)); });
+    }
     return source;
   } catch (error) {
     return null;

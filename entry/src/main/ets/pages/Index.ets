@@ -301,6 +301,11 @@ struct Index {
     return `一致 ${comparison.summary.same} · 有差异 ${comparison.summary.different} · 遗漏 ${comparison.summary.missing} · AI 无代码 ${comparison.summary.no_ai_code}`;
   }
 
+  private compareRiskFlags(): string[] {
+    const source = this.compareSource();
+    return source === null ? [] : source.risk_flags;
+  }
+
   private compareSteps(): RewriteCompareStep[] {
     const source = this.compareSource();
     return source === null ? [] : source.steps;
@@ -1294,6 +1299,16 @@ struct Index {
           }, (step: RewriteCompareStep) => `outdated-${step.id}-${this.rewriteRangeText(step.id)}`)
         } else {
           Text(this.compareSummaryText()).fontSize(10).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+          Column({ space: 3 }) {
+            Text('AI 风险标记').fontSize(10).fontWeight(FontWeight.Bold).fontColor('#FFD60A')
+            if (this.compareRiskFlags().length > 0) {
+              ForEach(this.compareRiskFlags(), (flag: string, index: number) => {
+                Text(`· ${flag}`).fontSize(10).lineHeight(16).fontColor('#F2E3B8')
+              }, (flag: string, index: number) => `risk-${index}-${flag}`)
+            } else {
+              Text('AI 未标记风险。这不代表复写或 AI 片段正确。').fontSize(10).fontColor('#B8B8BD')
+            }
+          }.width('100%').alignItems(HorizontalAlign.Start).padding(8).backgroundColor('#2A2618').borderRadius(4)
           ForEach(this.comparisonSteps(), (item: RewriteStepComparison) => {
             this.RewriteStepCard(item)
           }, (item: RewriteStepComparison) => `${item.step_id}-${item.status}-${JSON.stringify(item.diff)}`)

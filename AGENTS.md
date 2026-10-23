@@ -131,6 +131,7 @@ src/
 - OpenHarmony 端已使用 `RdbDraftRepository` 作为 `DraftRepository`/同步仓储适配器，并通过 `HttpSyncClient` 和 `PhoneSyncService` 接入同一 `/v1/sync/operations`、`/v1/sync/changes` 契约。两端首个工作草稿统一使用 `draft-local`；空白的本地占位草稿不会上传，历史遗留的空占位操作会在启动迁移时移除但不删除草稿数据。
 - 当前 sync-api 仍为进程内存储，只适合局域网联调；该链路可以验收手机与 Web 的普通 HTTP 双向同步，但不得描述为生产云同步或 OpenHarmony 分布式能力已完成。真机不能使用 `127.0.0.1`，应配置运行 sync-api 电脑的局域网地址。
 - 手机配对：Web「手机远程」向 sync-api `POST /v1/pairing/sessions` 申请 8 位配对码，用 `uqr`（MIT，精确版本）渲染标准二维码，内容为 `{type:"algoflow-pair-v1", sync_api, code}`；手机扫码、手输或粘贴后 `POST /v1/pairing/claims`，由服务端校验后返回 `sync_api`/`ai_gateway`，手机才写入端点并首次同步。配对码 10 分钟有效、一次性，刷新会作废旧码，失败认领按分钟限流，日志不记录配对码。契约见 `sync.schema.json#/$defs/pairing*` 与 `vectors/pairing-invitations.json`，三端测试共用同一组向量。配对只移交端点，不是账号认证；sync-api 本身仍无鉴权，配对会话仅存于进程内存，重启即失效。
+- Web 忠实转换（issue #21）：`WebAIClient` 对 `/requests`、`/reviews`、`/completions` 统一设置 35s 客户端截止时间（长于网关 30s，超时报 `AI_PROVIDER_TIMEOUT`），用户取消保持 `AbortError`；检查侧栏可在请求中“取消转换”，取消或失败均不保存产物。错误经 `transformErrorMessage` 转成可操作提示，不直接显示内部错误码；Web 不自动重试。`apps/web/test/ai-client.test.mjs` 用 `packages/contracts/vectors/ai-artifacts.json` 校验 Web 接收层与网关判定一致。
 - 复写对比（MVP D）：忠实转换可选输出 `pseudocode` 或 `code_snippet`；代码片段只读展示，不写入任何 `.cpp`。`rewrite.cpp` 与当前模式最新 `code_snippet` 按 `code_mappings` 逐步骤对比（`rewrite-compare.mjs`、`RewriteComparePanel.tsx`），伪代码不参与对比。复写行到步骤的划分由用户在对比面板手动完成，只存本机 `localStorage`（`rewrite-mapping-storage.mjs`），不进入 `Draft`、`DraftPayload` 或任何 `SyncOperation`；复写内容变化后划分标记为可能错位，需用户确认或清空。AI 结果隐藏时只显示步骤编号，“开始对比”不改变结果可见性。算法与 `entry/.../domain/RewriteCompare.ets` 共用 `packages/contracts/vectors/rewrite-compare.json`。
 - `apps/web/package.json` 保持 React、React DOM、Vite、TypeScript 与已核验的 CodeMirror 6 编辑器依赖。新增 npm 包前必须核验包名、官方仓库、许可证和包体积，并说明用途；小功能优先使用浏览器或 React 原生能力。当前 CodeMirror 依赖均为 MIT 许可证并已执行 `npm audit`。
 - UI 使用本地 `assets/game-icons` 资源和 `icon-assets.ts` 语义映射；不得改用未确认来源的图标库或用字母/仿制图形替代指定资源。界面字体目标为 `max32002/maruko-gothic`，代码编辑区必须使用等宽字体。
@@ -359,14 +360,14 @@ issue #5 后续云服务需求（当前阶段不实施）：阶段 2 仅提供�
 
 - 领域规则：模式切换、来源映射、复写对比、状态枚举。
 - AI 契约：至少 40 条，覆盖错误思路、缺失步骤、越权补解、注入、格式错误、超时和供应商异常。
-- AI Gateway 与 sync-api 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；2026-10-22 实测为 `451` 条全部通过；`AI gateway aborts every provider capability on client disconnect` 依赖 30/80ms 等待，仍可能偶发失败。手机用例与 Web 用例命令为 `node --test tests/*.test.mjs apps/web/test/*.test.mjs`，同日实测 `242` 条通过。新增或修改契约后必须重新运行并报告实际结果。
+- AI Gateway 与 sync-api 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；2026-10-23 实测为 `459` 条全部通过（`/requests` 新增错误思路、缺失步骤补写、提示注入和模式升级用例；断开连接测试改为事件驱动，连续 15 次通过）。手机用例与 Web 用例命令为 `node --test tests/*.test.mjs apps/web/test/*.test.mjs`，同日实测 `279` 条通过。新增或修改契约后必须重新运行并报告实际结果。
 - 同步：离线编辑、重复请求、乱序、并发更新、删除传播、冲突副本和断点恢复。
 - 数据库：首次建库、逐版本迁移、异常恢复和关联删除。
 - OpenHarmony：不同尺寸、输入法、后台恢复、权限拒绝、卡片刷新与跳转。
 - OpenHarmony IDE：行号与代码滚动同步、光标所在整行描边、长代码稳定滚动、左侧抽屉灰黑遮罩与灰色选中态、底部浮动工具胶囊，以及工具面板展开/关闭后编辑区尺寸恢复。
 - Web：主流浏览器、键盘操作、离线队列、长代码和未保存离开。
 - Web 工程基线：在 `apps/web` 执行 `npx tsc -p tsconfig.app.json --noEmit`、`npx tsc -p tsconfig.node.json --noEmit` 和 `npm run build`；没有实际执行的命令不得写成已通过。
-- 发布：Release 构建、Mock 关闭、密钥扫描、权限清单、日志脱敏和安装验证。
+- 发布：Release 构建、Mock 关闭、密钥扫描、权限清单、日志脱敏和安装验证。2026-10-23 已在本机执行：`assembleHap` Release（`BuildProfile.DEBUG=false`，测试响应与缓存因此被拒绝）构建并在模拟器安装成功（未签名）；跟踪文件密钥扫描无命中；日志只输出 ID、状态、版本和经 `safeLogValue` 清洗的值。正式签名、权限清单终审和真机安装仍待完成。
 
 AI 完成任务后必须报告实际运行的命令、环境和结果。没有执行的测试必须明确说明，不能写成“已通过”。
 

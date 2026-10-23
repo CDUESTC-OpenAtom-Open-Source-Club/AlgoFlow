@@ -1455,6 +1455,25 @@ h2 {
   font-weight: 700;
 }
 
+.rewrite-risk {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-left: 3px solid #e0b062;
+  background: #2d2a24;
+  color: #ead6ad;
+}
+
+.rewrite-risk ul,
+.rewrite-risk p {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  line-height: 1.5;
+}
+
+.rewrite-risk p {
+  padding-left: 0;
+}
+
 .rewrite-step,
 .rewrite-extra {
   margin-top: 10px;
