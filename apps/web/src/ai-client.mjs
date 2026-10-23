@@ -3,6 +3,9 @@ import aiSchema from '../../../packages/contracts/schemas/ai.schema.json' with {
 import { validateCompletionFragment } from '../../../packages/contracts/cpp-fragment.mjs';
 
 const TEST_DATA_HEADER = 'X-AlgoFlow-Test-Data';
+// Longer than the Gateway's own 30 s provider timeout, so its AI_PROVIDER_ERROR
+// arrives first; this only catches a Gateway or network that stops answering.
+const DEFAULT_TIMEOUT_MS = 35000;
 export const ALLOW_TEST_AI = import.meta.env?.DEV === true && import.meta.env?.VITE_AI_ALLOW_TEST_DATA === 'true';
 
 /**
@@ -22,6 +25,7 @@ const HTTP_ERRORS = {
   409: ['AI_MODE_NOT_AVAILABLE', '当前模式尚未接入，请选择忠实转换'],
   422: ['INVALID_AI_ARTIFACT', 'AI 产物不符合契约，已拒绝使用'],
   502: ['AI_PROVIDER_ERROR', 'AI 服务异常或超时，请稍后重试'],
+  504: ['AI_PROVIDER_TIMEOUT', 'AI 服务响应超时，可重新请求'],
   503: ['AI_NOT_ENABLED', 'AI 不可用 / 未配置模型'],
 };
 
@@ -37,11 +41,12 @@ export class AIClientError extends Error {
 }
 
 export class WebAIClient {
-  /** @param {string} [baseUrl] @param {{fetchImpl?: typeof fetch, allowTestData?: boolean}} [options] */
-  constructor(baseUrl = import.meta.env?.VITE_AI_GATEWAY_BASE || '/ai-api', { fetchImpl = globalThis.fetch, allowTestData = ALLOW_TEST_AI } = {}) {
+  /** @param {string} [baseUrl] @param {{fetchImpl?: typeof fetch, allowTestData?: boolean, timeoutMs?: number}} [options] */
+  constructor(baseUrl = import.meta.env?.VITE_AI_GATEWAY_BASE || '/ai-api', { fetchImpl = globalThis.fetch, allowTestData = ALLOW_TEST_AI, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.fetchImpl = fetchImpl;
     this.allowTestData = canUseTestData(allowTestData);
+    this.timeoutMs = timeoutMs;
   }
 
   /** @param {import('./types').AIReviewRequest} request @param {{signal?: AbortSignal}} [options] */
@@ -75,17 +80,33 @@ export class WebAIClient {
 
   /** @param {string} path @param {object} body @param {{signal?: AbortSignal}} [options] */
   async #request(path, body, { signal } = {}) {
+    // A caller's cancel stays an AbortError; only our own deadline becomes a timeout.
+    const deadline = new AbortController();
+    const timer = this.timeoutMs > 0 ? setTimeout(() => deadline.abort(), this.timeoutMs) : undefined;
+    const combined = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
+    try {
+      return await this.#send(path, body, combined, signal);
+    } catch (/** @type {unknown} */ error) {
+      if (deadline.signal.aborted && !signal?.aborted) throw new AIClientError('AI_PROVIDER_TIMEOUT', 'AI 服务响应超时，可重新请求', 0);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** @param {string} path @param {object} body @param {AbortSignal} combined @param {AbortSignal | undefined} signal */
+  async #send(path, body, combined, signal) {
     let response;
     try {
       response = await this.fetchImpl.call(globalThis, `${this.baseUrl}${path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal,
+        signal: combined,
         cache: 'no-store',
       });
     } catch (/** @type {unknown} */ error) {
-      if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
+      if (combined.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
       throw new AIClientError('NETWORK_ERROR', '无法连接 AI 服务，请检查服务地址和网络', 0);
     }
     const isTestData = response.headers.get(TEST_DATA_HEADER)?.trim().toLowerCase() === 'true';
@@ -99,7 +120,7 @@ export class WebAIClient {
     /** @type {unknown} */
     let payload = null;
     try { payload = await response.json(); } catch (error) {
-      if (signal?.aborted) throw error;
+      if (combined.aborted || signal?.aborted) throw error;
       throw invalidArtifact();
     }
     return { result: objectValue(payload), isTestData };
@@ -154,6 +175,20 @@ export function artifactFromGateway(response, draft, clientId, sourceIds, ruleVe
   const snippetLines = typeof entity.code_snippet === 'string' ? entity.code_snippet.split(/\r\n|\n|\r/).length : 0;
   if (Array.isArray(entity.code_mappings) && entity.code_mappings.some((mapping) => mapping.end_line > snippetLines)) throw new Error('INVALID_AI_ARTIFACT');
   return /** @type {import('./types').AIArtifact} */ (entity);
+}
+
+/**
+ * User-facing text for a failed transform request. Client errors already carry
+ * an actionable message; local guard codes are translated, never shown raw.
+ * @param {unknown} error
+ */
+export function transformErrorMessage(error) {
+  if (error instanceof Error && error.name === 'AbortError') return '已取消本次忠实转换，未保存任何结果。';
+  if (error instanceof AIClientError) return error.message;
+  const code = error instanceof Error ? error.message : '';
+  if (code === 'DRAFT_CHANGED_RETRY_AI') return '请求期间草稿已修改或未同步，结果已丢弃。请保存并同步后重新请求。';
+  if (code === 'INVALID_AI_ARTIFACT') return 'AI 产物格式、来源或范围无效，已拒绝使用';
+  return 'AI 请求失败，请稍后重试';
 }
 
 /** Legacy client port retained for the persisted artifact/review tests. */

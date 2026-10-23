@@ -29,13 +29,14 @@ interface InspectorPanelProps {
   transformOutput: TransformOutputKind;
   onTransformOutputChange: (kind: TransformOutputKind) => void;
   onArtifact: () => void;
+  onCancelArtifact: () => void;
   onToggleArtifact: (artifact: AIArtifact) => void;
 }
 
 export function InspectorPanel({
   hidden, onHide, onShow, issues, onJumpToLine, aiState, mode, activeFile, canAcceptCompletion,
   onReview, onCompletion, onAcceptCompletion, onRejectCompletion, onCancel, onToggleResult, onRetryStorage,
-  artifact, artifactHistory, artifactBusy, artifactMessage, transformOutput, onTransformOutputChange, onArtifact, onToggleArtifact,
+  artifact, artifactHistory, artifactBusy, artifactMessage, transformOutput, onTransformOutputChange, onArtifact, onCancelArtifact, onToggleArtifact,
   canWithdrawCompletion, onWithdrawCompletion,
 }: InspectorPanelProps) {
   const errors = issues.filter((issue) => issue.severity === 'error').length;
@@ -118,8 +119,12 @@ export function InspectorPanel({
               </button>
             ))}
           </div>
+          {!canRequest && <p role="status" className="ai-help">{mode !== 'faithful_transform' ? '当前模式尚未接入，不会自动改用忠实转换。' : '请切换到 main.cpp 再请求忠实转换。'}</p>}
           {transformOutput === 'code_snippet' && <p className="ai-help">代码片段只读展示，用于和 rewrite.cpp 复写对比，不会写入任何 .cpp 文件。</p>}
-          <button type="button" className="outline-button" onClick={onArtifact} disabled={artifactBusy || !canRequest}>请求忠实转换</button>
+          <div className="review-actions">
+            <button type="button" className="outline-button" onClick={onArtifact} disabled={artifactBusy || !canRequest}>请求忠实转换</button>
+            {artifactBusy && <button type="button" className="outline-button" onClick={onCancelArtifact}>取消转换</button>}
+          </div>
           {artifactMessage && <p className="ai-help" role="status">{artifactMessage}</p>}
           {artifactHistory.map((item) => (
             <article className={item.id === artifact?.id && getArtifactFreshness(item, artifact) === 'current' ? 'ai-result' : 'ai-result stale'} key={item.id}>

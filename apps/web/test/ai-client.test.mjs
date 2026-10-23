@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { canUseTestData, createIdeaSegments, parseCompletionResult, parseReviewResult, rangeToOffsets, toCursor, WebAIClient } from '../src/ai-client.mjs';
+import { AIClientError, artifactFromGateway, canUseTestData, createIdeaSegments, parseAIArtifactResult, parseCompletionResult, parseReviewResult, rangeToOffsets, toCursor, transformErrorMessage, WebAIClient } from '../src/ai-client.mjs';
+import { assertAIArtifact } from '../src/sync-client.mjs';
 
 const reviewVectors = JSON.parse(readFileSync(new URL('../../../packages/contracts/vectors/ide-review-vectors.json', import.meta.url), 'utf8'));
 const completionVectors = JSON.parse(readFileSync(new URL('../../../packages/contracts/vectors/ide-completion-vectors.json', import.meta.url), 'utf8'));
@@ -168,4 +169,65 @@ test('web client enforces shared review and completion test response markers', a
       );
     }
   }
+});
+
+// issue #21: the Web transform path against the shared contract vectors.
+const artifactVectors = JSON.parse(readFileSync(new URL('../../../packages/contracts/vectors/ai-artifacts.json', import.meta.url), 'utf8'));
+const entityMetadata = { id: 'artifact-1', version: 0, server_sequence: 0, created_at: '2026-10-23T00:00:00.000Z', updated_at: '2026-10-23T00:00:00.000Z', deleted: false, last_modified_client_id: 'web-test', draft_id: 'draft-test' };
+function transformRequestFor(artifact) {
+  const refs = [...new Set((Array.isArray(artifact.pseudocode) ? artifact.pseudocode : []).flatMap(step => Array.isArray(step?.source_refs) ? step.source_refs : []))].filter(ref => typeof ref === 'string' && ref.length > 0);
+  return { mode: artifact.mode, draft_id: 'draft-test', draft_version: artifact.source_draft_version, language: 'cpp', rule_version: artifact.rule_version,
+    problem_context: 'p', idea_segments: (refs.length ? refs : ['idea_segment_1']).map(id => ({ id, content: id })), output_kind: artifact.output_kind, visibility: artifact.visibility };
+}
+for (const vector of artifactVectors) {
+  test(`Web transform contract layer: ${vector.name}`, () => {
+    const request = transformRequestFor(vector.artifact);
+    const accept = () => {
+      const parsed = parseAIArtifactResult(structuredClone(vector.artifact), request);
+      assertAIArtifact({ ...parsed, ...entityMetadata }, new Set(request.idea_segments.map(segment => segment.id)));
+    };
+    if (vector.valid) assert.doesNotThrow(accept); else assert.throws(accept);
+  });
+}
+
+test('Web transform policy keeps only visible results of the selected mode', () => {
+  const valid = artifactVectors.find(vector => vector.valid && vector.artifact.mode === 'faithful_transform' && vector.artifact.visibility === 'visible').artifact;
+  const draft = { id: 'draft-test', version: valid.source_draft_version, ai_mode: 'faithful_transform' };
+  const ids = valid.pseudocode.flatMap(step => step.source_refs);
+  assert.doesNotThrow(() => artifactFromGateway(valid, draft, 'web-test', ids, valid.rule_version, valid.output_kind));
+  assert.throws(() => artifactFromGateway(valid, { ...draft, ai_mode: 'full_solution' }, 'web-test', ids, valid.rule_version, valid.output_kind), /INVALID_AI_ARTIFACT/);
+  assert.throws(() => artifactFromGateway({ ...valid, visibility: 'hidden' }, draft, 'web-test', ids, valid.rule_version, valid.output_kind), /INVALID_AI_ARTIFACT/);
+  assert.throws(() => artifactFromGateway(valid, draft, 'web-test', ['other-id'], valid.rule_version, valid.output_kind), /INVALID_AI_ARTIFACT/);
+});
+
+const transformRequest = { mode: 'faithful_transform', draft_id: 'd', draft_version: 1, language: 'cpp', rule_version: '1.0.0', problem_context: 'p',
+  idea_segments: [{ id: 's1', content: 'a' }], output_kind: 'pseudocode', visibility: 'visible' };
+const hangingFetch = (_url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true }));
+
+test('Web transform: a user cancel stays an AbortError and maps to a cancel message', async () => {
+  const controller = new AbortController();
+  const pending = new WebAIClient('http://x', { fetchImpl: hangingFetch, timeoutMs: 60000 }).requestTransform(transformRequest, { signal: controller.signal });
+  controller.abort();
+  const error = await pending.catch(caught => caught);
+  assert.equal(error.name, 'AbortError');
+  assert.equal(transformErrorMessage(error), '已取消本次忠实转换，未保存任何结果。');
+});
+
+test('Web transform: an unanswered request times out as AI_PROVIDER_TIMEOUT', async () => {
+  const error = await new WebAIClient('http://x', { fetchImpl: hangingFetch, timeoutMs: 20 }).requestTransform(transformRequest).catch(caught => caught);
+  assert.ok(error instanceof AIClientError);
+  assert.equal(error.code, 'AI_PROVIDER_TIMEOUT');
+});
+
+test('Web transform: HTTP and network failures map to actionable codes; local guard codes are never shown raw', async () => {
+  const cases = [[503, 'AI_NOT_ENABLED'], [502, 'AI_PROVIDER_ERROR'], [504, 'AI_PROVIDER_TIMEOUT'], [422, 'INVALID_AI_ARTIFACT'], [409, 'AI_MODE_NOT_AVAILABLE'], [400, 'INVALID_REQUEST']];
+  for (const [status, code] of cases) {
+    const client = new WebAIClient('http://x', { fetchImpl: async () => new Response('{}', { status }) });
+    const error = await client.requestTransform(transformRequest).catch(caught => caught);
+    assert.equal(error.code, code, String(status));
+    assert.ok(transformErrorMessage(error).length > 0 && !/^[A-Z_]+$/.test(transformErrorMessage(error)));
+  }
+  const offline = await new WebAIClient('http://x', { fetchImpl: async () => { throw new TypeError('Failed to fetch'); } }).requestTransform(transformRequest).catch(caught => caught);
+  assert.equal(offline.code, 'NETWORK_ERROR');
+  for (const code of ['DRAFT_CHANGED_RETRY_AI', 'INVALID_AI_ARTIFACT']) assert.doesNotMatch(transformErrorMessage(new Error(code)), /^[A-Z_]+$/);
 });
