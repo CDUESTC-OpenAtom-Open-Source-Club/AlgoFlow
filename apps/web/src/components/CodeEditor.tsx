@@ -20,6 +20,8 @@ interface CodeEditorProps {
   jumpToLine?: number;
   onCursorChange?: (line: number, column: number) => void;
   onEditorReady?: (apply: ApplyAIEditorChange | null) => void;
+  /** 1-based lines covered by the main selection; used by the rewrite partition. */
+  onSelectionLines?: (startLine: number, endLine: number) => void;
 }
 
 const editorTheme = EditorView.theme({
@@ -47,14 +49,16 @@ const syntaxColors = HighlightStyle.define([
   { tag: tags.meta, color: '#c586c0' },
 ]);
 
-export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, onCursorChange, onEditorReady }: CodeEditorProps) {
+export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, onCursorChange, onEditorReady, onSelectionLines }: CodeEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const saveRef = useRef(onSave);
   const changeRef = useRef(onChange);
+  const selectionRef = useRef(onSelectionLines);
   const externalUpdateRef = useRef(false);
   saveRef.current = onSave;
   changeRef.current = onChange;
+  selectionRef.current = onSelectionLines;
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -79,6 +83,7 @@ export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, on
           const position = update.state.selection.main.head;
           const line = update.state.doc.lineAt(position);
           onCursorChange?.(line.number, position - line.from + 1);
+          reportSelectionLines(update.state, selectionRef.current);
         }
       }),
     ] });
@@ -122,6 +127,15 @@ export function CodeEditor({ activeFile, value, onChange, onSave, jumpToLine, on
   }, [jumpToLine]);
 
   return <div ref={hostRef} className="code-editor" aria-label={`${activeFile} 文档编辑器`} />;
+}
+
+function reportSelectionLines(state: EditorState, report: CodeEditorProps['onSelectionLines']): void {
+  if (!report) return;
+  const { from, to } = state.selection.main;
+  const start = state.doc.lineAt(from);
+  // A selection that ends at the start of a line does not cover that line.
+  const endPosition = to > from && state.doc.lineAt(to).from === to ? to - 1 : to;
+  report(start.number, Math.max(start.number, state.doc.lineAt(endPosition).number));
 }
 
 function duplicateLine(view: EditorView): boolean {

@@ -1,0 +1,133 @@
+{
+  "description": "Shared vectors for rewrite.cpp vs AI code_snippet step comparison. Web: apps/web/src/rewrite-compare.mjs; phone: entry/src/main/ets/domain/RewriteCompare.ets. Rewrite mappings are local-only and never synced.",
+  "compare": [
+    {
+      "name": "indentation and blank lines do not count as differences",
+      "source": {
+        "steps": [{ "id": "step_1", "step": "sort by right end" }, { "id": "step_2", "step": "pick non-overlapping" }],
+        "code_snippet": "sort(v.begin(), v.end());\nint last = 0;\nfor (auto& x : v) {\n  if (x.first >= last) last = x.second;\n}",
+        "code_mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 1 }, { "step_id": "step_2", "start_line": 2, "end_line": 5 }]
+      },
+      "rewrite": "    sort(v.begin(), v.end());   \n\nint last = 0;\nfor (auto& x : v) {\nif (x.first >= last) last = x.second;\n}",
+      "rewrite_mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 2 }, { "step_id": "step_2", "start_line": 3, "end_line": 6 }],
+      "expected": {
+        "steps": [
+          { "step_id": "step_1", "index": 1, "status": "same", "ai_lines": [1], "rewrite_lines": [1, 2],
+            "diff": [{ "op": "same", "ai_line": 1, "rewrite_line": 1, "text": "sort(v.begin(), v.end());" }] },
+          { "step_id": "step_2", "index": 2, "status": "same", "ai_lines": [2, 3, 4, 5], "rewrite_lines": [3, 4, 5, 6],
+            "diff": [
+              { "op": "same", "ai_line": 2, "rewrite_line": 3, "text": "int last = 0;" },
+              { "op": "same", "ai_line": 3, "rewrite_line": 4, "text": "for (auto& x : v) {" },
+              { "op": "same", "ai_line": 4, "rewrite_line": 5, "text": "  if (x.first >= last) last = x.second;" },
+              { "op": "same", "ai_line": 5, "rewrite_line": 6, "text": "}" }
+            ] }
+        ],
+        "ai_unmapped": [],
+        "rewrite_extra": [],
+        "summary": { "same": 2, "different": 0, "missing": 0, "no_ai_code": 0 }
+      }
+    },
+    {
+      "name": "changed and added lines are diffed per step, AI side first on ties",
+      "source": {
+        "steps": [{ "id": "step_1", "step": "init" }, { "id": "step_2", "step": "loop" }],
+        "code_snippet": "int total = 0;\nfor (int i = 0; i < n; ++i)\n  total += a[i];",
+        "code_mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 1 }, { "step_id": "step_2", "start_line": 2, "end_line": 3 }]
+      },
+      "rewrite": "long long total = 0;\nfor (int i = 0; i < n; ++i)\n  if (a[i] > 0)\n    total += a[i];",
+      "rewrite_mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 1 }, { "step_id": "step_2", "start_line": 2, "end_line": 4 }],
+      "expected": {
+        "steps": [
+          { "step_id": "step_1", "index": 1, "status": "different", "ai_lines": [1], "rewrite_lines": [1],
+            "diff": [
+              { "op": "ai_only", "ai_line": 1, "rewrite_line": null, "text": "int total = 0;" },
+              { "op": "rewrite_only", "ai_line": null, "rewrite_line": 1, "text": "long long total = 0;" }
+            ] },
+          { "step_id": "step_2", "index": 2, "status": "different", "ai_lines": [2, 3], "rewrite_lines": [2, 3, 4],
+            "diff": [
+              { "op": "same", "ai_line": 2, "rewrite_line": 2, "text": "for (int i = 0; i < n; ++i)" },
+              { "op": "rewrite_only", "ai_line": null, "rewrite_line": 3, "text": "  if (a[i] > 0)" },
+              { "op": "same", "ai_line": 3, "rewrite_line": 4, "text": "  total += a[i];" }
+            ] }
+        ],
+        "ai_unmapped": [],
+        "rewrite_extra": [],
+        "summary": { "same": 0, "different": 2, "missing": 0, "no_ai_code": 0 }
+      }
+    },
+    {
+      "name": "missing step, step without AI code, unmapped AI lines, extra rewrite lines and CRLF",
+      "source": {
+        "steps": [{ "id": "step_1", "step": "read" }, { "id": "step_2", "step": "check" }, { "id": "step_3", "step": "report" }],
+        "code_snippet": "cin >> n;\nif (n == 0) return 0;\n// helper\nint ans = n;",
+        "code_mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 1 }, { "step_id": "step_2", "start_line": 2, "end_line": 2 }, { "step_id": "step_2", "start_line": 4, "end_line": 9 }, { "step_id": "step_ghost", "start_line": 3, "end_line": 3 }]
+      },
+      "rewrite": "cin >> n;\r\ncout << n;\r\nint unused = 1;\r\n\r\nreturn 0;",
+      "rewrite_mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 1 }, { "step_id": "step_3", "start_line": 2, "end_line": 2 }, { "step_id": "step_ghost", "start_line": 3, "end_line": 3 }],
+      "expected": {
+        "steps": [
+          { "step_id": "step_1", "index": 1, "status": "same", "ai_lines": [1], "rewrite_lines": [1],
+            "diff": [{ "op": "same", "ai_line": 1, "rewrite_line": 1, "text": "cin >> n;" }] },
+          { "step_id": "step_2", "index": 2, "status": "missing", "ai_lines": [2, 4], "rewrite_lines": [],
+            "diff": [
+              { "op": "ai_only", "ai_line": 2, "rewrite_line": null, "text": "if (n == 0) return 0;" },
+              { "op": "ai_only", "ai_line": 4, "rewrite_line": null, "text": "int ans = n;" }
+            ] },
+          { "step_id": "step_3", "index": 3, "status": "no_ai_code", "ai_lines": [], "rewrite_lines": [2],
+            "diff": [{ "op": "rewrite_only", "ai_line": null, "rewrite_line": 2, "text": "cout << n;" }] }
+        ],
+        "ai_unmapped": [{ "line": 3, "text": "// helper" }],
+        "rewrite_extra": [{ "line": 3, "text": "int unused = 1;" }, { "line": 5, "text": "return 0;" }],
+        "summary": { "same": 1, "different": 0, "missing": 1, "no_ai_code": 1 }
+      }
+    },
+    {
+      "name": "AI lines may be shared by steps; a rewrite line belongs to the last mapping that claims it",
+      "source": {
+        "steps": [{ "id": "step_1", "step": "first" }, { "id": "step_2", "step": "second" }],
+        "code_snippet": "a();\nb();",
+        "code_mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 2 }, { "step_id": "step_2", "start_line": 2, "end_line": 2 }]
+      },
+      "rewrite": "a();\nb();\nd();",
+      "rewrite_mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 3 }, { "step_id": "step_2", "start_line": 2, "end_line": 2 }],
+      "expected": {
+        "steps": [
+          { "step_id": "step_1", "index": 1, "status": "different", "ai_lines": [1, 2], "rewrite_lines": [1, 3],
+            "diff": [
+              { "op": "same", "ai_line": 1, "rewrite_line": 1, "text": "a();" },
+              { "op": "ai_only", "ai_line": 2, "rewrite_line": null, "text": "b();" },
+              { "op": "rewrite_only", "ai_line": null, "rewrite_line": 3, "text": "d();" }
+            ] },
+          { "step_id": "step_2", "index": 2, "status": "same", "ai_lines": [2], "rewrite_lines": [2],
+            "diff": [{ "op": "same", "ai_line": 2, "rewrite_line": 2, "text": "b();" }] }
+        ],
+        "ai_unmapped": [],
+        "rewrite_extra": [],
+        "summary": { "same": 1, "different": 1, "missing": 0, "no_ai_code": 0 }
+      }
+    }
+  ],
+  "assign": [
+    { "name": "assign into an empty partition", "mappings": [], "start": 2, "end": 3, "step_id": "step_1",
+      "expected": [{ "step_id": "step_1", "start_line": 2, "end_line": 3 }] },
+    { "name": "reassigning the middle of a range splits the other step", "mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 5 }], "start": 2, "end": 3, "step_id": "step_2",
+      "expected": [{ "step_id": "step_1", "start_line": 1, "end_line": 1 }, { "step_id": "step_2", "start_line": 2, "end_line": 3 }, { "step_id": "step_1", "start_line": 4, "end_line": 5 }] },
+    { "name": "adjacent ranges of one step merge; reversed bounds are accepted", "mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 2 }], "start": 4, "end": 3, "step_id": "step_1",
+      "expected": [{ "step_id": "step_1", "start_line": 1, "end_line": 4 }] },
+    { "name": "null clears lines", "mappings": [{ "step_id": "step_1", "start_line": 1, "end_line": 3 }, { "step_id": "step_2", "start_line": 4, "end_line": 4 }], "start": 2, "end": 4, "step_id": null,
+      "expected": [{ "step_id": "step_1", "start_line": 1, "end_line": 1 }] }
+  ],
+  "fingerprint": [
+    { "text": "", "expected": "0-811c9dc5" },
+    { "text": "a", "expected": "1-e40c292c" },
+    { "text": "foobar", "expected": "6-bf9cf968" },
+    { "text": "x;\r\ny;", "expected": "5-c97a6306" },
+    { "text": "x;\ny;", "expected": "5-c97a6306" }
+  ],
+  "selection": [
+    { "name": "caret on line 2", "text": "a\nbb\nc", "from": 3, "to": 3, "expected": { "start_line": 2, "end_line": 2 } },
+    { "name": "two full lines including the trailing break", "text": "a\nbb\nc", "from": 0, "to": 5, "expected": { "start_line": 1, "end_line": 2 } },
+    { "name": "CRLF trailing break", "text": "a\r\nbb\r\nc", "from": 0, "to": 7, "expected": { "start_line": 1, "end_line": 2 } },
+    { "name": "reversed offsets", "text": "a\nbb\nc", "from": 6, "to": 2, "expected": { "start_line": 2, "end_line": 3 } }
+  ]
+}

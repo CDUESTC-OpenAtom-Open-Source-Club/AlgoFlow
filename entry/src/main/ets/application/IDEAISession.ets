@@ -68,12 +68,14 @@ export class IDEAISession {
     }); this.onChange();
   }
   dispose(): void { this.cancel(); this.context = null; this.onChange = () => {}; }
-  async request(capability: IDECapability, kind: ReviewKind = ReviewKind.EXPLANATION, cursor: SourceCursor = new SourceCursor()): Promise<void> {
+  async request(capability: IDECapability, kind: ReviewKind = ReviewKind.EXPLANATION, cursor: SourceCursor = new SourceCursor(),
+    transformOutput: string = 'pseudocode'): Promise<void> {
     if (this.context === null) return;
     this.cancel(false);
     const record = new IDERecord(); record.id = `ai-${Date.now()}-${++this.sequence}`;
     record.context = JSON.parse(JSON.stringify(this.context)) as IDEContext;
     record.capability = capability; record.reviewKind = kind; record.cursor = cursor;
+    record.transformOutput = transformOutput === 'code_snippet' ? 'code_snippet' : 'pseudocode';
     record.generation = this.generation; record.updatedAt = new Date().toISOString(); record.createdAt = record.updatedAt;
     this.records = this.records.concat([record]);
     this.onChange();
@@ -89,7 +91,11 @@ export class IDEAISession {
       record.isTestData = reply.isTestData;
       if (reply.errorCode.length > 0) { record.errorCode = reply.errorCode; record.message = reply.message; record.state = IDEState.ERROR; }
       else {
-        try { parseIDEResult(reply.body, record); }
+        try {
+          parseIDEResult(reply.body, record);
+          // The gateway must answer with the output kind that was asked for.
+          if (capability === IDECapability.TRANSFORM && String((JSON.parse(reply.body) as Record<string, Object>)['output_kind']) !== buildIDERequest(record).output_kind) throw new Error('INVALID_AI_ARTIFACT');
+        }
         catch (error) { throw new Error('INVALID_AI_ARTIFACT'); }
         record.body = reply.body; record.state = IDEState.SUCCESS;
         this.markHistorical(record);

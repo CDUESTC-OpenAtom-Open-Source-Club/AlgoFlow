@@ -16,6 +16,7 @@ export async function createReviewResult(input) {
     'main.cpp': sourceDraft.code,
     'idea.md': sourceDraft.idea,
     'cases.txt': sourceDraft.cases ?? '',
+    'rewrite.cpp': sourceDraft.rewrite ?? '',
   }, input.mode, input.reviewKind);
   const response = await input.aiClient.review(request, { signal: input.signal });
   if (input.signal?.aborted) throw new Error('AI_REQUEST_CANCELLED');

@@ -88,6 +88,9 @@ export class IDERecord {
   serverSequence: number = 0;
   syncEntityType: string = '';
   restored: boolean = false;
+  // Requested transform output; code_snippet is a read-only fragment for the
+  // rewrite comparison and is never written to a .cpp file.
+  transformOutput: string = 'pseudocode';
 }
 export interface AIResultRepository {
   list(draftId: string, mode: AIMode): Promise<IDERecord[]>;
@@ -106,6 +109,7 @@ export function buildIDERequest(record: IDERecord): IDERequest {
   request.mode = record.context.mode; request.draft_id = record.context.draftId;
   request.draft_version = record.context.version; request.problem_context = record.context.problemContext;
   request.idea_segments = record.context.segments;
-  request.output_kind = record.capability === IDECapability.TRANSFORM ? 'pseudocode' : record.capability;
+  request.output_kind = record.capability !== IDECapability.TRANSFORM ? record.capability :
+    record.transformOutput === 'code_snippet' ? 'code_snippet' : 'pseudocode';
   return request;
 }

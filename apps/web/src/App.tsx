@@ -2,18 +2,21 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import { ActivityBar } from './components/ActivityBar';
 import { EditorStage } from './components/EditorStage';
 import { InspectorPanel } from './components/InspectorPanel';
+import { RewriteComparePanel } from './components/RewriteComparePanel';
 import { PhoneConnectionModal, type PhoneConnectionConfig } from './components/PhoneConnectionModal';
 import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { initialDocuments } from './data';
 import { BrowserWorkspaceRepository, getAIArtifactFreshness, queueAIArtifact, queueReviewResult, queueUpsert, selectCurrentAIArtifact, sortAIArtifactsNewestFirst } from './storage.mjs';
 import { LocalSyncClient, synchronizeWorkspace } from './sync-client.mjs';
-import type { AIArtifact, AIResultRecord, ConflictRecord, Documents, Draft, FileId, Mode, Panel, ReviewResult, SyncStatus, WorkspaceState } from './types';
+import type { AIArtifact, AIResultRecord, ConflictRecord, Documents, Draft, FileId, Mode, Panel, ReviewResult, SyncStatus, TransformOutputKind, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
 import { artifactFromGateway, buildAIRequest, WebAIClient, toCursor } from './ai-client.mjs';
 import { assertAIArtifact } from './sync-client.mjs';
 import { BrowserAIResultRepository } from './ai-result-storage.mjs';
 import { AISession } from './ai-session.mjs';
+import { assignRewriteLines, resolveRewriteMapping } from './rewrite-compare.mjs';
+import { BrowserRewriteMappingRepository } from './rewrite-mapping-storage.mjs';
 import type { AIContext, ApplyAIEditorChange } from './types';
 
 interface ConflictChoice {
@@ -23,6 +26,7 @@ interface ConflictChoice {
 
 const syncClient = new LocalSyncClient();
 const aiClient = new WebAIClient();
+const rewriteMappings = new BrowserRewriteMappingRepository();
 
 export function App() {
   const [clientId] = useState(getClientId);
@@ -48,6 +52,11 @@ export function App() {
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
   const [artifactBusy, setArtifactBusy] = useState(false);
   const [artifactMessage, setArtifactMessage] = useState('');
+  const [transformOutput, setTransformOutput] = useState<TransformOutputKind>('pseudocode');
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [rewriteSelection, setRewriteSelection] = useState({ start: 1, end: 1 });
+  const [revealedArtifactId, setRevealedArtifactId] = useState('');
+  const [mappingRevision, setMappingRevision] = useState(0);
   const [phoneModalOpen, setPhoneModalOpen] = useState(false);
   const [phoneConfig, setPhoneConfig] = useState<PhoneConnectionConfig>(() => ({
     enabled: true,
@@ -63,6 +72,14 @@ export function App() {
     : [], [workspace.ai_artifacts, currentDraft, mode]);
   const currentArtifact = useMemo(() => currentDraft ? selectCurrentAIArtifact(workspace, currentDraft.id, mode) ?? null : null,
     [workspace, currentDraft, mode]);
+  // Pseudocode never enters the IDE, so only code_snippet results are compared.
+  const compareArtifact = useMemo(() => artifactHistory.find((artifact) => artifact.output_kind === 'code_snippet') ?? null, [artifactHistory]);
+  const mappingRecord = useMemo(() => currentDraft ? rewriteMappings.load(currentDraft.id) : null,
+    // mappingRevision forces a reload after a local partition write.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currentDraft?.id, mappingRevision]);
+  const rewriteMapping = useMemo(() => resolveRewriteMapping(mappingRecord, compareArtifact?.id ?? '', documents['rewrite.cpp']),
+    [mappingRecord, compareArtifact, documents]);
   const editorApply = useRef<ApplyAIEditorChange | null>(null);
   const editEpoch = useRef(0);
   const hasUnsavedEdits = useRef(false);
@@ -72,6 +89,9 @@ export function App() {
   const handleEditorReady = useCallback((apply: ApplyAIEditorChange | null) => { editorApply.current = apply; }, []);
   const handleCursorChange = useCallback((line: number, column: number) => {
     setCursorPosition({ line, column });
+  }, []);
+  const handleSelectionLines = useCallback((start: number, end: number) => {
+    setRewriteSelection(previous => previous.start === start && previous.end === end ? previous : { start, end });
   }, []);
 
   useLayoutEffect(() => {
@@ -85,7 +105,7 @@ export function App() {
   useEffect(() => () => aiSession.dispose(), [aiSession]);
 
   useEffect(() => {
-    for (const draft of workspace.drafts) if (draft.deleted) aiSession.removeDraft(draft.id);
+    for (const draft of workspace.drafts) if (draft.deleted) { aiSession.removeDraft(draft.id); rewriteMappings.removeDraft(draft.id); }
   }, [aiSession, workspace.drafts]);
 
   const flushQueue = useCallback(async () => {
@@ -199,6 +219,7 @@ export function App() {
       code: documents['main.cpp'],
       idea: documents['idea.md'],
       cases: documents['cases.txt'],
+      rewrite: documents['rewrite.cpp'],
       ai_mode: mode,
       updated_at: new Date().toISOString(),
       last_modified_client_id: clientId,
@@ -236,7 +257,7 @@ export function App() {
     setArtifactBusy(true); setArtifactMessage('正在请求 AI Gateway…');
     const source = currentDraft;
     try {
-      const request = buildAIRequest(source, documents, mode);
+      const request = buildAIRequest(source, documents, mode, transformOutput);
       const response = await aiClient.requestTransform(request, {});
       if (response.isTestData) {
         setArtifactMessage('测试数据仅供本地调试，不进入跨端同步。');
@@ -244,7 +265,7 @@ export function App() {
       }
       const latest = repository.load().drafts.find((draft) => draft.id === source.id);
       if (!latest || latest.version !== source.version || latest.sync_status !== 'synced') throw new Error('DRAFT_CHANGED_RETRY_AI');
-      const artifact = artifactFromGateway(response.result, source, clientId, request.idea_segments.map((segment) => segment.id), request.rule_version);
+      const artifact = artifactFromGateway(response.result, source, clientId, request.idea_segments.map((segment) => segment.id), request.rule_version, request.output_kind);
       assertAIArtifact(artifact, new Set(request.idea_segments.map((segment) => segment.id)));
       const state = repository.load();
       queueAIArtifact(state, artifact);
@@ -261,6 +282,23 @@ export function App() {
     const updated: AIArtifact = { ...artifact, visibility: artifact.visibility === 'hidden' ? 'visible' : 'hidden', updated_at: new Date().toISOString(), last_modified_client_id: clientId };
     queueAIArtifact(state, updated); repository.save(state); setWorkspace(state);
     if (navigator.onLine) void flushQueue();
+  }
+
+  function saveRewriteMapping(mappings: ReturnType<typeof assignRewriteLines>) {
+    if (!currentDraft || !compareArtifact) return;
+    try { rewriteMappings.save(currentDraft.id, compareArtifact.id, documents['rewrite.cpp'], mappings); }
+    catch { setArtifactMessage('复写划分保存失败，请检查浏览器存储空间。'); }
+    setMappingRevision(revision => revision + 1);
+  }
+
+  function assignRewriteSelection(stepId: string | null) {
+    if (rewriteMapping.status === 'outdated') return;
+    saveRewriteMapping(assignRewriteLines(rewriteMapping.mappings, rewriteSelection.start, rewriteSelection.end, stepId));
+  }
+
+  function clearRewriteMapping() {
+    if (currentDraft) rewriteMappings.removeDraft(currentDraft.id);
+    setMappingRevision(revision => revision + 1);
   }
 
   function selectDraft(draftId: string) {
@@ -393,6 +431,24 @@ export function App() {
           onFileChange={selectFile}
           editorKey={`${currentDraft?.id}:${activeFile}`}
           onEditorReady={handleEditorReady}
+          onSelectionLines={handleSelectionLines}
+          compareOpen={compareOpen}
+          onCompareToggle={() => setCompareOpen(open => !open)}
+          sidePanel={activeFile === 'rewrite.cpp' && compareOpen ? (
+            <RewriteComparePanel
+              artifact={compareArtifact}
+              draftVersion={currentDraft?.version ?? 0}
+              rewrite={documents['rewrite.cpp']}
+              mapping={rewriteMapping}
+              selection={rewriteSelection}
+              revealed={compareArtifact !== null && revealedArtifactId === compareArtifact.id}
+              onReveal={() => setRevealedArtifactId(compareArtifact?.id ?? '')}
+              onAssign={assignRewriteSelection}
+              onConfirm={() => saveRewriteMapping(rewriteMapping.mappings)}
+              onClear={clearRewriteMapping}
+              onClose={() => setCompareOpen(false)}
+            />
+          ) : undefined}
         />
         <InspectorPanel
           hidden={inspectorHidden}
@@ -405,6 +461,8 @@ export function App() {
           artifactHistory={artifactHistory}
           artifactBusy={artifactBusy}
           artifactMessage={artifactMessage}
+          transformOutput={transformOutput}
+          onTransformOutputChange={setTransformOutput}
           onArtifact={requestArtifact}
           onToggleArtifact={toggleArtifact}
           mode={mode}
@@ -443,8 +501,8 @@ function getClientId(): string {
 }
 
 function draftToDocuments(draft: Draft | undefined): Documents {
-  if (!draft || (!draft.code && !draft.idea && draft.cases === undefined)) return initialDocuments;
-  return { 'main.cpp': draft.code, 'idea.md': draft.idea, 'cases.txt': draft.cases ?? '' };
+  if (!draft || (!draft.code && !draft.idea && draft.cases === undefined && !draft.rewrite)) return initialDocuments;
+  return { 'main.cpp': draft.code, 'idea.md': draft.idea, 'cases.txt': draft.cases ?? '', 'rewrite.cpp': draft.rewrite ?? '' };
 }
 
 function replaceDraft(state: WorkspaceState, draft: Draft): WorkspaceState {

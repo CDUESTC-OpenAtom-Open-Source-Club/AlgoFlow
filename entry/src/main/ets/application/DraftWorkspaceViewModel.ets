@@ -8,7 +8,9 @@ import { HttpAIProvider } from '../platform/HttpAIProvider';
 import { HttpPairingClient } from '../platform/HttpPairingClient';
 import { PairingClaim, PairingInvitation, resolvePairingEndpoints } from '../domain/PairingContract';
 import { IDEAISession } from './IDEAISession';
-import { AIResultRepository, IDEContext } from '../domain/IDEAIModels';
+import { AIResultRepository, IDECapability, IDEContext, IDERecord, IDEState } from '../domain/IDEAIModels';
+import { compareSourceFromBody, createRewriteMappingRecord, RewriteCompareSource, RewriteLineMapping,
+  RewriteMappingRecord, RewriteMappingRepository } from '../domain/RewriteCompare';
 
 const RULE_VERSION = '1.0.0';
 
@@ -19,6 +21,7 @@ export interface PairingClient {
 export class DraftWorkspaceViewModel {
   aiSession: IDEAISession | null = null;
   pairingClient: PairingClient = new HttpPairingClient();
+  private rewriteMappings: RewriteMappingRepository | null = null;
   private aiFile: string = 'main.cpp';
   private aiDraft: string = '';
   private syncing: boolean = false;
@@ -50,6 +53,40 @@ export class DraftWorkspaceViewModel {
     const provider = new HttpAIProvider(this.aiBaseUrl, 0, 10000, allowTestData);
     this.aiProvider = provider;
     this.aiSession = new IDEAISession(provider, repository);
+  }
+
+  configureRewriteMappings(repository: RewriteMappingRepository): void {
+    this.rewriteMappings = repository;
+  }
+
+  // Newest successful code_snippet transform of the current AI context. Older
+  // or stale records stay comparable; the page labels their draft version.
+  latestCompareRecord(sessionRecords: IDERecord[]): IDERecord | null {
+    const records = sessionRecords.filter((record: IDERecord) =>
+      record.capability === IDECapability.TRANSFORM && record.state === IDEState.SUCCESS && compareSourceFromBody(record.body) !== null);
+    return records.length > 0 ? records[records.length - 1] : null;
+  }
+
+  compareSource(record: IDERecord): RewriteCompareSource | null {
+    return compareSourceFromBody(record.body);
+  }
+
+  // Partitions are device-local: never part of Draft or a SyncOperation.
+  async loadRewriteMapping(draftId: string): Promise<RewriteMappingRecord | null> {
+    if (this.rewriteMappings === null) return null;
+    try { return await this.rewriteMappings.load(draftId); } catch (error) { return null; }
+  }
+
+  async saveRewriteMapping(draftId: string, artifactId: string, rewrite: string,
+    mappings: RewriteLineMapping[]): Promise<RewriteMappingRecord | null> {
+    if (this.rewriteMappings === null) return null;
+    const record = createRewriteMappingRecord(draftId, artifactId, rewrite, mappings);
+    await this.rewriteMappings.save(record);
+    return record;
+  }
+
+  async clearRewriteMapping(draftId: string): Promise<void> {
+    await this.rewriteMappings?.removeDraft(draftId);
   }
 
   selectAIContext(id: string, file: string): void {
@@ -277,6 +314,11 @@ export class DraftWorkspaceViewModel {
   deleteDraft(id: string): string {
     this.cancelAI();
     this.aiSession?.removeDraft(id);
+    if (this.rewriteMappings !== null) {
+      this.rewriteMappings.removeDraft(id).catch((error: Error) => {
+        console.error(`[AlgoFlow] rewrite mapping cleanup failed: ${error.message}`);
+      });
+    }
     this.repository.delete(id);
     const remaining = this.repository.list();
     return remaining.length > 0 ? remaining[0].id : this.createDraft();

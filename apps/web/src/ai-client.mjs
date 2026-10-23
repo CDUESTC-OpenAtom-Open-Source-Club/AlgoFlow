@@ -106,12 +106,18 @@ export class WebAIClient {
   }
 }
 
-/** @param {import('./types').Draft} draft @param {import('./types').Documents} documents @param {import('./types').Mode} mode */
-export function buildAIRequest(draft, documents, mode) {
+/**
+ * @param {import('./types').Draft} draft @param {import('./types').Documents} documents @param {import('./types').Mode} mode
+ * @param {import('./types').TransformOutputKind} [outputKind] code_snippet is a read-only fragment for rewrite comparison, never written to a .cpp file.
+ */
+export function buildAIRequest(draft, documents, mode, outputKind = 'pseudocode') {
   return /** @type {import('./types').AITransformRequest} */ ({
     mode, draft_id: draft.id, draft_version: draft.version, language: draft.language,
     rule_version: '1.0.0', problem_context: documents['idea.md'] || draft.title,
-    idea_segments: draft.idea_segments ?? [], code: documents['main.cpp'], output_kind: 'pseudocode', visibility: 'visible',
+    // The request schema is closed: phone-synced segments carry `position`
+    // and the transform request has no `code` field, so both are dropped.
+    idea_segments: (draft.idea_segments ?? []).map(segment => ({ id: segment.id, content: segment.content })),
+    output_kind: outputKind, visibility: 'visible',
   });
 }
 
@@ -129,18 +135,24 @@ export function parseAIArtifactResult(value, request) {
   return /** @type {import('./types').AIArtifact} */ (/** @type {unknown} */ (artifact));
 }
 
-/** @param {unknown} response @param {import('./types').Draft} draft @param {string} clientId @param {string[]} sourceIds @param {string} ruleVersion */
-export function artifactFromGateway(response, draft, clientId, sourceIds, ruleVersion = '1.0.0') {
+/**
+ * @param {unknown} response @param {import('./types').Draft} draft @param {string} clientId @param {string[]} sourceIds @param {string} ruleVersion
+ * @param {import('./types').TransformOutputKind} [outputKind] the output_kind that was requested
+ */
+export function artifactFromGateway(response, draft, clientId, sourceIds, ruleVersion = '1.0.0', outputKind = 'pseudocode') {
   const source = objectValue(response);
   const entity = /** @type {import('./types').AIArtifact} */ ({
     ...source, id: crypto.randomUUID(), version: 0, server_sequence: 0,
     created_at: new Date().toISOString(), updated_at: new Date().toISOString(), deleted: false,
     last_modified_client_id: clientId, draft_id: draft.id, source_draft_version: draft.version,
   });
-  if (entity.mode !== draft.ai_mode || entity.rule_version !== ruleVersion || entity.output_kind !== 'pseudocode' ||
+  if (entity.mode !== draft.ai_mode || entity.rule_version !== ruleVersion || entity.output_kind !== outputKind ||
     entity.visibility !== 'visible' || entity.pseudocode.some((step) => !Array.isArray(step.source_refs) || step.source_refs.some((ref) => !sourceIds.includes(ref)))) {
     throw new Error('INVALID_AI_ARTIFACT');
   }
+  // A mapping past the snippet's last line cannot be shown against the rewrite.
+  const snippetLines = typeof entity.code_snippet === 'string' ? entity.code_snippet.split(/\r\n|\n|\r/).length : 0;
+  if (Array.isArray(entity.code_mappings) && entity.code_mappings.some((mapping) => mapping.end_line > snippetLines)) throw new Error('INVALID_AI_ARTIFACT');
   return /** @type {import('./types').AIArtifact} */ (entity);
 }
 
