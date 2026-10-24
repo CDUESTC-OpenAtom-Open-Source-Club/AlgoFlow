@@ -367,7 +367,7 @@ issue #5 后续云服务需求（当前阶段不实施）：阶段 2 仅提供�
 - OpenHarmony IDE：行号与代码滚动同步、光标所在整行描边、长代码稳定滚动、左侧抽屉灰黑遮罩与灰色选中态、底部浮动工具胶囊，以及工具面板展开/关闭后编辑区尺寸恢复。
 - Web：主流浏览器、键盘操作、离线队列、长代码和未保存离开。
 - Web 工程基线：在 `apps/web` 执行 `npx tsc -p tsconfig.app.json --noEmit`、`npx tsc -p tsconfig.node.json --noEmit` 和 `npm run build`；没有实际执行的命令不得写成已通过。
-- 发布：Release 构建、Mock 关闭、密钥扫描、权限清单、日志脱敏和安装验证。2026-10-23 已在本机执行：`assembleHap` Release（`BuildProfile.DEBUG=false`，测试响应与缓存因此被拒绝）构建并在模拟器安装成功（未签名）；跟踪文件密钥扫描无命中；日志只输出 ID、状态、版本和经 `safeLogValue` 清洗的值。正式签名、权限清单终审和真机安装仍待完成。
+- 发布：Release 构建、Mock 关闭、密钥扫描、权限清单、日志脱敏和安装验证。2026-10-23 已在本机执行：`assembleHap` Release（`BuildProfile.DEBUG=false`，测试响应与缓存因此被拒绝）构建并在模拟器安装成功（未签名）；跟踪文件密钥扫描无命中；日志只输出 ID、状态、版本和经 `safeLogValue` 清洗的值。2026-10-24 起 Release 启用 ArkGuard 混淆（仅局部名、顶层名和 `-compact`；属性、导出和文件名混淆因同步/AI/存储 JSON 字段与页面路径而关闭，原因见 `entry/obfuscation-rules.txt`），混淆后的 HAP 在模拟器完成本地验证：草稿加载、编辑同步、忠实转换（代码片段）与 `ai_artifact` 上传、复写对比与本机划分重启恢复、服务卡片显示与跳转。正式签名、权限清单终审和真机安装仍待完成。
 
 AI 完成任务后必须报告实际运行的命令、环境和结果。没有执行的测试必须明确说明，不能写成“已通过”。
 
