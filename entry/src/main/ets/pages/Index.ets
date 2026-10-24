@@ -1,5 +1,5 @@
 import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
-import { AIArtifact, AIMode, AIResultStatus, Draft, draftRenderKey, IdeaSegment, PseudocodeStep, SyncStatus } from '../domain/Models';
+import { AIArtifact, AIMode, AIResultStatus, CodeMapping, Draft, draftRenderKey, IdeaSegment, PseudocodeStep, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
 import { publishCardSnapshot } from '../platform/CardSnapshot';
@@ -87,6 +87,22 @@ const CPP_COMPLETIONS: CompletionItem[] = [
   new CompletionItem('main', '程序入口片段', 'int main() {\n  return 0;\n}')
 ];
 
+// Idea-segment colours cycle by segment position (S1/S2/S3, S4 = S1 ...). They
+// are only drawn where a real mapping to a segment exists.
+const RAIL_COLORS: string[] = ['#8FBF9A', '#D9B36A', '#9DB4D4'];
+
+class SnippetLine {
+  line: number;
+  text: string;
+  color: string;
+
+  constructor(line: number, text: string, color: string) {
+    this.line = line;
+    this.text = text;
+    this.color = color;
+  }
+}
+
 @Entry
 @Component
 struct Index {
@@ -130,9 +146,7 @@ struct Index {
   @State allowTestData: boolean = false;
   @State canWithdrawAI: boolean = false;
   @State drawerDraftsExpanded: boolean = false;
-  @State drawerAIExpanded: boolean = false;
   @State drawerToolsExpanded: boolean = false;
-  @State drawerSyncExpanded: boolean = false;
   @State transformOutput: string = 'pseudocode';
   @State rewriteMappingRecord: RewriteMappingRecord | null = null;
   @State rewriteSelection: RewriteLineRange = new RewriteLineRange(1, 1);
@@ -802,6 +816,65 @@ struct Index {
     return WorkspaceIcon.DOCUMENT;
   }
 
+  private segmentFor(reference: string): IdeaSegment | undefined {
+    return this.segments.find((segment: IdeaSegment) => segment.id === reference);
+  }
+
+  // A reference to a segment that no longer exists in idea.md is shown as such
+  // instead of borrowing another segment's colour.
+  private segmentLabel(reference: string): string {
+    const segment = this.segmentFor(reference);
+    return segment === undefined ? '来源已改' : `S${segment.position + 1}`;
+  }
+
+  private segmentColor(reference: string): string {
+    const segment = this.segmentFor(reference);
+    return segment === undefined ? '#3A3A3D' : railColor(segment.position);
+  }
+
+  private statusChipBackground(): string {
+    if (!this.saved || this.syncStatus === SyncStatus.CONFLICT) return '#3A2C14';
+    if (this.syncStatus === SyncStatus.FAILED) return '#3A1D1B';
+    if (this.syncStatus === SyncStatus.SYNCING) return '#1C2A3A';
+    if (this.syncStatus === SyncStatus.SYNCED) return '#1F3A27';
+    return '#2A2A2D';
+  }
+
+  private statusChipText(): string {
+    if (!this.saved || this.syncStatus === SyncStatus.CONFLICT) return '#FFC56B';
+    if (this.syncStatus === SyncStatus.FAILED) return '#FF9A94';
+    if (this.syncStatus === SyncStatus.SYNCING) return '#9CC3EE';
+    if (this.syncStatus === SyncStatus.SYNCED) return '#9FE5B2';
+    return '#B8B8BD';
+  }
+
+  // Snippet lines take the colour of the first idea segment of the step their
+  // code_mappings entry points to; unmapped lines get no rail.
+  private snippetLines(): SnippetLine[] {
+    const artifact = this.aiResult;
+    if (artifact === null || artifact.codeSnippet === null || artifact.codeSnippet.length === 0) return [];
+    return artifact.codeSnippet.split('\n').map((text: string, index: number) => {
+      const lineNumber = index + 1;
+      const mapping = artifact.codeMappings.find((item: CodeMapping) =>
+        lineNumber >= item.startLine && lineNumber <= item.endLine);
+      const step = mapping === undefined ? undefined :
+        artifact.pseudocode.find((item: PseudocodeStep) => item.id === mapping.stepId);
+      const segment = step === undefined || step.sourceRefs.length === 0 ? undefined : this.segmentFor(step.sourceRefs[0]);
+      return new SnippetLine(lineNumber, text, segment === undefined ? '#00000000' : railColor(segment.position));
+    });
+  }
+
+  private compareRefs(stepId: string): string[] {
+    const record = this.compareRecord();
+    return record === null ? [] : stepSourceRefs(record.body, stepId);
+  }
+
+  private hideAndRewrite(): void {
+    if (!this.artifactHidden) this.toggleArtifact();
+    this.selectFile(EditorFile.REWRITE);
+    this.activeTool = WorkspaceTool.NONE;
+  }
+
   @Builder
   Icon(icon: WorkspaceIcon, size: number = 15, color: string = '#FFFFFF') {
     if (icon === WorkspaceIcon.MENU) {
@@ -829,45 +902,49 @@ struct Index {
 
   @Builder
   FileTab(file: EditorFile, label: string) {
-    Button() {
-      Row({ space: 5 }) {
-        this.Icon(this.fileIcon(file), 13, this.activeFile === file ? '#ECECED' : '#6E6E73')
-        Text(`${label}${!this.saved && this.activeFile === file ? ' *' : ''}`).fontSize(10)
+    Column() {
+      Row({ space: 6 }) {
+        Text(label).fontSize(11).fontFamily('monospace')
           .fontColor(this.activeFile === file ? '#ECECED' : '#8E8E93')
-      }
-    }.height(34).padding({ left: 11, right: 11 })
-      .backgroundColor(this.activeFile === file ? '#1C1C1E' : Color.Transparent)
-      .borderRadius(4).onClick(() => this.selectFile(file))
-  }
-
-  @Builder
-  ToolButton(label: string, tool: WorkspaceTool) {
-    Button() {
-      Row({ space: 5 }) {
-        this.Icon(this.toolIcon(tool), 14, this.activeTool === tool ? '#ECECED' : '#8E8E93')
-        Text(label).fontSize(10).fontColor(this.activeTool === tool ? '#ECECED' : '#8E8E93')
-      }
-    }.height(36).padding({ left: 13, right: 13 })
-      .backgroundColor(this.activeTool === tool ? '#1E6B39' : Color.Transparent)
-      .borderRadius(5).onClick(() => this.toggleTool(tool))
+        if (!this.saved && this.activeFile === file) {
+          Circle().width(6).height(6).fill('#FF9F0A')
+        }
+      }.height(34).alignItems(VerticalAlign.Center)
+      Column().width('100%').height(2).borderRadius(1)
+        .backgroundColor(this.activeFile === file ? '#ECECED' : Color.Transparent)
+    }.padding({ left: 12, right: 12 }).onClick(() => this.selectFile(file))
   }
 
   @Builder
   ModeButton(label: string, value: AIMode) {
     Button() {
-      Row({ space: 5 }) {
-        this.Icon(this.modeIcon(value), 13, this.mode === value ? '#07110A' : '#A7A7AD')
-        Text(label).fontSize(10).fontColor(this.mode === value ? '#07110A' : '#D4D4D8')
-      }
-    }.layoutWeight(1).height(34)
-      .backgroundColor(this.mode === value ? '#30D158' : '#242426')
-      .borderRadius(4).onClick(() => this.chooseMode(value))
+      Text(label).fontSize(11).fontColor(this.mode === value ? '#ECECED' : '#8E8E93')
+    }.type(ButtonType.Normal).layoutWeight(1).height(32)
+      .backgroundColor(this.mode === value ? '#2A2A2D' : Color.Transparent)
+      .border({ width: 1, color: this.mode === value ? '#5A5A5F' : Color.Transparent })
+      .borderRadius(8).onClick(() => this.chooseMode(value))
+  }
+
+  @Builder
+  SegmentChip(reference: string) {
+    Text(this.segmentLabel(reference)).height(20).padding({ left: 6, right: 6 })
+      .fontSize(10).fontWeight(FontWeight.Bold)
+      .fontColor(this.segmentFor(reference) === undefined ? '#ECECED' : '#1B1F1C')
+      .backgroundColor(this.segmentColor(reference)).borderRadius(4)
+  }
+
+  @Builder
+  StatusChip() {
+    Row({ space: 5 }) {
+      Circle().width(6).height(6).fill(this.statusColor())
+      Text(this.statusLabel()).fontSize(10).fontColor(this.statusChipText())
+    }.height(26).padding({ left: 9, right: 9 }).backgroundColor(this.statusChipBackground()).borderRadius(13)
   }
 
   @Builder
   DrawerSectionTitle(label: string) {
-    Text(label.toUpperCase()).fontSize(9).fontWeight(FontWeight.Bold).fontColor('#8E8E93')
-      .margin({ bottom: 7 })
+    Text(label.toUpperCase()).fontSize(10).fontWeight(FontWeight.Bold).fontColor('#8E8E93')
+      .margin({ top: 4, bottom: 4 })
   }
 
   @Builder
@@ -929,58 +1006,52 @@ struct Index {
   @Builder
   DrawerModeButton(label: string, value: AIMode) {
     Button() {
-      Row({ space: 5 }) {
-        this.Icon(this.modeIcon(value), 13, this.mode === value ? '#ECECED' : '#A7A7AD')
-        Text(label).fontSize(10).fontColor(this.mode === value ? '#ECECED' : '#B8B8BD')
-      }
-    }.layoutWeight(1).height(34)
-      .backgroundColor(this.mode === value ? '#242426' : '#1C1C1E')
-      .border({ width: 1, color: this.mode === value ? '#5A5A5F' : '#2A2A2D' })
-      .borderRadius(4).onClick(() => this.chooseMode(value))
+      Row({ space: 8 }) {
+        if (value === AIMode.FAITHFUL_TRANSFORM) {
+          Column().width(8).height(8).backgroundColor(RAIL_COLORS[0]).borderRadius(2)
+        } else {
+          this.Icon(this.modeIcon(value), 13, this.mode === value ? '#ECECED' : '#6E6E73')
+        }
+        Text(label).fontSize(11).fontColor(this.mode === value ? '#ECECED' : '#B8B8BD')
+        Blank()
+        if (value !== AIMode.FAITHFUL_TRANSFORM) {
+          Text('尚未接入').fontSize(9).fontColor('#8E8E93')
+            .padding({ left: 6, right: 6, top: 2, bottom: 2 }).border({ width: 1, color: '#3A3A3D' }).borderRadius(8)
+        }
+      }.width('100%')
+    }.type(ButtonType.Normal).width('100%').height(38).padding({ left: 11, right: 11 })
+      .backgroundColor(this.mode === value ? '#242426' : Color.Transparent)
+      .border({ width: 1, color: this.mode === value ? '#5A5A5F' : Color.Transparent })
+      .borderRadius(8).onClick(() => this.chooseMode(value))
   }
 
   @Builder
   TopNavigation() {
-    Row() {
+    Row({ space: 8 }) {
       Button() {
         this.Icon(WorkspaceIcon.MENU, 18, '#ECECED')
       }.width(38).height(38).padding({ left: 0, right: 0, top: 0, bottom: 0 })
         .backgroundColor('#1E1E20').borderRadius(19).onClick(() => this.openDrawer())
       Column() {
-        Text(this.activeFile).fontSize(13).fontWeight(FontWeight.Medium).fontFamily('monospace')
-          .fontColor('#ECECED')
-        Text(this.title.length === 0 ? '未命名思路' :
-          this.title.length > 16 ? `${this.title.substring(0, 16)}...` : this.title).fontSize(9).fontColor('#8E8E93')
-          .margin({ top: 3 })
-      }.layoutWeight(1).alignItems(HorizontalAlign.Center)
+        Text(this.title.length === 0 ? '未命名思路' : this.title).fontSize(14).fontWeight(FontWeight.Bold)
+          .fontColor('#ECECED').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(`v${this.viewModel.getDraft(this.selectedId)?.version ?? 0} · ${this.saved ? '已保存' : '未保存'}`)
+          .fontSize(10).fontColor('#8E8E93').margin({ top: 2 })
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       Button() {
         Row({ space: 5 }) {
-          Circle().width(7).height(7).fill(this.statusColor())
-          Text(this.statusLabel()).fontSize(9).fontColor('#B8B8BD')
+          Circle().width(6).height(6).fill(this.mode === AIMode.FAITHFUL_TRANSFORM ? '#30D158' : '#FF9F0A')
+          Text(this.modeLabel()).fontSize(10).fontColor('#ECECED')
         }
-      }.height(28).padding({ left: 9, right: 9 }).backgroundColor('#1E1E20').borderRadius(14)
+      }.type(ButtonType.Normal).height(26).padding({ left: 9, right: 9 }).backgroundColor('#1E1E20')
+        .border({ width: 1, color: '#3A3A3D' }).borderRadius(13)
+        .onClick(() => this.toggleTool(WorkspaceTool.AI))
+      Button() {
+        this.StatusChip()
+      }.type(ButtonType.Normal).backgroundColor(Color.Transparent).padding({ left: 0, right: 0, top: 0, bottom: 0 })
         .onClick(() => this.openTool(WorkspaceTool.SYNC))
-    }.width('100%').height(58).padding({ left: 14, right: 14 })
-      .backgroundColor('#111113').border({ width: { bottom: 1 }, color: '#2A2A2D' })
-  }
-
-  @Builder
-  EditorHeader() {
-    Row() {
-      Text(this.activeFile === EditorFile.IDEA ? 'TEXT' : 'C++').fontSize(9).fontWeight(FontWeight.Bold)
-        .fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(3)
-        .padding({ left: 6, right: 6, top: 3, bottom: 3 })
-      Text(this.activeFile).fontSize(12).fontWeight(FontWeight.Medium).fontColor('#ECECED').margin({ left: 9 })
-      if (!this.saved) {
-        Circle().width(6).height(6).fill('#FF9F0A').margin({ left: 7 })
-      }
-      Blank()
-      Text(`${this.currentValue().split('\n').length} 行`).fontSize(9).fontColor('#8E8E93')
-      if (this.isCppFile()) {
-        Text(`${this.reviewIssues.length} 项检查`).fontSize(9).fontColor('#8E8E93').margin({ left: 10 })
-      }
-    }.width('100%').height(36).padding({ left: 12, right: 12 }).backgroundColor('#161618')
-      .border({ width: { bottom: 1 }, color: '#242426' })
+    }.width('100%').height(58).padding({ left: 12, right: 12 })
+      .backgroundColor('#111113')
   }
 
   @Builder
@@ -989,17 +1060,18 @@ struct Index {
       Row() {
         Column() {
           Text(this.lineNumbers()).width('100%').padding({ top: 12, right: 9 })
-            .fontSize(13).lineHeight(22).fontFamily('monospace').fontColor('#48484A')
+            .fontSize(13).lineHeight(22).fontFamily('monospace').fontColor('#5A5A5F')
             .textAlign(TextAlign.End).translate({ y: -this.scrollY })
-        }.width(40).height('100%').clip(true).backgroundColor('#0D0D0F')
+        }.width(40).height('100%').clip(true).backgroundColor('#0A0A0C')
         Blank().layoutWeight(1).height('100%').backgroundColor('#0A0A0C')
       }.width('100%').height('100%')
 
+      // Full-row outline of the caret line, from the gutter edge to the right edge.
       Row() {
-        Blank().width(40)
-        Blank().layoutWeight(1).height(22).border({ width: { left: 2 }, color: '#8E8E93' })
-          .backgroundColor('#1C1C1E').margin({ right: 8 })
-      }.width('100%').height(22).position({ x: 0, y: 12 + this.activeLine * 22 - this.scrollY })
+        Blank().layoutWeight(1).height(22).border({ width: 1, color: '#5A5A5F' })
+          .backgroundColor('#0FFFFFFF').borderRadius(4)
+      }.width('100%').height(22).padding({ left: 4, right: 4 })
+        .position({ x: 0, y: 12 + this.activeLine * 22 - this.scrollY })
 
       if (this.currentValue().length > 0) {
         Row() {
@@ -1088,14 +1160,17 @@ struct Index {
       }.height(34).fontColor('#07110A').backgroundColor('#30D158').borderRadius(4)
         .onClick(() => { this.selectFile(EditorFile.IDEA); this.activeTool = WorkspaceTool.NONE; })
       if (this.segments.length > 0) {
-        Scroll() {
-          Row({ space: 6 }) {
-            ForEach(this.segments, (segment: IdeaSegment) => {
-              Text(`S${segment.position + 1}`).height(28).padding({ left: 9, right: 9 })
-                .fontSize(10).fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4)
-            }, (segment: IdeaSegment) => segment.id)
-          }
-        }.width('100%').height(36).margin({ top: 10 }).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+        Column({ space: 6 }) {
+          ForEach(this.segments, (segment: IdeaSegment) => {
+            Row({ space: 8 }) {
+              Text(`S${segment.position + 1}`).height(20).padding({ left: 6, right: 6 })
+                .fontSize(10).fontWeight(FontWeight.Bold).fontColor('#1B1F1C')
+                .backgroundColor(railColor(segment.position)).borderRadius(4)
+              Text(segment.content).layoutWeight(1).fontSize(11).fontColor('#ECECED')
+                .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.width('100%').alignItems(VerticalAlign.Top)
+          }, (segment: IdeaSegment) => `${segment.id}-${segment.position}-${segment.content}`)
+        }.width('100%').margin({ top: 10 })
       }
     }.width('100%')
   }
@@ -1111,118 +1186,225 @@ struct Index {
     }.width('100%').backgroundColor('#161618')
   }
 
+  // Bottom sheet over the dimmed editor; closing it leaves the editor size unchanged.
+  @Builder
+  AISheet() {
+    Column() {
+      Column().width(36).height(4).backgroundColor('#3A3A3D').borderRadius(2).margin({ top: 8, bottom: 4 })
+      Row({ space: 8 }) {
+        Text('AI 结果').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+        Row({ space: 5 }) {
+          Circle().width(6).height(6).fill('#8E8E93')
+          Text(this.aiResult !== null ? `来自 v${this.aiResult.sourceDraftVersion}` :
+            `草稿 v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`).fontSize(10).fontColor('#B8B8BD')
+        }.height(22).padding({ left: 8, right: 8 }).backgroundColor('#2A2A2D').borderRadius(11)
+        Blank()
+        Button() {
+          this.Icon(WorkspaceIcon.CROSS, 14, '#A7A7AD')
+        }.width(30).height(30).padding({ left: 0, right: 0, top: 0, bottom: 0 })
+          .backgroundColor('#242426').borderRadius(15).onClick(() => this.toggleTool(WorkspaceTool.AI))
+      }.width('100%').padding({ left: 16, right: 12, top: 4, bottom: 8 })
+      Scroll() {
+        Column() {
+          this.AIPanel()
+        }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: 20 })
+      }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.None)
+    }.width('100%').height('70%').backgroundColor('#161618')
+      .borderRadius({ topLeft: 24, topRight: 24 }).border({ width: { top: 1 }, color: '#2A2A2D' })
+  }
+
   @Builder
   AIPanel() {
-    Column({ space: 7 }) {
-      Text('AI 模式').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
-      Text('审查只分析；局部补全接受后才保存 main.cpp，不自动同步。').fontSize(10).fontColor('#8E8E93')
-      Row({ space: 4 }) {
-        Button('解释').fontSize(10).onClick(() => this.requestIDE(IDECapability.REVIEW, ReviewKind.EXPLANATION))
-        Button('风险').fontSize(10).onClick(() => this.requestIDE(IDECapability.REVIEW, ReviewKind.RISK))
-        Button('复杂度').fontSize(10).onClick(() => this.requestIDE(IDECapability.REVIEW, ReviewKind.COMPLEXITY))
+    Column({ space: 10 }) {
+      Row({ space: 2 }) {
+        this.ModeButton('忠实转换', AIMode.FAITHFUL_TRANSFORM)
+        this.ModeButton('可行性', AIMode.FEASIBILITY_ANALYSIS)
+        this.ModeButton('渐进提示', AIMode.PROGRESSIVE_HINT)
+        this.ModeButton('完整解题', AIMode.FULL_SOLUTION)
+      }.width('100%').padding(3).backgroundColor('#1E1E20').borderRadius(10)
+      if (this.mode !== AIMode.FAITHFUL_TRANSFORM) {
+        Text('该模式尚未接入，保持显式不可用，不会自动降级为忠实转换。').fontSize(10).fontColor('#FF9F0A')
       }
-      Button('忠实局部补全').onClick(() => this.requestIDE(IDECapability.COMPLETION))
-      Button('撤回本次补全').enabled(this.canWithdrawAI)
-        .onClick(() => { this.viewModel.aiSession?.withdraw((value: string) => this.updateDocument(value)); })
+      Row({ space: 8 }) {
+        Text('只翻译你的思路，不补新算法').layoutWeight(1).fontSize(10).fontColor('#8E8E93')
+        Row({ space: 2 }) {
+          this.OutputKindButton('伪代码', 'pseudocode')
+          this.OutputKindButton('代码片段', 'code_snippet')
+        }.padding(2).backgroundColor('#1E1E20').borderRadius(8)
+      }.width('100%')
+      if (this.transformOutput === 'code_snippet') {
+        Text('代码片段只读展示，用于和 rewrite.cpp 复写对比，不会写入任何 .cpp 文件。').fontSize(10).fontColor('#8E8E93')
+      }
+
+      if (this.aiError) {
+        Text(this.aiMessage).fontSize(10).lineHeight(16).fontColor('#FF9A94')
+      } else if (this.aiResult !== null && !this.artifactHidden) {
+        this.AIResultList()
+      } else if (this.aiResult !== null) {
+        Text('AI 结果已隐藏。先在 rewrite.cpp 独立复写，再到复写面板对比。').fontSize(11).lineHeight(17).fontColor('#B8B8BD')
+          .width('100%').padding(12).backgroundColor('#1E1E20').borderRadius(12)
+      } else if (!this.aiLoading) {
+        Text(this.aiMessage.length === 0 ? '未发起转换。忠实转换严格映射思路来源，越界新增步骤将被拒绝。' : this.aiMessage)
+          .fontSize(10).fontColor('#8E8E93')
+      }
+
+      if (this.aiLoading) {
+        Row({ space: 8 }) {
+          Text('正在请求 AI Gateway...').fontSize(10).fontColor('#79C0FF').layoutWeight(1)
+          Button('取消').height(34).fontSize(11).fontColor('#FF9A94').backgroundColor('#2A1B1C').borderRadius(17)
+            .onClick(() => { this.viewModel.cancelAI(); })
+        }.width('100%')
+      } else if (this.aiResult === null) {
+        Button() {
+          Row({ space: 5 }) {
+            this.Icon(WorkspaceIcon.AI, 13, '#07110A')
+            Text('发起忠实转换').fontSize(12).fontColor('#07110A')
+          }
+        }.width('100%').height(40).backgroundColor('#30D158').borderRadius(20)
+          .onClick(() => this.runAI())
+      } else {
+        Row({ space: 6 }) {
+          Button(this.artifactHidden ? '显示结果区' : '隐藏结果区').type(ButtonType.Normal).layoutWeight(1).height(40)
+            .fontSize(11).fontColor('#ECECED').backgroundColor('#242426').borderRadius(20)
+            .onClick(() => this.toggleArtifact())
+          Button('发起忠实转换').type(ButtonType.Normal).layoutWeight(1).height(40)
+            .fontSize(11).fontColor('#ECECED').backgroundColor('#242426').borderRadius(20)
+            .onClick(() => this.runAI())
+          Button('隐藏后复写').type(ButtonType.Normal).layoutWeight(1.3).height(40)
+            .fontSize(11).fontWeight(FontWeight.Medium).fontColor('#07110A').backgroundColor('#30D158').borderRadius(20)
+            .onClick(() => this.hideAndRewrite())
+        }.width('100%')
+      }
+
+      Divider().color('#2A2A2D').margin({ top: 6, bottom: 2 })
+      Text('代码审查与补全').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+      Text('审查只分析；局部补全接受后才保存 main.cpp，不自动同步。').fontSize(10).fontColor('#8E8E93')
+      Row({ space: 6 }) {
+        this.ReviewButton('解释', ReviewKind.EXPLANATION)
+        this.ReviewButton('风险', ReviewKind.RISK)
+        this.ReviewButton('复杂度', ReviewKind.COMPLEXITY)
+      }.width('100%')
+      Row({ space: 6 }) {
+        Button('忠实局部补全').type(ButtonType.Normal).layoutWeight(1).height(34).fontSize(11)
+          .fontColor('#ECECED').backgroundColor('#242426').borderRadius(17)
+          .onClick(() => this.requestIDE(IDECapability.COMPLETION))
+        Button('撤回本次补全').type(ButtonType.Normal).layoutWeight(1).height(34).fontSize(11)
+          .fontColor('#ECECED').backgroundColor('#242426').borderRadius(17).enabled(this.canWithdrawAI)
+          .opacity(this.canWithdrawAI ? 1 : 0.4)
+          .onClick(() => { this.viewModel.aiSession?.withdraw((value: string) => this.updateDocument(value)); })
+      }.width('100%')
       if (DEBUG) {
-        Button(this.allowTestData ? '测试数据：已显式启用' : '启用测试数据（仅 Debug）').fontSize(10)
+        Button(this.allowTestData ? '测试数据：已显式启用' : '启用测试数据（仅 Debug）').height(30).fontSize(10)
+          .fontColor('#FFC56B').backgroundColor('#2A2618').borderRadius(15)
           .onClick(() => { this.allowTestData = !this.allowTestData; this.configureAISession(); })
       }
       if (this.aiStorageError.length > 0) {
         Text(this.aiStorageError).fontColor('#FF9A94').fontSize(10)
-        Button('重试本地存储').onClick(() => { this.viewModel.aiSession?.retryStorage(); })
+        Button('重试本地存储').height(30).fontSize(10).fontColor('#ECECED').backgroundColor('#242426').borderRadius(15)
+          .onClick(() => { this.viewModel.aiSession?.retryStorage(); })
       }
       ForEach(this.aiRecords, (record: IDERecord) => {
         Column({ space: 5 }) {
           Text(`${record.capability}/${record.reviewKind} · ${record.state}${record.stale ? ' · 过期只读' : record.restored ? ' · 当前恢复结果（只读）' : ''}${record.isTestData ? ' · 测试数据' : ''}`)
-            .fontSize(10).fontColor('#79C0FF')
+            .fontSize(10).fontColor('#9CC3EE')
           Text(`草稿版本 ${record.context.version} · 规则 1.0.0 · ${this.viewModel.aiSession?.result(record)?.modelId ?? ''}`)
-            .fontSize(9).fontColor('#8E8E93')
+            .fontSize(9).fontFamily('monospace').fontColor('#8E8E93')
           if (!record.hidden) {
-            Text(this.resultText(record)).fontSize(11).fontColor('#ECECED').copyOption(CopyOptions.LocalDevice)
+            Text(this.resultText(record)).fontSize(11).lineHeight(17).fontColor('#ECECED').copyOption(CopyOptions.LocalDevice)
           }
-          Button(record.hidden ? '显示' : '隐藏').fontSize(10)
-            .onClick(() => this.viewModel.aiSession?.setHidden(record.id, !record.hidden))
-          if (record.capability === IDECapability.COMPLETION) {
-            Button('接受到 main.cpp').enabled(this.viewModel.aiSession?.canAccept(record) ?? false)
-              .onClick(() => { this.viewModel.aiSession?.accept(record.id, (value: string) => this.updateDocument(value)); })
-            Button('拒绝').onClick(() => this.viewModel.aiSession?.reject(record.id))
+          Row({ space: 6 }) {
+            Button(record.hidden ? '显示' : '隐藏').height(28).fontSize(10)
+              .fontColor('#ECECED').backgroundColor('#2A2A2D').borderRadius(14)
+              .onClick(() => this.viewModel.aiSession?.setHidden(record.id, !record.hidden))
+            if (record.capability === IDECapability.COMPLETION) {
+              Button('接受到 main.cpp').height(28).fontSize(10).fontColor('#07110A').backgroundColor('#30D158').borderRadius(14)
+                .enabled(this.viewModel.aiSession?.canAccept(record) ?? false)
+                .opacity((this.viewModel.aiSession?.canAccept(record) ?? false) ? 1 : 0.4)
+                .onClick(() => { this.viewModel.aiSession?.accept(record.id, (value: string) => this.updateDocument(value)); })
+              Button('拒绝').height(28).fontSize(10).fontColor('#FF9A94').backgroundColor('#2A1B1C').borderRadius(14)
+                .onClick(() => this.viewModel.aiSession?.reject(record.id))
+            }
           }
-        }.width('100%').padding(6).backgroundColor('#1C1C1E')
+        }.width('100%').alignItems(HorizontalAlign.Start).padding(10).backgroundColor('#1E1E20').borderRadius(12)
       }, (record: IDERecord) => `${record.id}-${record.state}-${record.hidden}-${record.stale}`)
-      Row({ space: 7 }) {
-        this.ModeButton('忠实转换', AIMode.FAITHFUL_TRANSFORM)
-        this.ModeButton('可行性', AIMode.FEASIBILITY_ANALYSIS)
-      }.width('100%')
-      Row({ space: 7 }) {
-        this.ModeButton('渐进提示', AIMode.PROGRESSIVE_HINT)
-        this.ModeButton('完整解题', AIMode.FULL_SOLUTION)
-      }.width('100%')
-      if (this.mode !== AIMode.FAITHFUL_TRANSFORM) {
-        Text('该模式尚未接入，保持显式不可用，不会自动降级为忠实转换。').fontSize(10).fontColor('#FF9F0A').margin({ top: 2 })
-      }
-      Row({ space: 7 }) {
-        Text('输出').fontSize(10).fontColor('#8E8E93')
-        this.OutputKindButton('伪代码', 'pseudocode')
-        this.OutputKindButton('代码片段', 'code_snippet')
-      }.width('100%').margin({ top: 4 })
-      if (this.transformOutput === 'code_snippet') {
-        Text('代码片段只读展示，用于和 rewrite.cpp 复写对比，不会写入任何 .cpp 文件。').fontSize(10).fontColor('#8E8E93')
-      }
-      if (this.aiLoading) {
-        Row({ space: 8 }) {
-          Text('正在请求 AI Gateway...').fontSize(10).fontColor('#79C0FF').layoutWeight(1)
-          Button('取消').height(30).fontSize(10).fontColor('#FF9A94').backgroundColor('#2A1B1C').borderRadius(4)
-            .onClick(() => { this.viewModel.cancelAI(); })
-        }.width('100%').margin({ top: 4 })
-      } else {
-        Button() {
-          Row({ space: 5 }) {
-            this.Icon(WorkspaceIcon.AI, 13, '#07110A')
-            Text('发起忠实转换').fontSize(11).fontColor('#07110A')
-          }
-        }.width('100%').height(36).backgroundColor('#30D158').borderRadius(4).margin({ top: 4 })
-          .onClick(() => this.runAI())
-      }
-      if (this.aiError) {
-        Text(this.aiMessage).fontSize(10).lineHeight(16).fontColor('#FF9A94').margin({ top: 4 })
-      } else if (this.aiResult !== null && !this.artifactHidden) {
-        this.AIResultList()
-      } else if (!this.aiLoading) {
-        Text(this.aiMessage.length === 0 ? '未发起转换。忠实转换严格映射思路来源，越界新增步骤将被拒绝。' : this.aiMessage)
-          .fontSize(10).fontColor('#8E8E93').margin({ top: 4 })
-      }
-      Row() {
-        Column() {
-          Text('AI Gateway').fontSize(11).fontWeight(FontWeight.Bold).fontColor('#ECECED')
-          Text('未配置模型时返回 AI_NOT_ENABLED，不生成模拟结果。').fontSize(10).fontColor('#8E8E93').margin({ top: 2 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Button(this.artifactHidden ? '显示结果区' : '隐藏结果区').height(32).fontSize(10)
-          .fontColor('#9BE7A9').backgroundColor('#1E3A27').borderRadius(4).onClick(() => this.toggleArtifact())
-      }.width('100%').margin({ top: 4 })
-      TextInput({ text: this.aiBaseUrl, placeholder: 'http://电脑局域网IP:8788' }).width('100%').height(30).fontSize(9)
+
+      Divider().color('#2A2A2D').margin({ top: 6, bottom: 2 })
+      Text('AI Gateway').fontSize(11).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+      Text('未配置模型时返回 AI_NOT_ENABLED，不生成模拟结果。').fontSize(10).fontColor('#8E8E93')
+      TextInput({ text: this.aiBaseUrl, placeholder: 'http://电脑局域网IP:8788' }).width('100%').height(34).fontSize(10)
         .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
-        .border({ width: 1, color: '#3A3A3D' }).borderRadius(4)
+        .border({ width: 1, color: '#3A3A3D' }).borderRadius(8)
         .onChange((value: string) => { this.aiBaseUrl = value; this.viewModel.setAIBaseUrl(value, this.allowTestData); })
-    }.width('100%')
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  ReviewButton(label: string, kind: ReviewKind) {
+    Button(label).type(ButtonType.Normal).layoutWeight(1).height(34).fontSize(11)
+      .fontColor('#ECECED').backgroundColor('#242426').borderRadius(17)
+      .onClick(() => this.requestIDE(IDECapability.REVIEW, kind))
   }
 
   @Builder
   AIResultList() {
-    Column({ space: 5 }) {
+    Column({ space: 8 }) {
       Text('转换结果').fontSize(11).fontWeight(FontWeight.Bold).fontColor('#9BE7A9')
       if (this.aiResult !== null && this.aiResult.pseudocode.length > 0) {
-        ForEach(this.aiResult.pseudocode, (step: PseudocodeStep) => {
-          Column() {
-            Text(step.step).fontSize(10).fontColor('#ECECED')
-            Text(`来源: ${step.sourceRefs.join(', ')}`).fontSize(9).fontColor('#8E8E93').margin({ top: 2 })
-          }.alignItems(HorizontalAlign.Start).width('100%').padding(6)
-            .backgroundColor('#1C1C1E').borderRadius(4)
+        ForEach(this.aiResult.pseudocode, (step: PseudocodeStep, index: number) => {
+          Row({ space: 10 }) {
+            Text(`${index + 1}`).width(22).height(22).textAlign(TextAlign.Center).fontSize(11)
+              .fontColor('#ECECED').backgroundColor('#2A2A2D').borderRadius(11)
+            Column({ space: 6 }) {
+              Text(step.step).fontSize(12).lineHeight(18).fontColor('#ECECED')
+              Row({ space: 4 }) {
+                ForEach(step.sourceRefs, (reference: string) => {
+                  this.SegmentChip(reference)
+                }, (reference: string) => reference)
+              }
+            }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          }.width('100%').alignItems(VerticalAlign.Top).padding(10).backgroundColor('#1E1E20').borderRadius(12)
         }, (step: PseudocodeStep) => step.id)
       } else {
         Text('（无伪代码步骤）').fontSize(10).fontColor('#8E8E93')
       }
-    }.width('100%').margin({ top: 4 })
+      if (this.snippetLines().length > 0) {
+        Text('代码片段 · 只读').fontSize(10).fontColor('#8E8E93')
+        Column() {
+          ForEach(this.snippetLines(), (line: SnippetLine) => {
+            Row({ space: 6 }) {
+              Text(line.line.toString().padStart(2, '0')).width(20).fontSize(10).lineHeight(18)
+                .fontFamily('monospace').fontColor('#5A5A5F').textAlign(TextAlign.End)
+              Column().width(3).height(18).backgroundColor(line.color)
+              Text(line.text).layoutWeight(1).fontSize(11).lineHeight(18).fontFamily('monospace').fontColor('#E8ECE9')
+            }.width('100%')
+          }, (line: SnippetLine) => `${line.line}-${line.color}-${line.text}`)
+        }.width('100%').padding(8).backgroundColor('#0A0A0C').border({ width: 1, color: '#2A2A2D' }).borderRadius(10)
+      }
+      if (this.aiResult !== null && this.aiResult.missingInformation.length > 0) {
+        this.NoteBox('你的思路里没写', this.aiResult.missingInformation, true)
+      }
+      if (this.aiResult !== null && this.aiResult.assumptions.length > 0) {
+        this.NoteBox('转换时的假设', this.aiResult.assumptions, false)
+      }
+      if (this.aiResult !== null && this.aiResult.riskFlags.length > 0) {
+        this.NoteBox('AI 风险标记', this.aiResult.riskFlags, true)
+      }
+      if (this.aiResult !== null) {
+        Text(`${this.aiResult.modelId} · rule ${this.aiResult.ruleVersion} · draft v${this.aiResult.sourceDraftVersion} · ${this.aiResult.addedAlgorithmSteps.length} added steps`)
+          .fontSize(9).fontFamily('monospace').fontColor('#8E8E93')
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  NoteBox(title: string, items: string[], warn: boolean) {
+    Column({ space: 3 }) {
+      Text(title).fontSize(11).fontWeight(FontWeight.Bold).fontColor(warn ? '#FFC56B' : '#B8B8BD')
+      ForEach(items, (item: string, index: number) => {
+        Text(`· ${item}`).fontSize(11).lineHeight(17).fontColor(warn ? '#F2E3B8' : '#ECECED')
+      }, (item: string, index: number) => `${title}-${index}-${item}`)
+    }.width('100%').alignItems(HorizontalAlign.Start).padding(10)
+      .backgroundColor(warn ? '#2A2618' : '#1E1E20').borderRadius(12)
   }
 
   @Builder
@@ -1235,7 +1417,7 @@ struct Index {
           this.Icon(WorkspaceIcon.CODE, 14)
           Text('打开 rewrite.cpp').fontSize(10).fontColor('#FFFFFF')
         }
-      }.height(34).fontColor('#07110A').backgroundColor('#30D158').borderRadius(4)
+      }.height(34).padding({ left: 14, right: 14 }).fontColor('#07110A').backgroundColor('#30D158').borderRadius(4)
         .onClick(() => { this.selectFile(EditorFile.REWRITE); this.activeTool = WorkspaceTool.NONE; })
       this.RewriteComparePanel()
     }.width('100%')
@@ -1243,9 +1425,9 @@ struct Index {
 
   @Builder
   OutputKindButton(label: string, kind: string) {
-    Button(label).height(30).fontSize(10)
-      .fontColor(this.transformOutput === kind ? '#07110A' : '#9BE7A9')
-      .backgroundColor(this.transformOutput === kind ? '#30D158' : '#1E3A27').borderRadius(4)
+    Button(label).type(ButtonType.Normal).height(26).padding({ left: 10, right: 10 }).fontSize(10)
+      .fontColor(this.transformOutput === kind ? '#ECECED' : '#8E8E93')
+      .backgroundColor(this.transformOutput === kind ? '#2A2A2D' : Color.Transparent).borderRadius(6)
       .onClick(() => { this.transformOutput = kind; })
   }
 
@@ -1286,16 +1468,24 @@ struct Index {
           }
         }.width('100%').height(36).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
         if (this.compareHidden()) {
+          Text('AI 内容已隐藏').fontSize(9).fontColor('#B8B8BD').padding({ left: 8, right: 8, top: 2, bottom: 2 })
+            .border({ width: 1, color: '#3A3A3D' }).borderRadius(10)
           Text('AI 结果已隐藏。划分时只显示步骤编号，不显示步骤内容和 AI 代码。').fontSize(10).lineHeight(16).fontColor('#8E8E93')
           ForEach(this.compareSteps(), (step: RewriteCompareStep, index: number) => {
             Text(`步骤 ${index + 1}：复写 ${this.rewriteRangeText(step.id)}`).fontSize(10).fontColor('#ECECED')
           }, (step: RewriteCompareStep) => `hidden-${step.id}-${this.rewriteRangeText(step.id)}`)
-          Button('开始对比').height(32).fontSize(10).fontColor('#07110A').backgroundColor('#30D158').borderRadius(4)
+          Button('开始对比').height(36).fontSize(11).fontColor('#07110A').backgroundColor('#30D158').borderRadius(18)
             .onClick(() => { this.revealCompare(); })
           Text('开始对比只在本页显示 AI 内容，不会改变结果的隐藏状态。').fontSize(9).fontColor('#8E8E93')
         } else if (this.comparison() === null) {
           ForEach(this.compareSteps(), (step: RewriteCompareStep, index: number) => {
-            Text(`步骤 ${index + 1}：${step.step} · 复写 ${this.rewriteRangeText(step.id)}`).fontSize(10).fontColor('#ECECED')
+            Row({ space: 6 }) {
+              ForEach(this.compareRefs(step.id), (reference: string) => {
+                this.SegmentChip(reference)
+              }, (reference: string) => `${step.id}-${reference}`)
+              Text(`步骤 ${index + 1}：${step.step} · 复写 ${this.rewriteRangeText(step.id)}`).layoutWeight(1)
+                .fontSize(10).fontColor('#ECECED')
+            }.width('100%')
           }, (step: RewriteCompareStep) => `outdated-${step.id}-${this.rewriteRangeText(step.id)}`)
         } else {
           Text(this.compareSummaryText()).fontSize(10).fontWeight(FontWeight.Bold).fontColor('#ECECED')
@@ -1331,18 +1521,21 @@ struct Index {
 
   @Builder
   RewriteStepCard(item: RewriteStepComparison) {
-    Column({ space: 3 }) {
+    Column({ space: 5 }) {
       Row({ space: 6 }) {
+        ForEach(this.compareRefs(item.step_id), (reference: string) => {
+          this.SegmentChip(reference)
+        }, (reference: string) => `${item.step_id}-${reference}`)
         Text(`步骤 ${item.index}`).fontSize(11).fontWeight(FontWeight.Bold).fontColor('#ECECED')
-        Text(rewriteStatusLabel(item.status)).fontSize(9).fontColor(rewriteStatusColor(item.status))
-          .padding({ left: 6, right: 6, top: 1, bottom: 1 }).backgroundColor('#242426').borderRadius(8)
-      }
+        Blank()
+        Text(`● ${rewriteStatusLabel(item.status)}`).fontSize(10).fontColor(rewriteStatusColor(item.status))
+      }.width('100%')
       Text(this.compareStepText(item.index)).fontSize(10).fontColor('#B8B8BD')
       ForEach(item.diff, (line: RewriteDiffLine) => {
         this.RewriteDiffRow(line)
       }, (line: RewriteDiffLine) => `${item.step_id}-${line.op}-${line.ai_line}-${line.rewrite_line}`)
-    }.width('100%').alignItems(HorizontalAlign.Start).padding(8).backgroundColor('#1C1C1E').borderRadius(4)
-      .border({ width: { left: 3 }, color: rewriteStatusColor(item.status) })
+    }.width('100%').alignItems(HorizontalAlign.Start).padding(10).backgroundColor('#1E1E20')
+      .border({ width: 1, color: '#2A2A2D' }).borderRadius(12)
   }
 
   @Builder
@@ -1431,8 +1624,8 @@ struct Index {
   }
 
   // The panel keeps a fixed height so the editor does not jump; content taller
-  // than that (AI results, review lists) scrolls inside it instead of being
-  // drawn under the floating toolbar.
+  // than that (review lists, compare cards) scrolls inside it instead of being
+  // drawn under the floating toolbar. AI results use the bottom sheet instead.
   @Builder
   ToolPanel() {
     Scroll() {
@@ -1443,8 +1636,6 @@ struct Index {
           this.IdeaPanel()
         } else if (this.activeTool === WorkspaceTool.SNIPPET) {
           this.SnippetPanel()
-        } else if (this.activeTool === WorkspaceTool.AI) {
-          this.AIPanel()
         } else if (this.activeTool === WorkspaceTool.REWRITE) {
           this.RewritePanel()
         } else if (this.activeTool === WorkspaceTool.REVIEW) {
@@ -1481,7 +1672,7 @@ struct Index {
       Scroll() {
         Column({ space: 12 }) {
           Column({ space: 6 }) {
-            this.DrawerSectionTitle('当前文件')
+            this.DrawerSectionTitle('文件')
             this.DrawerFileButton(EditorFile.MAIN, 'main.cpp')
             this.DrawerFileButton(EditorFile.IDEA, 'idea.md')
             this.DrawerFileButton(EditorFile.REWRITE, 'rewrite.cpp')
@@ -1511,7 +1702,7 @@ struct Index {
                           .fontColor(draft.id === this.selectedId ? '#ECECED' : '#B8B8BD')
                         Text(`main.cpp · v${draft.version}`).fontSize(9).fontColor('#6E6E73').margin({ top: 2 })
                       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                      Circle().width(7).height(7).fill(draft.id === this.selectedId ? '#ECECED' : '#6E6E73')
+                      Text(draftStatusLabel(draft.syncStatus)).fontSize(9).fontColor(draftStatusColor(draft.syncStatus))
                     }
                   }.width('100%').height(44).padding({ left: 10, right: 10 })
                     .backgroundColor(draft.id === this.selectedId ? '#242426' : '#1C1C1E')
@@ -1522,24 +1713,12 @@ struct Index {
             }
           }.width('100%')
 
-          Column({ space: 6 }) {
-            this.DrawerCollapsibleHeader(
-              'AI 协作模式',
-              this.modeLabel(),
-              this.drawerAIExpanded,
-              () => { this.drawerAIExpanded = !this.drawerAIExpanded; }
-            )
-            if (this.drawerAIExpanded) {
-              Row({ space: 6 }) {
-                this.DrawerModeButton('忠实转换', AIMode.FAITHFUL_TRANSFORM)
-                this.DrawerModeButton('可行性分析', AIMode.FEASIBILITY_ANALYSIS)
-              }.width('100%')
-              Row({ space: 6 }) {
-                this.DrawerModeButton('渐进提示', AIMode.PROGRESSIVE_HINT)
-                this.DrawerModeButton('完整解题', AIMode.FULL_SOLUTION)
-              }.width('100%')
-              Text('当前未配置模型服务，保持 AI 结果隔离。').fontSize(9).fontColor('#8E8E93').margin({ top: 2 })
-            }
+          Column({ space: 4 }) {
+            this.DrawerSectionTitle('AI 模式')
+            this.DrawerModeButton('忠实转换', AIMode.FAITHFUL_TRANSFORM)
+            this.DrawerModeButton('可行性分析', AIMode.FEASIBILITY_ANALYSIS)
+            this.DrawerModeButton('渐进提示', AIMode.PROGRESSIVE_HINT)
+            this.DrawerModeButton('完整解题', AIMode.FULL_SOLUTION)
           }.width('100%')
 
           Column({ space: 4 }) {
@@ -1563,30 +1742,24 @@ struct Index {
           }.width('100%')
 
           Column({ space: 6 }) {
-            this.DrawerCollapsibleHeader(
-              '同步状态',
-              `${this.statusLabel()} · v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`,
-              this.drawerSyncExpanded,
-              () => { this.drawerSyncExpanded = !this.drawerSyncExpanded; }
-            )
-            if (this.drawerSyncExpanded) {
-              Row() {
-                Column() {
-                  Text(this.statusLabel()).fontSize(11).fontWeight(FontWeight.Bold).fontColor(this.statusColor())
-                  Text(this.syncMessage.length === 0 ? '本地副本可继续编辑' : this.syncMessage)
-                    .fontSize(9).fontColor('#8E8E93').margin({ top: 3 })
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                Text(`v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`).fontSize(10).fontColor('#8E8E93')
-              }.width('100%').padding({ left: 11, right: 11, top: 10, bottom: 10 })
-                .backgroundColor('#1C1C1E').border({ width: 1, color: '#2A2A2D' }).borderRadius(7)
-              Button() {
-                Row({ space: 6 }) {
-                  this.Icon(WorkspaceIcon.REFRESH, 14, '#07110A')
-                  Text('立即同步').fontSize(10).fontColor('#07110A')
-                }
-              }.width('100%').height(34).backgroundColor('#30D158').borderRadius(6)
-                .onClick(() => { this.closeDrawer(); this.synchronize(); })
-            }
+            this.DrawerSectionTitle('同步')
+            Column({ space: 6 }) {
+              this.DrawerSummaryRow('同步', this.statusLabel(), this.statusColor())
+              this.DrawerSummaryRow('电脑', this.syncBaseUrl, '#B8B8BD')
+              this.DrawerSummaryRow('版本', `v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`, '#B8B8BD')
+              if (this.syncMessage.length > 0) {
+                Text(this.syncMessage).fontSize(9).fontColor('#8E8E93').maxLines(2)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+            }.width('100%').padding({ left: 11, right: 11, top: 10, bottom: 10 }).alignItems(HorizontalAlign.Start)
+              .backgroundColor('#1C1C1E').border({ width: 1, color: '#2A2A2D' }).borderRadius(10)
+            Button() {
+              Row({ space: 6 }) {
+                this.Icon(WorkspaceIcon.REFRESH, 14, '#07110A')
+                Text('立即同步').fontSize(10).fontColor('#07110A')
+              }
+            }.width('100%').height(36).backgroundColor('#30D158').borderRadius(18)
+              .onClick(() => { this.closeDrawer(); this.synchronize(); })
           }.width('100%')
         }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 18 })
       }.layoutWeight(1).scrollBar(BarState.Auto)
@@ -1602,28 +1775,40 @@ struct Index {
   }
 
   @Builder
+  CapsuleItem(label: string, icon: WorkspaceIcon, active: boolean, onTap: () => void) {
+    Column({ space: 2 }) {
+      this.Icon(icon, 15, active ? '#ECECED' : '#8E8E93')
+      Text(label).fontSize(9).fontColor(active ? '#ECECED' : '#8E8E93').maxLines(1)
+    }.height(44).padding({ left: 10, right: 10 }).justifyContent(FlexAlign.Center)
+      .backgroundColor(active ? '#2A2A2D' : Color.Transparent).borderRadius(22)
+      .onClick(onTap)
+  }
+
+  @Builder
+  DrawerSummaryRow(label: string, value: string, color: string) {
+    Row({ space: 8 }) {
+      Text(label).width(32).fontSize(10).fontColor('#8E8E93')
+      Text(value).layoutWeight(1).fontSize(10).fontColor(color).textAlign(TextAlign.End)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+    }.width('100%')
+  }
+
+  @Builder
   FloatingToolBar() {
-    Row() {
-      Button() {
-        Row({ space: 6 }) {
-          this.Icon(WorkspaceIcon.SOURCE, 14, '#FF9F0A')
-          Text(`思路片段${this.segments.length > 0 ? ` (${this.segments.length})` : ''}`).fontSize(10).fontColor('#ECECED')
-        }
-      }.height(36).padding({ left: 11, right: 11 }).backgroundColor(Color.Transparent)
-        .onClick(() => this.toggleTool(WorkspaceTool.IDEA))
-      Blank().width(1).height(18).backgroundColor('#3A3A3D')
-      Button() {
-        Row({ space: 6 }) {
-          Circle().width(7).height(7).fill('#79C0FF')
-          Text(this.modeLabel()).fontSize(10).fontColor('#ECECED')
-        }
-      }.height(36).padding({ left: 11, right: 11 }).backgroundColor(Color.Transparent)
-        .onClick(() => this.toggleTool(WorkspaceTool.AI))
-      Blank().width(1).height(18).backgroundColor('#3A3A3D')
-      Button(this.artifactHidden ? '显示结果' : '隐藏结果').height(36).padding({ left: 11, right: 11 })
-        .fontSize(10).fontColor('#B8B8BD').backgroundColor(Color.Transparent).onClick(() => this.toggleArtifact())
-    }.height(48).padding({ left: 7, right: 7 }).backgroundColor('#1E1E20')
-      .border({ width: 1, color: '#3A3A3D' }).borderRadius(24)
+    Row({ space: 2 }) {
+      this.CapsuleItem(`思路片段${this.segments.length > 0 ? ` (${this.segments.length})` : ''}`, WorkspaceIcon.SOURCE,
+        this.activeTool === WorkspaceTool.IDEA, () => this.toggleTool(WorkspaceTool.IDEA))
+      this.CapsuleItem('代码', WorkspaceIcon.FILES,
+        this.activeTool === WorkspaceTool.NONE && this.activeFile === EditorFile.MAIN,
+        () => { this.selectFile(EditorFile.MAIN); this.activeTool = WorkspaceTool.NONE; })
+      this.CapsuleItem('AI', WorkspaceIcon.AI, this.activeTool === WorkspaceTool.AI,
+        () => this.toggleTool(WorkspaceTool.AI))
+      this.CapsuleItem('复写', WorkspaceIcon.CODE, this.activeTool === WorkspaceTool.REWRITE,
+        () => this.toggleTool(WorkspaceTool.REWRITE))
+      this.CapsuleItem('同步', WorkspaceIcon.REFRESH, this.activeTool === WorkspaceTool.SYNC,
+        () => this.toggleTool(WorkspaceTool.SYNC))
+    }.height(52).padding({ left: 4, right: 4 }).backgroundColor('#1E1E20')
+      .border({ width: 1, color: '#3A3A3D' }).borderRadius(26)
   }
 
   @Builder
@@ -1636,23 +1821,27 @@ struct Index {
           this.FileTab(EditorFile.MAIN, 'main.cpp')
           this.FileTab(EditorFile.IDEA, 'idea.md')
           this.FileTab(EditorFile.REWRITE, 'rewrite.cpp')
-        }.padding({ left: 8, right: 8 })
-      }.width('100%').height(42).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
-        .backgroundColor('#0D0D0F')
+        }.padding({ left: 4, right: 8 })
+      }.width('100%').height(36).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+        .backgroundColor('#0A0A0C').border({ width: { bottom: 1 }, color: '#1E1E20' })
 
-      this.EditorHeader()
       this.EditorSurface()
 
       Row() {
-        Text(this.activeFile).fontSize(9).fontColor('#8E8E93')
+        Text(this.activeFile).fontSize(9).fontFamily('monospace').fontColor('#8E8E93')
+        Text(`${this.currentValue().split('\n').length} 行`).fontSize(9).fontColor('#8E8E93').margin({ left: 10 })
+        if (this.isCppFile()) {
+          Text(`${this.reviewIssues.length} 项检查`).fontSize(9)
+            .fontColor(this.reviewIssues.length === 0 ? '#8E8E93' : '#FF9F0A').margin({ left: 10 })
+            .onClick(() => this.toggleTool(WorkspaceTool.REVIEW))
+        }
         Blank()
-        Text(`Ln ${this.activeLine + 1}, Col ${this.activeColumn + 1}`).fontSize(9).fontColor('#8E8E93')
-        Text('UTF-8').fontSize(9).fontColor('#8E8E93').margin({ left: 12 })
-        Text(this.modeLabel()).fontSize(9).fontColor('#9BE7A9').margin({ left: 12 })
-      }.width('100%').height(28).padding({ left: 12, right: 12 }).backgroundColor('#111113')
-        .border({ width: { top: 1 }, color: '#242426' })
+        Text(`Ln ${this.activeLine + 1}, Col ${this.activeColumn + 1}`).fontSize(9).fontFamily('monospace').fontColor('#8E8E93')
+        Text('UTF-8').fontSize(9).fontColor('#8E8E93').margin({ left: 10 })
+      }.width('100%').height(26).padding({ left: 12, right: 12 }).backgroundColor('#111113')
+        .border({ width: { top: 1 }, color: '#1E1E20' })
 
-      if (this.activeTool !== WorkspaceTool.NONE) {
+      if (this.activeTool !== WorkspaceTool.NONE && this.activeTool !== WorkspaceTool.AI) {
         this.ToolPanel()
       }
 
@@ -1668,12 +1857,57 @@ struct Index {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       this.IDEWorkspace()
+      if (this.activeTool === WorkspaceTool.AI) {
+        Stack({ alignContent: Alignment.Bottom }) {
+          Column().width('100%').height('100%').backgroundColor('#99000000')
+            .onClick(() => this.toggleTool(WorkspaceTool.AI))
+          this.AISheet()
+        }.width('100%').height('100%')
+      }
       if (this.drawerOpen) {
         Column().width('100%').height('100%').backgroundColor('#99000000').onClick(() => this.closeDrawer())
         this.WorkspaceDrawer()
       }
     }.width('100%').height('100%').backgroundColor('#0A0A0C')
   }
+}
+
+function railColor(position: number): string {
+  return RAIL_COLORS[((position % RAIL_COLORS.length) + RAIL_COLORS.length) % RAIL_COLORS.length];
+}
+
+// source_refs of one pseudocode step in a stored transform result body; the
+// body was validated by parseIDEResult when it was stored.
+function stepSourceRefs(body: string, stepId: string): string[] {
+  try {
+    const value = JSON.parse(body) as Record<string, Object>;
+    if (!Array.isArray(value['pseudocode'])) return [];
+    const refs: string[] = [];
+    (value['pseudocode'] as Object[]).forEach((item: Object) => {
+      const step = item as Record<string, Object>;
+      if (String(step['id']) !== stepId || !Array.isArray(step['source_refs'])) return;
+      (step['source_refs'] as Object[]).forEach((reference: Object) => { refs.push(String(reference)); });
+    });
+    return refs;
+  } catch (error) {
+    return [];
+  }
+}
+
+function draftStatusLabel(status: SyncStatus): string {
+  if (status === SyncStatus.SYNCED) return '已同步';
+  if (status === SyncStatus.SYNCING) return '同步中';
+  if (status === SyncStatus.CONFLICT) return '有冲突';
+  if (status === SyncStatus.FAILED) return '同步失败';
+  return '仅本地';
+}
+
+function draftStatusColor(status: SyncStatus): string {
+  if (status === SyncStatus.SYNCED) return '#9FE5B2';
+  if (status === SyncStatus.SYNCING) return '#9CC3EE';
+  if (status === SyncStatus.CONFLICT) return '#FFC56B';
+  if (status === SyncStatus.FAILED) return '#FF9A94';
+  return '#8E8E93';
 }
 
 function rewriteStatusLabel(status: RewriteStepStatus): string {
@@ -1685,7 +1919,7 @@ function rewriteStatusLabel(status: RewriteStepStatus): string {
 
 function rewriteStatusColor(status: RewriteStepStatus): string {
   if (status === RewriteStepStatus.SAME) return '#30D158';
-  if (status === RewriteStepStatus.DIFFERENT) return '#FFD60A';
+  if (status === RewriteStepStatus.DIFFERENT) return '#FF9F0A';
   if (status === RewriteStepStatus.MISSING) return '#FF9A94';
   return '#8E8E93';
 }
