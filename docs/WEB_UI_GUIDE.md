@@ -1,7 +1,7 @@
 # AlgoFlow Web / ArkUI UI 对齐指南
 
 版本：0.2（Web IDE / ArkUI IDE 对齐基线）
-状态：Web UI 原型；ArkUI IDE 参考布局已确认，主页面映射待设计
+状态：Web UI 原型；ArkUI IDE 参考布局已确认，工作区首页映射已确认（见 §5.2–5.3）
 
 ## 1. 目标
 
