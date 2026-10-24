@@ -13,8 +13,10 @@ OpenHarmony 端已经展示 AI 模式选择，但 AI Gateway 尚未接入，当�
 
 ## 当前实现
 
-- OH 端 AI 入口保留为占位页面，显示“AI Gateway 尚未接入”。
-- `Index.ets` 中已有模式状态和结果隐藏状态，但没有发起 AI 请求的客户端用例。
+> 历史记录：以下为立项时状态。OH 端现已通过 `IDEAISession` 与 `HttpAIProvider` 发起忠实转换、三类审查和局部补全，issue #13 已关闭。
+
+- （立项时）OH 端 AI 入口保留为占位页面，显示“AI Gateway 尚未接入”。
+- （立项时）`Index.ets` 中已有模式状态和结果隐藏状态，但没有发起 AI 请求的客户端用例。
 - 不使用 Mock 结果，不在客户端保存团队模型密钥。
 
 ## 验收标准

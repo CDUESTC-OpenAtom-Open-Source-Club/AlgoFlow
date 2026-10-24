@@ -1,7 +1,9 @@
+import { modes } from '../data';
 import { Icon } from './Icon';
+import { SourceRefTag } from './SourceTag';
 import type { ReviewIssue } from '../code-review';
 import { rangeToOffsets } from '../ai-client.mjs';
-import type { AIArtifact, AIResultRecord, AISessionState, FileId, IdeaSegment, Mode, ReviewKind, TransformOutputKind } from '../types';
+import type { AIArtifact, AIResultRecord, AISessionState, FileId, Mode, ReviewKind, TransformOutputKind } from '../types';
 
 interface InspectorPanelProps {
   hidden: boolean;
@@ -31,13 +33,15 @@ interface InspectorPanelProps {
   onArtifact: () => void;
   onCancelArtifact: () => void;
   onToggleArtifact: (artifact: AIArtifact) => void;
+  /** Same mode switch as the sidebar AI panel. */
+  onModeChange?: (mode: Mode) => void;
 }
 
 export function InspectorPanel({
   hidden, onHide, onShow, issues, onJumpToLine, aiState, mode, activeFile, canAcceptCompletion,
   onReview, onCompletion, onAcceptCompletion, onRejectCompletion, onCancel, onToggleResult, onRetryStorage,
   artifact, artifactHistory, artifactBusy, artifactMessage, transformOutput, onTransformOutputChange, onArtifact, onCancelArtifact, onToggleArtifact,
-  canWithdrawCompletion, onWithdrawCompletion,
+  canWithdrawCompletion, onWithdrawCompletion, onModeChange,
 }: InspectorPanelProps) {
   const errors = issues.filter((issue) => issue.severity === 'error').length;
   const canRequest = mode === 'faithful_transform' && activeFile === 'main.cpp';
@@ -47,14 +51,22 @@ export function InspectorPanel({
     <>
       <aside className={hidden ? 'inspector hidden' : 'inspector'} aria-label="AI 检查侧栏">
         <div className="inspector-heading">
-          <div>
-            <span className="eyebrow">INSPECTOR</span>
-            <h2>思路检查</h2>
-          </div>
+          <h2>AI 思路检查</h2>
           <button type="button" className="quiet-button" aria-label="收起思路检查" onClick={onHide}>
             <Icon name="cross" />
           </button>
         </div>
+        <div className="mode-tabs" role="group" aria-label="AI 模式">
+          {modes.map((item) => (
+            <button key={item.id} type="button" className={mode === item.id ? 'selected' : ''}
+              aria-pressed={mode === item.id} onClick={() => onModeChange?.(item.id)} disabled={!onModeChange}>
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <p className="mode-note">
+          {mode === 'faithful_transform' ? '忠实转换只翻译你的思路，不补新算法。其他三种模式尚未接入。' : '该 AI 模式尚未接入，不会自动改用忠实转换。'}
+        </p>
         <div className="check-state">
           <span className={errors ? 'check-symbol warning' : 'check-symbol'}>{errors ? '!' : '✓'}</span>
           <div>
@@ -62,13 +74,63 @@ export function InspectorPanel({
             <p>{issues.length ? issues.map((issue) => <button key={`${issue.line}-${issue.message}`} type="button" className="issue-link" onClick={() => onJumpToLine(issue.line)}>第 {issue.line} 行：{issue.message}</button>) : '未发现括号、入口或头文件基础问题。'}</p>
           </div>
         </div>
-        <SourceTrack segments={aiState.segments} />
         {aiState.storageError && (
           <div className="ai-error" role="alert">
             <p>{aiState.storageError}</p>
             <button type="button" className="outline-button" onClick={onRetryStorage}>重试本地存储</button>
           </div>
         )}
+        <section className="inspect-section ai-artifact-history">
+          <div className="inspect-title"><span>忠实转换结果</span><span>跨端同步</span></div>
+          <p className="ai-help">结果进入独立 AI artifact 同步实体；旧来源保留为历史，只读。</p>
+          <div className="output-kind-toggle" role="radiogroup" aria-label="转换输出">
+            {(['pseudocode', 'code_snippet'] as TransformOutputKind[]).map((kind) => (
+              <button key={kind} type="button" role="radio" aria-checked={transformOutput === kind}
+                className={transformOutput === kind ? 'selected' : ''} onClick={() => onTransformOutputChange(kind)}>
+                {kind === 'pseudocode' ? '伪代码' : '代码片段'}
+              </button>
+            ))}
+          </div>
+          {!canRequest && <p role="status" className="ai-help">{mode !== 'faithful_transform' ? '当前模式尚未接入，不会自动改用忠实转换。' : '请切换到 main.cpp 再请求忠实转换。'}</p>}
+          {transformOutput === 'code_snippet' && <p className="ai-help">代码片段只读展示，用于和 rewrite.cpp 复写对比，不会写入任何 .cpp 文件。</p>}
+          <div className="review-actions">
+            <button type="button" className="outline-button" onClick={onArtifact} disabled={artifactBusy || !canRequest}>请求忠实转换</button>
+            {artifactBusy && <button type="button" className="outline-button" onClick={onCancelArtifact}>取消转换</button>}
+          </div>
+          {artifactMessage && <p className="ai-help" role="status">{artifactMessage}</p>}
+          {artifactHistory.map((item) => (
+            <article className={item.id === artifact?.id && getArtifactFreshness(item, artifact) === 'current' ? 'ai-result' : 'ai-result stale'} key={item.id}>
+              <div className="ai-result-heading"><strong>{item.id === artifact?.id ? '当前结果' : '历史结果'}</strong><button type="button" className="quiet-button" onClick={() => onToggleArtifact(item)}>{item.visibility === 'hidden' ? '显示结果' : '隐藏结果'}</button></div>
+              {item.visibility !== 'hidden' && <>
+                <p className="ai-provenance">草稿 v{item.source_draft_version} · {item.mode} · {item.model_id}</p>
+                <ol className="artifact-steps">
+                  {item.pseudocode.map((step, index) => (
+                    <li className="artifact-step" key={step.id}>
+                      <span className="artifact-step-no">{index + 1}</span>
+                      <div>
+                        <p>{step.step}</p>
+                        <div className="artifact-step-refs">
+                          <span>来源</span>
+                          {step.source_refs.map((ref) => <SourceRefTag key={ref} refId={ref} segments={aiState.segments} />)}
+                          {item.output_kind === 'code_snippet' && <span>→ {snippetRangeText(item, step.id)}</span>}
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+                {item.output_kind === 'code_snippet' && item.code_snippet !== null && (
+                  <div className="ai-snippet">
+                    <span className="ai-snippet-label">AI 代码片段 · 只读，不会写入任何 .cpp 文件</span>
+                    <pre aria-label="AI 代码片段">{item.code_snippet}</pre>
+                  </div>
+                )}
+                <ArtifactNotes title="你的思路里没写" items={item.missing_information} tone="amber" />
+                <ArtifactNotes title="风险标记" items={item.risk_flags} tone="amber" />
+                <ArtifactNotes title="AI 的假设" items={item.assumptions} tone="plain" />
+              </>}
+            </article>
+          ))}
+        </section>
         <section className="inspect-section ai-review-chat">
           <div className="inspect-title"><span>AI 审查会话</span><span>仅本地</span></div>
           <p className="ai-help">只分析当前代码和思路，不写入代码。会话追加消息；刷新后每类仅恢复最近结果。</p>
@@ -107,39 +169,6 @@ export function InspectorPanel({
               </article>
             ))}
           </div>
-        </section>
-        <section className="inspect-section ai-artifact-history">
-          <div className="inspect-title"><span>忠实转换结果</span><span>跨端同步</span></div>
-          <p className="ai-help">结果进入独立 AI artifact 同步实体；旧来源保留为历史，只读。</p>
-          <div className="output-kind-toggle" role="radiogroup" aria-label="转换输出">
-            {(['pseudocode', 'code_snippet'] as TransformOutputKind[]).map((kind) => (
-              <button key={kind} type="button" role="radio" aria-checked={transformOutput === kind}
-                className={transformOutput === kind ? 'selected' : ''} onClick={() => onTransformOutputChange(kind)}>
-                {kind === 'pseudocode' ? '伪代码' : '代码片段'}
-              </button>
-            ))}
-          </div>
-          {!canRequest && <p role="status" className="ai-help">{mode !== 'faithful_transform' ? '当前模式尚未接入，不会自动改用忠实转换。' : '请切换到 main.cpp 再请求忠实转换。'}</p>}
-          {transformOutput === 'code_snippet' && <p className="ai-help">代码片段只读展示，用于和 rewrite.cpp 复写对比，不会写入任何 .cpp 文件。</p>}
-          <div className="review-actions">
-            <button type="button" className="outline-button" onClick={onArtifact} disabled={artifactBusy || !canRequest}>请求忠实转换</button>
-            {artifactBusy && <button type="button" className="outline-button" onClick={onCancelArtifact}>取消转换</button>}
-          </div>
-          {artifactMessage && <p className="ai-help" role="status">{artifactMessage}</p>}
-          {artifactHistory.map((item) => (
-            <article className={item.id === artifact?.id && getArtifactFreshness(item, artifact) === 'current' ? 'ai-result' : 'ai-result stale'} key={item.id}>
-              <div className="ai-result-heading"><strong>{item.id === artifact?.id ? '当前结果' : '历史结果'}</strong><button type="button" className="quiet-button" onClick={() => onToggleArtifact(item)}>{item.visibility === 'hidden' ? '显示结果' : '隐藏结果'}</button></div>
-              {item.visibility !== 'hidden' && <>
-                <p className="ai-provenance">草稿 v{item.source_draft_version} · {item.mode} · {item.model_id}</p>
-                {item.pseudocode.map((step) => <div className="ai-diagnostic" key={step.id}><strong>{step.step}</strong><p>来源：{step.source_refs.join(', ')}</p></div>)}
-                {item.output_kind === 'code_snippet' && item.code_snippet !== null && <>
-                  <p>代码片段（只读）</p>
-                  <pre aria-label="AI 代码片段">{item.code_snippet}</pre>
-                  <p className="ai-provenance">映射：{item.code_mappings.map((mapping) => `${mapping.step_id} L${mapping.start_line}–${mapping.end_line}`).join('，')}</p>
-                </>}
-              </>}
-            </article>
-          ))}
         </section>
         <section className="inspect-section completion-section">
           <div className="inspect-title"><span>忠实模式局部补全</span><span>预览后写入</span></div>
@@ -230,19 +259,18 @@ function originalFragment(record: AIResultRecord): string {
   } catch { return '旧结果范围不可验证，请重新请求。'; }
 }
 
-function SourceTrack({ segments }: { segments: IdeaSegment[] }) {
+function snippetRangeText(artifact: AIArtifact, stepId: string): string {
+  const ranges = artifact.code_mappings.filter((mapping) => mapping.step_id === stepId)
+    .map((mapping) => mapping.start_line === mapping.end_line ? `${mapping.start_line}` : `${mapping.start_line}–${mapping.end_line}`);
+  return ranges.length > 0 ? `片段第 ${ranges.join('、')} 行` : '片段无对应行';
+}
+
+function ArtifactNotes({ title, items, tone }: { title: string; items: string[]; tone: 'amber' | 'plain' }) {
+  if (items.length === 0) return null;
   return (
-    <section className="inspect-section">
-      <div className="inspect-title">
-        <span>来源轨道</span>
-        <span>{segments.length} 片段</span>
-      </div>
-      <div className="track">
-        {segments.map((segment, index) => (
-          <div key={segment.id}><span>{index + 1}</span><p>{segment.content}</p><small className="ai-provenance">{segment.id}</small></div>
-        ))}
-        {segments.length === 0 && <p>请在 idea.md 中填写思路。</p>}
-      </div>
-    </section>
+    <div className={`artifact-notes ${tone}`}>
+      <strong>{title}</strong>
+      <ul>{items.map((text, index) => <li key={index}>{text}</li>)}</ul>
+    </div>
   );
 }

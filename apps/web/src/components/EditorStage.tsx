@@ -76,7 +76,7 @@ export function EditorStage({
       </div>
       {bottomOpen && <BottomPanel />}
       <footer className="statusbar">
-        <span><i className="status-ok" /> {activeFile}</span>
+        <span>{activeFile}</span>
         <span>Ln {cursorPosition.line}, Col {cursorPosition.column}</span>
         <span>UTF-8</span>
         <span>{fileLabels[activeFile]}</span>
@@ -121,8 +121,6 @@ function EditorBreadcrumb({
 }: EditorBreadcrumbProps) {
   return (
     <div className="breadcrumb">
-      <span className="workspace-crumb">工作区</span>
-      <b>/</b>
       <nav className="breadcrumb-files" aria-label="当前工作区文件">
         {editorFiles.map((file) => (
           <button
@@ -134,7 +132,7 @@ function EditorBreadcrumb({
             <Icon name={file.icon} />
             {file.id}
             {file.id === 'main.cpp' && activeFile === file.id && !saved && (
-              <span className="tab-dot">●</span>
+              <span className="tab-dot" aria-label="未保存" />
             )}
           </button>
         ))}

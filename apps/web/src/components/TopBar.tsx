@@ -1,15 +1,21 @@
+import { modes } from '../data';
+import type { Mode, SyncStatus } from '../types';
 import { Icon } from './Icon';
 import brandMark from '../assets/brand/algoflow-icon.svg';
 
 interface TopBarProps {
   saved: boolean;
-  syncState?: 'local_only' | 'syncing' | 'synced' | 'conflict' | 'failed';
+  syncState?: SyncStatus;
   onSync?: () => void;
   onOpenPhoneModal?: () => void;
+  /** Display only: the selected draft's title and version. */
+  draftTitle?: string;
+  draftVersion?: number;
+  mode?: Mode;
 }
 
-export function TopBar({ saved, syncState = 'local_only', onSync, onOpenPhoneModal }: TopBarProps) {
-  const syncLabels = { local_only: '仅本地', syncing: '同步中', synced: '已同步', conflict: '有冲突', failed: '同步失败' };
+export function TopBar({ saved, syncState = 'local_only', onSync, onOpenPhoneModal, draftTitle, draftVersion, mode }: TopBarProps) {
+  const modeLabel = modes.find((item) => item.id === mode)?.label;
   return (
     <header className="topbar">
       <div className="brand-lockup">
@@ -19,13 +25,22 @@ export function TopBar({ saved, syncState = 'local_only', onSync, onOpenPhoneMod
           <small>思路工作台</small>
         </span>
       </div>
+      {draftTitle && (
+        <div className="top-crumbs">
+          <span>/</span>
+          <b title={draftTitle}>{draftTitle}</b>
+          {modeLabel && <span className="mode-pill"><i />{modeLabel}</span>}
+        </div>
+      )}
       <div className="top-actions">
-        <span className={`sync-label sync-${syncState}`}>
-          <i />
-          {saved ? `已保存到本机 · ${syncLabels[syncState]}` : '有未保存更改'}
+        <span className="sync-strip">
+          <SyncChip state={syncState} />
+          <span className={saved ? 'sync-meta' : 'sync-meta unsaved'}>
+            {saved ? `${draftVersion !== undefined ? `v${draftVersion} · ` : ''}已保存到本机` : '有未保存更改'}
+          </span>
         </span>
         <button className="phone-connect-button" type="button" onClick={onOpenPhoneModal}>
-          <span className="phone-dot" />
+          <Icon name="source" />
           手机远程
         </button>
         <button className="sync-button" type="button" onClick={onSync}>
@@ -37,5 +52,16 @@ export function TopBar({ saved, syncState = 'local_only', onSync, onOpenPhoneMod
         </button>
       </div>
     </header>
+  );
+}
+
+const syncLabels: Record<SyncStatus, string> = { local_only: '仅本地', syncing: '同步中', synced: '已同步', conflict: '有冲突', failed: '同步失败' };
+
+export function SyncChip({ state, small = false }: { state: SyncStatus; small?: boolean }) {
+  return (
+    <span className={`sync-chip sync-${state}${small ? ' small' : ''}`}>
+      <i />
+      {syncLabels[state]}
+    </span>
   );
 }

@@ -387,6 +387,9 @@ export function App() {
         syncState={syncState}
         onSync={syncNow}
         onOpenPhoneModal={() => setPhoneModalOpen(true)}
+        draftTitle={currentDraft ? currentDraft.title || currentDraft.id : undefined}
+        draftVersion={currentDraft?.version}
+        mode={mode}
       />
       <PhoneConnectionModal
         open={phoneModalOpen}
@@ -457,6 +460,7 @@ export function App() {
               onConfirm={() => saveRewriteMapping(rewriteMapping.mappings)}
               onClear={clearRewriteMapping}
               onClose={() => setCompareOpen(false)}
+              segments={aiState.segments}
             />
           ) : undefined}
         />
@@ -476,6 +480,7 @@ export function App() {
           onArtifact={requestArtifact}
           onCancelArtifact={cancelArtifact}
           onToggleArtifact={toggleArtifact}
+          onModeChange={selectMode}
           mode={mode}
           activeFile={activeFile}
           canAcceptCompletion={aiSession.canAcceptCompletion()}
