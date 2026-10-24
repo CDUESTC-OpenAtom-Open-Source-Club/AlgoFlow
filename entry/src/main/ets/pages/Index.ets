@@ -1417,7 +1417,7 @@ struct Index {
           this.Icon(WorkspaceIcon.CODE, 14)
           Text('打开 rewrite.cpp').fontSize(10).fontColor('#FFFFFF')
         }
-      }.height(34).fontColor('#07110A').backgroundColor('#30D158').borderRadius(4)
+      }.height(34).padding({ left: 14, right: 14 }).fontColor('#07110A').backgroundColor('#30D158').borderRadius(4)
         .onClick(() => { this.selectFile(EditorFile.REWRITE); this.activeTool = WorkspaceTool.NONE; })
       this.RewriteComparePanel()
     }.width('100%')
