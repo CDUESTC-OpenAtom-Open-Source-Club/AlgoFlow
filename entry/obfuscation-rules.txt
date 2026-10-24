@@ -1,23 +1,23 @@
-# Define project specific obfuscation rules here.
-# You can include the obfuscation configuration files in the current module's build-profile.json5.
+# Release obfuscation rules for the entry module (applied by build-profile.json5,
+# buildOptionSet "release"). Debug builds are not obfuscated.
 #
-# For more details, see
-#   https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V5/source-obfuscation-V5
+# Enabled: local names (always on once obfuscation is enabled), top-level
+# names, and compaction.
+#
+# Deliberately NOT enabled:
+# -enable-property-obfuscation  Property names are wire and storage formats:
+#     sync payloads (sync.schema.json), AI requests/results (ai.schema.json),
+#     RDB record_json, Preferences records and card binding data are built from
+#     object literals and classes and then JSON.stringify'd. Renaming them would
+#     break the shared contracts and make data written by an earlier build
+#     unreadable. Enabling it needs a keep list derived from the schemas.
+# -enable-export-obfuscation    Would also rename properties of exported classes.
+# -enable-filename-obfuscation  Pages are loaded by path ("pages/Index" in
+#     main_pages.json and router.pushUrl) and abilities/widget by srcEntry.
+# -remove-log                   Logs are already redacted ([AlgoFlow] prefix,
+#     safeLogValue) and are needed to diagnose release builds.
+#
+# Docs: https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V5/source-obfuscation-V5
 
-# Obfuscation options:
-# -disable-obfuscation: disable all obfuscations
-# -enable-property-obfuscation: obfuscate the property names
-# -enable-toplevel-obfuscation: obfuscate the names in the global scope
-# -compact: remove unnecessary blank spaces and all line feeds
-# -remove-log: remove all console.* statements
-# -print-namecache: print the name cache that contains the mapping from the old names to new names
-# -apply-namecache: reuse the given cache file
-
-# Keep options:
-# -keep-property-name: specifies property names that you want to keep
-# -keep-global-name: specifies names that you want to keep in the global scope
-
--enable-property-obfuscation
 -enable-toplevel-obfuscation
--enable-filename-obfuscation
--enable-export-obfuscation
+-compact
