@@ -41,14 +41,14 @@ AlgoFlow 的主体是**手机与电脑同步的思路验证代码工作台**，�
 
 ### 2.0 当前工程基线
 
-已创建工程 `C:\study\AlgoFlow` 并完成 HAP Debug 构建。当前事实如下：
+已创建工程 `C:\study\AlgoFlow` 并完成 HAP Debug 与 Release 构建（Release 记录见第 8 节）。当前事实如下：
 
 - DevEco Studio：`6.0.0 Release`，构建 `6.0.0.858`。
 - OpenHarmony SDK：API Version `20`，ArkTS/Previewer/Toolchains 版本 `6.0.0.47`。
 - 工程模型：Stage；语言和 UI：ArkTS + ArkUI；设备类型：`phone`。
 - 工程配置：`compatibleSdkVersion` 与 `targetSdkVersion` 均为 `6.0.0(20)`。
 - 工程模板实际生成 `runtimeOS: "HarmonyOS"`。这不是错误，但在没有额外证据前，AI 不得把该工程描述为“纯 OpenHarmony 运行目标已验证”。
-- 当前没有 `signingConfigs`，Debug 构建成功但未签名；正式签名不得自行配置。
+- 当前没有 `signingConfigs`，Debug 与 Release 构建均成功但未签名；正式签名不得自行配置。
 - API 20 已安装 ArkTS、JS、Previewer、Toolchains；Native C++ 未安装，除非任务明确需要，不得要求团队安装。
 
 环境变更必须同步更新三份文档和构建记录。SDK 名称、`runtimeOS`、系统版本和设备能力是不同事实，不得混写。
@@ -58,7 +58,7 @@ AlgoFlow 的主体是**手机与电脑同步的思路验证代码工作台**，�
 ```text
 OpenHarmony 原生手机端（ArkTS / ArkUI）
              │
-             ├── HTTPS / WebSocket ── 华为云同步与 AI Gateway
+             ├── HTTP(S) push/pull ── sync-api 与 AI Gateway（当前为本机/局域网；云端部署待预研）
              │
 浏览器桌面工作台（Web）
 ```
@@ -66,7 +66,7 @@ OpenHarmony 原生手机端（ArkTS / ArkUI）
 - OpenHarmony 原生端负责服务卡片、生命周期、权限、本地数据库和手机交互。
 - Web 端负责适合键鼠的代码编辑、版本对比和批量管理。
 - 两端共享 API、JSON Schema、领域枚举、同步语义和测试向量，不强求共享 UI 源码。
-- 云端部署在华为云；日常开发在本地进行，GitHub 是唯一协作源。
+- 云服务厂商未定且云端不是当前主线（见第 7.2 节）；日常开发在本地进行，GitHub 是唯一协作源。
 
 ### 2.2 跨平台框架门禁
 
@@ -87,14 +87,16 @@ MVP 不引入 CMP、Flutter、React Native 或桌面原生壳。白皮书用于�
 实际目录以仓库为准。目标模块职责如下，禁止仅为匹配本文档一次性创建空目录：
 
 ```text
+AppScope/, entry/      # DevEco 工程（位于仓库根目录）：ArkUI、RDB、服务卡片
 apps/
-├── openharmony/       # DevEco 工程、ArkUI、RDB、服务卡片
+├── openharmony/       # 手机端说明文档（工程未搬入此目录）
 └── web/               # React + Vite 浏览器桌面工作台
 packages/
-└── contracts/         # 可生成或复用的 API Schema、枚举、测试向量
+└── contracts/         # API Schema、枚举、测试向量
 services/
-├── sync-api/          # 账号、同步、冲突和版本接口
-└── ai-gateway/        # 模型适配、结构校验、限流和审计
+├── sync-api/          # 同步、冲突、版本和配对接口（无账号与鉴权）
+└── ai-gateway/        # 模型适配、结构校验、来源与版本门禁
+tests/                 # 手机端用例的 Node 测试（真实 ArkTS 源码 + SDK 替身）
 ```
 
 若初期采用单仓库中的不同目录，公共契约仍必须有唯一事实来源。ArkTS 和 Web 类型可从 Schema 生成，或通过契约测试保持一致；禁止人工维护两套含义不同的枚举。
@@ -107,18 +109,31 @@ services/
 
 ```text
 src/
+├── main.tsx                # React 入口
 ├── App.tsx                 # 页面状态与区域编排
 ├── data.ts                 # 文件、模式和演示文档数据
 ├── types.ts                # Web 层严格类型定义
 ├── storage.mjs             # localStorage 工作区、客户端队列和游标仓储
 ├── sync-client.mjs         # sync-api push/pull 与冲突批处理
+├── pairing-client.mjs      # 手机远程配对会话
+├── ai-client.mjs           # AI Gateway 请求、截止时间与错误提示
+├── ai-session.mjs          # 审查会话与局部补全状态
+├── ai-result-storage.mjs   # AI 结果本机存储
+├── review-use-case.mjs     # 审查用例
+├── code-review.ts          # 本地基础规则审查
+├── editor-transactions.mjs # 编辑器事务（补全接受/撤回）
+├── rewrite-compare.mjs     # 复写对比算法
+├── rewrite-mapping-storage.mjs # 复写划分（仅本机）
 ├── icon-assets.ts          # Game Icon Pack 资源映射
 ├── components/
 │   ├── ActivityBar.tsx     # 左侧工具栏
 │   ├── WorkspaceSidebar.tsx # 工作区文件、搜索、来源、AI、版本面板
 │   ├── EditorStage.tsx     # 文件路径栏、底部面板和状态栏
-│   ├── CodeEditor.tsx      # 文本编辑、行号、当前行和滚动同步
+│   ├── CodeEditor.tsx      # CodeMirror 6 编辑器封装
 │   ├── InspectorPanel.tsx  # 思路检查侧栏
+│   ├── RewriteComparePanel.tsx # 复写对比面板
+│   ├── PhoneConnectionModal.tsx # 手机远程配对弹窗
+│   ├── PairingQrCode.tsx   # 配对二维码
 │   ├── TopBar.tsx          # 顶部品牌与保存/同步状态
 │   └── Icon.tsx            # 统一图标渲染
 └── styles.css              # MD3 令牌和分区样式
@@ -143,7 +158,7 @@ issue #5 阶段四新增 `IDEAISession` 独立用例、`IDEProvider` 可取消�
 
 当前阶段不接云服务，云服务厂商仍未确定；本文其他位置的华为云描述属于历史候选方案，不构成当前部署授权。
 
-本地数据库当前版本为 v3（`RdbDraftRepository.DATABASE_VERSION`）：v1 事务迁移创建独立 `ai_results`、`ai_result_history` 和 `draft_source_history`，v2 兼容迁移验证 PR #23 变体，v2→v3 事务迁移将旧 `ai_artifacts_json` 结果导入独立结果表；迁移不改写 Draft 行和同步队列。按草稿/模式/能力/审查类型及测试分区展示当前结果，其余结果保留为历史；审查聊天会话仅内存追加，旧消息隐藏不能覆盖当前槽位。旧 `artifact_hidden` 保留兼容，新 AI 操作不读写它、不保存 Draft。
+本地数据库当前版本为 v3（`RdbDraftRepository.DATABASE_VERSION`）：0→1 事务迁移创建草稿、同步队列、同步状态和冲突基础表；1→2 事务迁移创建独立 `ai_results`、`ai_result_history`、`draft_source_history` 并为冲突表补齐实体类型；2→3 事务迁移兼容 PR #23 变体，重新校验上述表并将旧 `ai_artifacts_json` 结果导入独立结果表；迁移不改写 Draft 行和同步队列。按草稿/模式/能力/审查类型及测试分区展示当前结果，其余结果保留为历史；审查聊天会话仅内存追加，旧消息隐藏不能覆盖当前槽位。旧 `artifact_hidden` 保留兼容，新 AI 操作不读写它、不保存 Draft。
 
 issue #27（#28–#32）之后的同步边界：成功的非测试忠实转换产物和审查结果分别作为独立同步实体 `ai_artifact`、`review_result` 进入离线队列，拥有自己的版本和 `server_sequence`，隐藏状态作为结果元数据同步；它们不嵌入 `DraftPayload`，不改变 `Draft.version`。局部补全候选、测试响应、审查聊天历史和失败/取消请求不创建同步操作。恢复结果只读过期，未完成请求恢复为取消；迁移/读写失败不得删除数据库，版本高于当前实现时拒绝初始化和写入。
 
@@ -153,13 +168,29 @@ issue #27（#28–#32）之后的同步边界：成功的非测试忠实转换�
 
 ```text
 ets/
+├── pages/Home.ets                          # 工作区首页：草稿概览、新建与最近草稿
 ├── pages/Index.ets                         # 手机 IDE 页面、抽屉和工具面板编排
+├── pages/Placeholder.ets                   # 预留页与「设置 → 连接电脑」
+├── widget/pages/WidgetCard.ets             # 服务卡片
+├── entryability/, entryformability/, entrybackupability/ # 应用、卡片与备份 Ability
+├── navigation/AppRoutes.ets                # 路由常量
+├── components/ResourceIcon.ets             # 图标组件
 ├── application/DraftWorkspaceViewModel.ets # 草稿、版本、思路片段和模式状态用例
+├── application/IDEAISession.ets            # 审查、局部补全和忠实转换会话用例
 ├── domain/Models.ets                        # Draft、IdeaSegment、AIMode、SyncStatus
 ├── domain/DraftRepository.ets               # 草稿仓储端口
 ├── domain/SyncModels.ets                     # 同步 Schema 对应的实体、操作和结果模型
 ├── domain/SyncRepository.ets                 # 同步仓储端口
-└── platform/RdbDraftRepository.ets           # RDB 离线副本、迁移和操作队列适配器
+├── domain/AIProvider.ets、IDEAIContract.ets、IDEAIModels.ets、AIContractGuard.ets、AIArtifactCodec.ets # AI 端口、契约与校验
+├── domain/PairingContract.ets                # 配对载荷解析与端点推导
+├── domain/RewriteCompare.ets                 # 复写对比算法
+├── platform/RdbDraftRepository.ets           # RDB 离线副本、迁移和操作队列适配器
+├── platform/RdbAIResultRepository.ets        # AI 结果表
+├── platform/HttpSyncClient.ets、PhoneSyncService.ets # 同步传输与 push/pull 编排
+├── platform/HttpAIClient.ets、HttpAIProvider.ets     # AI Gateway 传输
+├── platform/HttpPairingClient.ets、PairingScanner.ets # 配对认领与扫码
+├── platform/RewriteMappingStore.ets          # 复写划分（Preferences，本机）
+└── platform/CardSnapshot.ets                 # 服务卡片本地快照
 ```
 
 - 手机端首屏主体是可阅读、可编辑的 `main.cpp`，不是草稿表单或 AI 结果页。
@@ -248,7 +279,7 @@ full_solution        完整解题
 - Gateway 只接受注入的 `AIProvider.generate({ request, templates })`，并在保存/返回前重新校验 provider artifact；provider 异常返回分类错误，不向客户端透传密钥或模型原始日志。
 - 当前 HTTP 状态约定为：未配置 provider 返回 `AI_NOT_ENABLED`，provider 异常返回 `AI_PROVIDER_ERROR`，输出不符合契约或来源映射时返回 `INVALID_AI_ARTIFACT`。
 - 手机端 `HttpAIProvider` 的传输失败分类：`@ohos.net.http` 对连接超时和读超时都抛 `2300028`，已超过 5 s 连接超时的 `2300028` 视为读超时，映射为 `AI_PROVIDER_TIMEOUT`（“AI 请求超时”）；更早的超时、连接失败、DNS 失败和其他传输错误为 `NETWORK_ERROR`。每次请求只发一次，不自动重试；hilog 只记录类别、错误码和耗时。
-- 团队密钥只保存在华为云受控配置中，不进入客户端、GitHub、文档或日志。
+- 团队密钥只保存在服务端受控配置中（云服务厂商未定），不进入客户端、GitHub、文档或日志。
 - 用户自带 API 的密钥保存方式未评审前，不实现明文持久化。
 - 外部模型调用意味着内容发送给用户选择的服务，隐私文案必须与真实数据流一致。
 
@@ -311,7 +342,7 @@ full_solution        完整解题
 ### 6.3 服务卡片
 
 - 已确认首版卡片功能：最近草稿（标题）、同步状态、新建思路和点击跳转。不展示思路正文、代码、AI 结果或密钥。
-- 跳转参数使用稳定草稿 ID，并处理草稿已删除、无草稿、未登录和离线状态；打开已删除或不存在的草稿时回到首页，不得静默新建或复活草稿。新建思路必须经现有 `DraftWorkspaceViewModel.createDraft()`，卡片不得直接写数据库。
+- 跳转参数使用稳定草稿 ID，并处理草稿已删除、无草稿和离线状态（当前没有账号登录）；打开已删除或不存在的草稿时回到首页，不得静默新建或复活草稿。新建思路必须经现有 `DraftWorkspaceViewModel.createDraft()`，卡片不得直接写数据库。
 - 卡片数据来源为本地快照；首版刷新为事件驱动（保存、删除、同步完成后主动更新已添加卡片），定时刷新频率仍待确认。后台限制和刷新 API 以 API 20 SDK 为准。
 - 当前没有可用真机或云手机，只有另一台电脑上的模拟器。模拟器结果最多记为 `本地验证` 并注明镜像，不得记为 `设备验证`。
 - Previewer 通过不等于设备验证通过。状态依次为：`待预研`、`开发中`、`本地验证`、`设备验证`、`可演示`。
@@ -336,7 +367,7 @@ full_solution        完整解题
 - 两个独立浏览器标签页可作为两个 Web 客户端对同一稳定草稿 ID 做本地并发验收：先提交的一方成功，后提交的陈旧版本收到 409 并生成冲突副本。该验收只证明 Web 与本地 sync-api 的协议链路，不证明 OpenHarmony 或云端链路已完成。
 - 不在浏览器中暴露团队模型密钥、数据库凭据或管理接口。
 
-### 7.2 华为云
+### 7.2 云端部署
 
 云端部署的定位（2026-10-22 开发者确认）：云端部署是产品需要的能力，但**不是当前主线**。
 
@@ -382,9 +413,9 @@ AI 完成任务后必须报告实际运行的命令、环境和结果。没有�
 协作规则：
 
 - GitHub 使用功能分支和 Pull Request，禁止直接在 `main` 开发。
-- 公共 Schema、同步 API、迁移、权限、构建配置和本文件属于高冲突区域，修改前检查工作树，合并前至少一人审查。
+- 公共 Schema、同步 API、迁移、权限、构建配置和本文件属于高冲突区域，修改前检查工作树。当前为单人维护，合并不要求第二人审查，但仍须经功能分支和 Pull Request；恢复多人协作后重新启用交叉审查。
 - 一个 PR 只处理一个可验收目标；不要混入无关重构和格式化。
-- 至少两人掌握 DevEco 构建、华为云部署和发布流程。
+- DevEco 构建、服务部署和发布流程需有可重复的文档步骤；多人协作时至少两人掌握。
 - 本地是主要编码环境，云端负责共享服务、集成验证和云手机，不要求远程桌面开发。
 
 ## 10. AI 协作命令
@@ -416,6 +447,6 @@ AI 完成任务后必须报告实际运行的命令、环境和结果。没有�
 - 云手机镜像与真机来源（当前均无；模拟器位于另一台电脑，镜像版本待记录）。
 - 开发者账号、应用创建、包名、正式签名及密钥负责人。
 - 默认模型、预算、用户自带 API 的密钥存储方案。
-- 华为云账号、域名、数据库和部署负责人。
+- 云服务厂商、账号、域名、数据库和部署负责人。
 - 服务卡片定时刷新频率（功能范围已确认，见 6.3）。
 - 隐私政策和数据保存期限。

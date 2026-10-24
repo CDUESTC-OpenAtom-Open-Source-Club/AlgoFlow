@@ -2,7 +2,7 @@
 //   PROVIDER=ok      node run-demo-gateway.mjs   # 返回合法 artifact（伪代码步骤 1:1 映射到请求里的 idea_segments）
 //   PROVIDER=violate node run-demo-gateway.mjs   # 返回越界 artifact（added_algorithm_steps 非空）→ 手机应显示“AI 产物越界，已拒绝”
 //   PROVIDER=slow    node run-demo-gateway.mjs   # 20s 后才返回 → 用来测手机端 10s 读超时 / 取消
-//   PROVIDER=error   node run-demo-gateway.mjs   # provider 抛异常 → 502 AI_PROVIDER_ERROR，手机应重试 2 次后报错
+//   PROVIDER=error   node run-demo-gateway.mjs   # provider 抛异常 → 502 AI_PROVIDER_ERROR，手机只请求一次（不自动重试）并报错
 //   PROVIDER=none    node run-demo-gateway.mjs   # 不配置 provider → 503 AI_NOT_ENABLED
 // 监听 0.0.0.0:8788，手机端 AI 面板里的地址填 http://<电脑局域网IP>:8788
 import { createAIGateway } from './services/ai-gateway/src/server.mjs';
