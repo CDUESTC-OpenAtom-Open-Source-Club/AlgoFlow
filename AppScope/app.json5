@@ -1,7 +1,7 @@
 {
   "app": {
-    "bundleName": "com.example.algoflow",
-    "vendor": "example",
+    "bundleName": "com.tippydes.algoflow",
+    "vendor": "tippydes",
     "versionCode": 1000000,
     "versionName": "1.0.0",
     "icon": "$media:layered_image",
