@@ -684,13 +684,13 @@ struct Index {
     const epoch = this.editEpoch;
     this.viewModel.setSyncBaseUrl(this.syncBaseUrl);
     this.syncStatus = SyncStatus.SYNCING;
-    this.syncMessage = '正在连接 sync-api...';
+    this.syncMessage = '正在连接同步端点...';
     let result: SyncRunResult | undefined;
     try {
       result = await this.viewModel.synchronize();
     } catch (error) {
       this.syncStatus = SyncStatus.FAILED;
-      this.syncMessage = error instanceof Error ? error.message : '同步请求失败';
+      this.syncMessage = syncMessageText(error instanceof Error ? error.message : '同步请求失败');
       publishCardSnapshot(getContext(this), this.viewModel.listDrafts(), SyncStatus.FAILED);
       return;
     }
@@ -703,7 +703,7 @@ struct Index {
     else if (result.status === SyncRunStatus.CONFLICT) this.syncStatus = SyncStatus.CONFLICT;
     else if (result.status === SyncRunStatus.FAILED) this.syncStatus = SyncStatus.FAILED;
     else this.syncStatus = SyncStatus.LOCAL_ONLY;
-    this.syncMessage = result.message;
+    this.syncMessage = syncMessageText(result.message);
     this.drafts = this.viewModel.listDrafts();
     publishCardSnapshot(getContext(this), this.drafts, this.syncStatus);
     if (epoch !== this.editEpoch) return;
@@ -1330,7 +1330,7 @@ struct Index {
 
       Divider().color('#2A2A2D').margin({ top: 6, bottom: 2 })
       Text('AI Gateway').fontSize(11).fontWeight(FontWeight.Bold).fontColor('#ECECED')
-      Text('未配置模型时返回 AI_NOT_ENABLED，不生成模拟结果。').fontSize(10).fontColor('#8E8E93')
+      Text('AI 需自行提供 AI Gateway 端点，应用不内置模型服务；未配置模型时不生成模拟结果。').fontSize(10).fontColor('#8E8E93')
       TextInput({ text: this.aiBaseUrl, placeholder: 'http://电脑局域网IP:8788' }).width('100%').height(34).fontSize(10)
         .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
         .border({ width: 1, color: '#3A3A3D' }).borderRadius(8)
@@ -1596,7 +1596,7 @@ struct Index {
   SyncPanel() {
     Column() {
       Text('保存与同步').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
-      Text('本地 RDB 保存离线副本；同步连接局域网 sync-api。').fontSize(10).lineHeight(17).fontColor('#8E8E93').margin({ top: 5, bottom: 10 })
+      Text('草稿始终保存在本机。同步需自行提供 sync-api 端点（如局域网内的电脑），应用不提供云端服务。').fontSize(10).lineHeight(17).fontColor('#8E8E93').margin({ top: 5, bottom: 10 })
       TextInput({ text: this.syncBaseUrl, placeholder: 'http://电脑局域网IP:8787' }).width('100%').height(34).fontSize(10)
         .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
         .border({ width: 1, color: '#3A3A3D' }).borderRadius(4)
@@ -1745,8 +1745,9 @@ struct Index {
             this.DrawerSectionTitle('同步')
             Column({ space: 6 }) {
               this.DrawerSummaryRow('同步', this.statusLabel(), this.statusColor())
-              this.DrawerSummaryRow('电脑', this.syncBaseUrl, '#B8B8BD')
+              this.DrawerSummaryRow('端点', this.syncBaseUrl, '#B8B8BD')
               this.DrawerSummaryRow('版本', `v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`, '#B8B8BD')
+              Text('需自行提供端点，应用不含云端服务').fontSize(9).fontColor('#6E6E73')
               if (this.syncMessage.length > 0) {
                 Text(this.syncMessage).fontSize(9).fontColor('#8E8E93').maxLines(2)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -1892,6 +1893,17 @@ function stepSourceRefs(body: string, stepId: string): string[] {
   } catch (error) {
     return [];
   }
+}
+
+// Turns the sync client's internal codes into text the user can act on;
+// the local draft and queue are untouched by a failed run.
+function syncMessageText(message: string): string {
+  if (message.startsWith('SYNC_NETWORK_')) return '连不上同步端点：需自行运行 sync-api 并在「设置 → 连接电脑」配对，草稿已保留在本机';
+  if (message.startsWith('SYNC_HTTP_5')) return '同步端点暂时出错，草稿已保留在本机，稍后重试';
+  if (message.startsWith('SYNC_HTTP_') || message.startsWith('SYNC_CONTRACT_') || message === 'SYNC_INVALID_RESPONSE') {
+    return '同步端点返回了无法识别的内容，请确认地址指向 AlgoFlow sync-api';
+  }
+  return message;
 }
 
 function draftStatusLabel(status: SyncStatus): string {

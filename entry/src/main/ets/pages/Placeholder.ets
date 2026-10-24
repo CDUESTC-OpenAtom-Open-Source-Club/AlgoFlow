@@ -686,7 +686,7 @@ struct Placeholder {
         if (this.availableVersions.length === 0) {
           Column({ space: 6 }) {
             Text('v0 LOCAL DRAFT // 尚无已落盘历史版本').fontSize(10).fontFamily('monospace').fontColor('#D97706')
-            Text('当前草稿处于 v0 初始态，完成首次云端同步或版本演进后将自动在 draft_source_history 表中记录不可变快照。')
+            Text('当前草稿处于 v0 初始态，完成首次同步或版本演进后将自动在 draft_source_history 表中记录不可变快照。')
               .fontSize(11).fontColor('#64748B').lineHeight(17)
           }.width('100%').padding(12).backgroundColor('#FAF3DC').borderRadius(12).alignItems(HorizontalAlign.Start)
         } else {
@@ -822,7 +822,7 @@ struct Placeholder {
             .backgroundColor('#1E3A27').borderRadius(99)
         }.width('100%')
 
-        Text('在电脑上打开 AlgoFlow Web 端，点击顶部「手机远程」，扫描二维码或输入 8 位配对码。')
+        Text('同步与 AI 需自行提供端点：在你的电脑上运行 sync-api 和 Web 端，点击顶部「手机远程」，扫描二维码或输入 8 位配对码。应用不提供云端服务，未连接时草稿只保存在本机。')
           .fontSize(11).fontColor('#94A3B8').lineHeight(17)
 
         // Route segmented toggle: 局域网 vs 服务器中转

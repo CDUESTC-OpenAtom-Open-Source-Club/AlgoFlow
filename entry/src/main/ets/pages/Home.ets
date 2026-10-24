@@ -427,7 +427,7 @@ struct Home {
                 .type(ButtonType.Normal).height(26).padding({ left: 6, right: 6 })
                 .fontSize(11).fontWeight(FontWeight.Bold).fontColor('#55745F')
                 .backgroundColor(Color.Transparent)
-                .onClick(() => { this.openReservedPage('全部草稿', '按状态筛选、搜索与同步本地/云端草稿。'); })
+                .onClick(() => { this.openReservedPage('全部草稿', '按状态筛选、搜索与同步本地及已连接端点的草稿。'); })
             }.width('100%').alignItems(VerticalAlign.Center)
             if (this.drafts.length === 0) {
               Column({ space: 6 }) {

@@ -91,7 +91,7 @@ export class HttpAIProvider implements AIProvider, IDEProvider {
       if (category === TransportFailure.READ_TIMEOUT) {
         reply.errorCode = AIErrorCode.AI_PROVIDER_TIMEOUT; reply.message = 'AI 请求超时'; return reply;
       }
-      reply.errorCode = 'NETWORK_ERROR'; reply.message = 'AI 服务不可达，请检查地址或网络后重试'; return reply;
+      reply.errorCode = 'NETWORK_ERROR'; reply.message = 'AI 服务不可达：需自行提供 AI Gateway 端点，请检查地址或网络后重试'; return reply;
     } finally {
       if (this.activeRequest === transport) this.activeRequest = null;
       transport.destroy();
