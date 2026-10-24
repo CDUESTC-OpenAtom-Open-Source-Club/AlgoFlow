@@ -1,6 +1,16 @@
 import { files, modes } from '../data';
 import type { Draft, FileId, IdeaSegment, Mode, Panel } from '../types';
 import { Icon } from './Icon';
+import { SourceTag } from './SourceTag';
+import { SyncChip } from './TopBar';
+
+const panelTitles: Record<Panel, string> = {
+  files: '工作区',
+  search: '搜索',
+  source: '来源轨道',
+  ai: 'AI 模式',
+  versions: '版本',
+};
 
 interface WorkspaceSidebarProps {
   activeFile: FileId;
@@ -32,19 +42,11 @@ export function WorkspaceSidebar({
   ideaSegments,
 }: WorkspaceSidebarProps) {
   return (
-    <aside className="side-panel">
-      <div className="panel-heading">
-        <div>
-          <span className="eyebrow">WORKSPACE</span>
-          <h1>工作区</h1>
-        </div>
-        <button type="button" className="quiet-button" aria-label="更多工作区操作">
-          ···
-        </button>
-      </div>
+    <aside className="side-panel" aria-label={panelTitles[activePanel]}>
+      {activePanel !== 'files' && <div className="side-heading"><span>{panelTitles[activePanel]}</span></div>}
       {activePanel === 'files' && (
         <FilesPanel activeFile={activeFile} saved={saved} drafts={drafts} selectedDraftId={selectedDraftId}
-          onDraftChange={onDraftChange} onFileChange={onFileChange} />
+          onDraftChange={onDraftChange} onFileChange={onFileChange} segments={ideaSegments} />
       )}
       {activePanel === 'search' && (
         <SearchPanel query={query} onQueryChange={onQueryChange} />
@@ -63,23 +65,15 @@ interface FilesPanelProps {
   selectedDraftId: string;
   onDraftChange: (draftId: string) => void;
   onFileChange: (file: FileId) => void;
+  segments: IdeaSegment[];
 }
 
-function FilesPanel({ activeFile, saved, drafts, selectedDraftId, onDraftChange, onFileChange }: FilesPanelProps) {
+function FilesPanel({ activeFile, saved, drafts, selectedDraftId, onDraftChange, onFileChange, segments }: FilesPanelProps) {
+  const visibleDrafts = drafts.filter((draft) => !draft.deleted);
+  const currentDraft = visibleDrafts.find((draft) => draft.id === selectedDraftId);
   return (
     <>
-      <div className="panel-section-title"><span>草稿</span></div>
-      <div className="file-tree draft-tree">
-        {drafts.filter((draft) => !draft.deleted).map((draft) => (
-          <button key={draft.id} className={draft.id === selectedDraftId ? 'tree-item active' : 'tree-item'}
-            onClick={() => onDraftChange(draft.id)} type="button" title={draft.id}>
-            <Icon name="note" />
-            {draft.title || draft.id}
-            <span className="draft-version">v{draft.version}</span>
-          </button>
-        ))}
-      </div>
-      <div className="panel-section-title">
+      <div className="side-heading">
         <span>文件</span>
         <button type="button" className="quiet-button" aria-label="新建文件">
           <Icon name="plus" />
@@ -89,26 +83,54 @@ function FilesPanel({ activeFile, saved, drafts, selectedDraftId, onDraftChange,
         {files.map((file) => (
           <button
             key={file.id}
-            className={activeFile === file.id ? 'tree-item active' : 'tree-item'}
+            className={activeFile === file.id ? 'tree-item file-item active' : 'tree-item file-item'}
             onClick={() => onFileChange(file.id)}
             type="button"
           >
             <Icon name={file.icon} />
             {file.label}
-            {file.id === 'main.cpp' && activeFile === file.id && !saved && (
+            {file.id === 'main.cpp' && activeFile === file.id && !saved ? (
               <span className="file-status">未保存</span>
+            ) : file.id === 'main.cpp' && currentDraft && (
+              <small className="file-meta">v{currentDraft.version}</small>
             )}
           </button>
         ))}
       </div>
-      <div className="panel-note">
-        <span className="note-pin">⌁</span>
-        <div>
-          <strong>手机端刚刚更新</strong>
-          <p>1 个思路片段等待你继续。</p>
-        </div>
+      <div className="side-heading">
+        <span>思路 · 来源轨道</span>
+        <small>{segments.length} 段</small>
+      </div>
+      <IdeaRail segments={segments} />
+      <div className="side-heading"><span>草稿</span></div>
+      <div className="file-tree draft-tree">
+        {visibleDrafts.map((draft) => (
+          <button key={draft.id} className={draft.id === selectedDraftId ? 'tree-item draft-item active' : 'tree-item draft-item'}
+            onClick={() => onDraftChange(draft.id)} type="button" title={draft.id}>
+            <span className="draft-title">{draft.title || draft.id}</span>
+            <SyncChip state={draft.sync_status} small />
+          </button>
+        ))}
       </div>
     </>
+  );
+}
+
+/** Idea segments with their rail tag; the only data the sidebar rail is drawn from. */
+function IdeaRail({ segments, showIds = false }: { segments: IdeaSegment[]; showIds?: boolean }) {
+  if (segments.length === 0) return <p className="muted-copy">在 idea.md 写下思路后，会按行拆成来源片段。</p>;
+  return (
+    <div className="idea-rail">
+      {segments.map((segment, index) => (
+        <div className="idea-rail-item" key={segment.id}>
+          <SourceTag index={index} title={segment.id} />
+          <div>
+            <p>{segment.content}</p>
+            {showIds && <small>{segment.id}</small>}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -138,26 +160,8 @@ function SearchPanel({ query, onQueryChange }: SearchPanelProps) {
 function SourcePanel({ segments }: { segments: IdeaSegment[] }) {
   return (
     <div className="panel-content">
-      {segments.map((segment, index) => <SourceCard key={segment.id} index={String(index + 1).padStart(2, '0')} title={segment.content} segment={segment.id} />)}
-      <p className="muted-copy">来源轨道将随着编辑内容保持稳定。</p>
-    </div>
-  );
-}
-
-interface SourceCardProps {
-  index: string;
-  title: string;
-  segment: string;
-}
-
-function SourceCard({ index, title, segment }: SourceCardProps) {
-  return (
-    <div className="source-card">
-      <span className="source-index">{index}</span>
-      <div>
-        <strong>{title}</strong>
-        <p>{segment}</p>
-      </div>
+      <IdeaRail segments={segments} showIds />
+      <p className="muted-copy">来源轨道颜色按片段顺序在三种颜色间循环；AI 步骤和复写对比用同一组标记引用这些片段。</p>
     </div>
   );
 }
@@ -170,7 +174,6 @@ interface AiPanelProps {
 function AiPanel({ mode, onModeChange }: AiPanelProps) {
   return (
     <div className="panel-content">
-      <span className="eyebrow">AI MODE</span>
       <div className="mode-list">
         {modes.map((item) => (
           <button

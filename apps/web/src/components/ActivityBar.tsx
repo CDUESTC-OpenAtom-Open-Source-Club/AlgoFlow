@@ -50,9 +50,11 @@ function ActivityButton({ activity, active, onClick }: ActivityButtonProps) {
       className={active ? 'activity active' : 'activity'}
       onClick={onClick}
       type="button"
+      aria-label={activity.label}
+      aria-pressed={active}
+      title={activity.label}
     >
       <Icon name={activity.icon} />
-      <span>{activity.label}</span>
     </button>
   );
 }
