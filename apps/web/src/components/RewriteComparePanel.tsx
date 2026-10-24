@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { compareRewrite, compareSourceFromArtifact } from '../rewrite-compare.mjs';
-import type { AIArtifact, RewriteDiffLine, RewriteLineMapping, RewriteMappingState, RewriteStepStatus } from '../types';
+import { SourceRefTag } from './SourceTag';
+import type { AIArtifact, IdeaSegment, RewriteDiffLine, RewriteLineMapping, RewriteMappingState, RewriteStepStatus } from '../types';
 
 interface RewriteComparePanelProps {
   /** Newest code_snippet artifact of the current draft and mode, or null. */
@@ -16,6 +17,8 @@ interface RewriteComparePanelProps {
   onConfirm: () => void;
   onClear: () => void;
   onClose: () => void;
+  /** Current idea segments, only used to label each step's source_refs. */
+  segments?: IdeaSegment[];
 }
 
 const statusLabels: Record<RewriteStepStatus, string> = {
@@ -27,7 +30,7 @@ const statusLabels: Record<RewriteStepStatus, string> = {
 
 export function RewriteComparePanel({
   artifact, draftVersion, rewrite, mapping, selection, revealed,
-  onReveal, onAssign, onConfirm, onClear, onClose,
+  onReveal, onAssign, onConfirm, onClear, onClose, segments = [],
 }: RewriteComparePanelProps) {
   const source = useMemo(() => artifact ? compareSourceFromArtifact(artifact) : null, [artifact]);
   const hidden = artifact?.visibility === 'hidden' && !revealed;
@@ -99,17 +102,20 @@ export function RewriteComparePanel({
               ? <ul>{source.risk_flags.map((flag, index) => <li key={index}>{flag}</li>)}</ul>
               : <p>AI 未标记风险。这不代表复写或 AI 片段正确。</p>}
           </section>
-          {comparison.steps.map(step => (
-            <article key={step.step_id} className={`rewrite-step ${step.status}`}>
-              <div className="rewrite-step-heading">
-                <strong>步骤 {step.index}</strong>
-                <span className="rewrite-step-status">{statusLabels[step.status]}</span>
-              </div>
-              <p>{source.steps[step.index - 1]?.step}</p>
-              <p className="rewrite-compare-note">AI {linesText(step.ai_lines)} · 复写 {linesText(step.rewrite_lines)}</p>
-              {step.diff.length > 0 && <DiffBlock lines={step.diff} />}
-            </article>
-          ))}
+          <div className="rewrite-step-grid">
+            {comparison.steps.map(step => (
+              <article key={step.step_id} className={`rewrite-step ${step.status}`}>
+                <div className="rewrite-step-heading">
+                  {(artifact.pseudocode[step.index - 1]?.source_refs ?? []).map(ref => <SourceRefTag key={ref} refId={ref} segments={segments} />)}
+                  <strong>步骤 {step.index}</strong>
+                  <span className={`rewrite-step-status ${step.status}`}><i />{statusLabels[step.status]}</span>
+                </div>
+                <p>{source.steps[step.index - 1]?.step}</p>
+                <p className="rewrite-compare-note">AI {linesText(step.ai_lines)} · 复写 {linesText(step.rewrite_lines)}</p>
+                {step.diff.length > 0 && <DiffBlock lines={step.diff} />}
+              </article>
+            ))}
+          </div>
           {comparison.ai_unmapped.length > 0 && (
             <section className="rewrite-extra">
               <strong>AI 片段中未映射到步骤的行</strong>

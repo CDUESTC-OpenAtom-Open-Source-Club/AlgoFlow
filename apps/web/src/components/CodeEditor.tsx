@@ -25,10 +25,10 @@ interface CodeEditorProps {
 }
 
 const editorTheme = EditorView.theme({
-  '&': { height: '100%', color: '#f0eff7', backgroundColor: '#252735' },
+  '&': { height: '100%', color: '#ececed', backgroundColor: '#161618' },
   '.cm-scroller': { overflow: 'auto', fontFamily: 'Consolas, "Cascadia Code", monospace', lineHeight: '22px' },
   '.cm-content': { padding: '21px 24px 20px 0', caretColor: '#e6ebe3' },
-  '.cm-gutters': { backgroundColor: '#252735', color: '#737896', border: '0', paddingRight: '11px' },
+  '.cm-gutters': { backgroundColor: '#161618', color: '#5a5a5f', border: '0', paddingRight: '11px' },
   '.cm-lineNumbers .cm-gutterElement': { minWidth: '32px' },
   '.cm-activeLine': { backgroundColor: 'rgba(155, 188, 162, .08)' },
   '.cm-activeLineGutter': { color: '#d8ebd7', backgroundColor: 'rgba(155, 188, 162, .08)' },
