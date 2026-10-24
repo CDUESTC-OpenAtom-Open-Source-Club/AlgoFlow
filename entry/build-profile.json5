@@ -5,12 +5,21 @@
       "copyCodeResource": {
         "enable": false
       }
+    },
+    "arkOptions": {
+      // AI_ENTRY=false hides every AI entry point; the AppGallery listing (release) build has no AI features.
+      "buildProfileFields": {
+        "AI_ENTRY": true
+      }
     }
   },
   "buildOptionSet": [
     {
       "name": "release",
       "arkOptions": {
+        "buildProfileFields": {
+          "AI_ENTRY": false
+        },
         "obfuscation": {
           "ruleOptions": {
             "enable": true,

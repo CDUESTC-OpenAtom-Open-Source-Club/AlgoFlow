@@ -3,6 +3,7 @@ import { Draft, draftRenderKey, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { ResourceIcon, ResourceIconName } from '../components/ResourceIcon';
 import { publishCardSnapshot } from '../platform/CardSnapshot';
+import { AI_ENTRY } from 'BuildProfile';
 import { CARD_REQUEST_KEY, CardAction, decodeCardRequest, openEditor, openPlaceholder } from '../navigation/AppRoutes';
 
 // Idea-segment colours cycle by segment position (S1/S2/S3, S4 = S1 ...).
@@ -271,10 +272,12 @@ struct Home {
         .type(ButtonType.Normal).layoutWeight(1).height(30).fontSize(10).fontWeight(FontWeight.Medium)
         .fontColor(dark ? '#DBE8DC' : '#5E645D').backgroundColor(dark ? '#33463A' : '#EFEDE6').borderRadius(8)
         .onClick(() => { this.openReservedPage('历史版本', '查看草稿本地持久化的源码与思路快照。', draft.id); })
-      Button('AI 转换')
-        .type(ButtonType.Normal).layoutWeight(1).height(30).fontSize(10).fontWeight(FontWeight.Medium)
-        .fontColor(dark ? '#DBE8DC' : '#55745F').backgroundColor(dark ? '#33463A' : '#E5F1EB').borderRadius(8)
-        .onClick(() => { this.openReservedPage('AI 转换', '基于已同步草稿执行忠实转换、代码审查与缓存检视。', draft.id); })
+      if (AI_ENTRY) {
+        Button('AI 转换')
+          .type(ButtonType.Normal).layoutWeight(1).height(30).fontSize(10).fontWeight(FontWeight.Medium)
+          .fontColor(dark ? '#DBE8DC' : '#55745F').backgroundColor(dark ? '#33463A' : '#E5F1EB').borderRadius(8)
+          .onClick(() => { this.openReservedPage('AI 转换', '基于已同步草稿执行忠实转换、代码审查与缓存检视。', draft.id); })
+      }
       Button('删除')
         .type(ButtonType.Normal).layoutWeight(1).height(30).fontSize(10).fontWeight(FontWeight.Medium)
         .fontColor(dark ? '#F0B8A6' : '#B5674D').backgroundColor(dark ? '#4A3029' : '#F6E3DC').borderRadius(8)
@@ -393,7 +396,7 @@ struct Home {
       .onClick(() => {
         if (label === '写思路') this.openStarterDraft();
         if (label === 'AI 转换') this.openReservedPage('AI 转换', '基于已同步草稿执行忠实转换、代码审查与本地 AI 缓存检视。');
-        if (label === '设置') this.openReservedPage('设置', '配置 Sync API 与 AI Gateway 端点、查看设备与版本契约状态。');
+        if (label === '设置') this.openReservedPage('设置', AI_ENTRY ? '配置 Sync API 与 AI Gateway 端点、查看设备与版本契约状态。' : '配置 Sync API 端点、查看设备与版本契约状态。');
       });
   }
 
@@ -461,7 +464,9 @@ struct Home {
       Row() {
         this.NavItem('工作区', ResourceIconName.FILES, true)
         this.NavItem('写思路', ResourceIconName.DOCUMENT, false)
-        this.NavItem('AI 转换', ResourceIconName.AI, false)
+        if (AI_ENTRY) {
+          this.NavItem('AI 转换', ResourceIconName.AI, false)
+        }
         this.NavItem('设置', ResourceIconName.MENU, false)
       }.width('100%').height(74).padding({ left: 16, right: 16, top: 7, bottom: 7 })
         .backgroundColor('#FBF9F4').border({ width: { top: 1 }, color: '#E5E2D9' })
