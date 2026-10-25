@@ -92,3 +92,7 @@ Node 手机端测试运行真实 ArkTS 源码加 SDK 替身，不等于设备验
 - [`CONTEXT.md`](CONTEXT.md)：产品术语
 - [`packages/contracts/README.md`](packages/contracts/README.md)：数据契约与同步语义
 - [`docs/WEB_UI_GUIDE.md`](docs/WEB_UI_GUIDE.md)：Web / ArkUI 视觉规范
+
+## 许可证
+
+源代码以 [Apache License 2.0](LICENSE) 发布。
