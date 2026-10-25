@@ -5,7 +5,7 @@ import { SyncOperation } from '../domain/SyncModels';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { ResourceIcon, ResourceIconName } from '../components/ResourceIcon';
 import { goBack, openEditor, openHome, PLACEHOLDER_DETAIL_KEY, PLACEHOLDER_DRAFT_ID_KEY, PLACEHOLDER_TITLE_KEY } from '../navigation/AppRoutes';
-import { DEBUG } from 'BuildProfile';
+import { AI_ENTRY, DEBUG } from 'BuildProfile';
 import { manualPairingInvitation, PairingError, PairingErrorCode, PairingInvitation, PairingRoute, pairingErrorMessage,
   parsePairingInvitation } from '../domain/PairingContract';
 import { canScanPairingCode, scanPairingCode } from '../platform/PairingScanner';
@@ -83,7 +83,7 @@ struct Placeholder {
   }
 
   private resolveInitialTab(title: string): HubTab {
-    if (title.includes('AI')) return HubTab.AI;
+    if (AI_ENTRY && title.includes('AI')) return HubTab.AI;
     if (title.includes('版本') || title.includes('快照')) return HubTab.VERSIONS;
     if (title.includes('同步') || title.includes('通知') || title.includes('队列')) return HubTab.SYNC;
     if (title.includes('设置')) return HubTab.SETTINGS;
@@ -544,13 +544,15 @@ struct Placeholder {
                     this.selectDraft(draft.id);
                     this.activeTab = HubTab.VERSIONS;
                   })
-                Button('AI 转换')
-                  .type(ButtonType.Normal).layoutWeight(1).height(28).fontSize(10)
-                  .fontColor('#475569').backgroundColor('#F1F5F9').borderRadius(6)
-                  .onClick(() => {
-                    this.selectDraft(draft.id);
-                    this.activeTab = HubTab.AI;
-                  })
+                if (AI_ENTRY) {
+                  Button('AI 转换')
+                    .type(ButtonType.Normal).layoutWeight(1).height(28).fontSize(10)
+                    .fontColor('#475569').backgroundColor('#F1F5F9').borderRadius(6)
+                    .onClick(() => {
+                      this.selectDraft(draft.id);
+                      this.activeTab = HubTab.AI;
+                    })
+                }
                 Button('删除')
                   .type(ButtonType.Normal).layoutWeight(1).height(28).fontSize(10)
                   .fontColor('#B5674D').backgroundColor('#FDF2EF').borderRadius(6)
@@ -822,7 +824,8 @@ struct Placeholder {
             .backgroundColor('#1E3A27').borderRadius(99)
         }.width('100%')
 
-        Text('同步与 AI 需自行提供端点：在你的电脑上运行 sync-api 和 Web 端，点击顶部「手机远程」，扫描二维码或输入 8 位配对码。应用不提供云端服务，未连接时草稿只保存在本机。')
+        Text(AI_ENTRY ? '同步与 AI 需自行提供端点：在你的电脑上运行 sync-api 和 Web 端，点击顶部「手机远程」，扫描二维码或输入 8 位配对码。应用不提供云端服务，未连接时草稿只保存在本机。'
+          : '同步需自行提供端点：在你的电脑上运行 sync-api 和 Web 端，点击顶部「手机远程」，扫描二维码或输入 8 位配对码。应用不提供云端服务，未连接时草稿只保存在本机。')
           .fontSize(11).fontColor('#94A3B8').lineHeight(17)
 
         // Route segmented toggle: 局域网 vs 服务器中转
@@ -948,13 +951,15 @@ struct Placeholder {
                 .onChange((val: string) => { this.syncBaseUrl = val; })
             }.width('100%').alignItems(HorizontalAlign.Start)
 
-            Column({ space: 4 }) {
-              Text('AI Gateway Base URL (真机使用 hdc rport tcp:8788 tcp:8788)').fontSize(10).fontColor('#64748B')
-              TextInput({ text: this.aiBaseUrl, placeholder: 'http://127.0.0.1:8788' })
-                .width('100%').height(38).fontSize(12).fontFamily('monospace').fontColor('#0F172A')
-                .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
-                .onChange((val: string) => { this.aiBaseUrl = val; })
-            }.width('100%').alignItems(HorizontalAlign.Start)
+            if (AI_ENTRY) {
+              Column({ space: 4 }) {
+                Text('AI Gateway Base URL (真机使用 hdc rport tcp:8788 tcp:8788)').fontSize(10).fontColor('#64748B')
+                TextInput({ text: this.aiBaseUrl, placeholder: 'http://127.0.0.1:8788' })
+                  .width('100%').height(38).fontSize(12).fontFamily('monospace').fontColor('#0F172A')
+                  .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
+                  .onChange((val: string) => { this.aiBaseUrl = val; })
+              }.width('100%').alignItems(HorizontalAlign.Start)
+            }
 
             Row({ space: 8 }) {
               Button('保存端点配置')
@@ -986,9 +991,13 @@ struct Placeholder {
         if (this.advancedExpanded) {
           Column({ space: 6 }) {
             Text(`SYNC API     : ${this.syncBaseUrl}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
-            Text(`AI GATEWAY   : ${this.aiBaseUrl}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
+            if (AI_ENTRY) {
+              Text(`AI GATEWAY   : ${this.aiBaseUrl}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
+            }
             Text('RDB STORE    : algoflow_workspace.db (schema v3)').fontSize(10).fontFamily('monospace').fontColor('#475569')
-            Text('AI RULE VER  : 1.0.0 (strict source_refs & range check)').fontSize(10).fontFamily('monospace').fontColor('#475569')
+            if (AI_ENTRY) {
+              Text('AI RULE VER  : 1.0.0 (strict source_refs & range check)').fontSize(10).fontFamily('monospace').fontColor('#475569')
+            }
             Text(`CLIENT ID    : ${this.clientId}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
             Text(`SYNC CURSOR  : ${this.syncCursor}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
             if (DEBUG) {
@@ -1032,16 +1041,18 @@ struct Placeholder {
           openEditor(id);
         })
 
-      Column({ space: 4 }) {
-        ResourceIcon({ name: ResourceIconName.AI, iconSize: 21,
-          tint: this.activeTab === HubTab.AI ? '#55745F' : '#94A3B8' })
-        Text('AI 转换').fontSize(10).fontWeight(this.activeTab === HubTab.AI ? FontWeight.Bold : FontWeight.Medium)
-          .fontColor(this.activeTab === HubTab.AI ? '#55745F' : '#94A3B8')
-      }.layoutWeight(1).height(58).justifyContent(FlexAlign.Center)
-        .onClick(() => {
-          this.activeTab = HubTab.AI;
-          this.title = 'AI 转换与审查';
-        })
+      if (AI_ENTRY) {
+        Column({ space: 4 }) {
+          ResourceIcon({ name: ResourceIconName.AI, iconSize: 21,
+            tint: this.activeTab === HubTab.AI ? '#55745F' : '#94A3B8' })
+          Text('AI 转换').fontSize(10).fontWeight(this.activeTab === HubTab.AI ? FontWeight.Bold : FontWeight.Medium)
+            .fontColor(this.activeTab === HubTab.AI ? '#55745F' : '#94A3B8')
+        }.layoutWeight(1).height(58).justifyContent(FlexAlign.Center)
+          .onClick(() => {
+            this.activeTab = HubTab.AI;
+            this.title = 'AI 转换与审查';
+          })
+      }
 
       Column({ space: 4 }) {
         ResourceIcon({ name: ResourceIconName.MENU, iconSize: 21,
@@ -1065,7 +1076,9 @@ struct Placeholder {
       Scroll() {
         Row({ space: 8 }) {
           this.TabChip('全部草稿', 'DRAFTS', HubTab.DRAFTS)
-          this.TabChip('AI 转换', 'AI_HUB', HubTab.AI)
+          if (AI_ENTRY) {
+            this.TabChip('AI 转换', 'AI_HUB', HubTab.AI)
+          }
           this.TabChip('版本快照', 'SNAPS', HubTab.VERSIONS)
           this.TabChip('同步队列', 'QUEUE', HubTab.SYNC)
           this.TabChip('设置', 'CONFIG', HubTab.SETTINGS)
@@ -1085,7 +1098,7 @@ struct Placeholder {
         Column({ space: 14 }) {
           if (this.activeTab === HubTab.DRAFTS) {
             this.AllDraftsView()
-          } else if (this.activeTab === HubTab.AI) {
+          } else if (AI_ENTRY && this.activeTab === HubTab.AI) {
             this.AIHubView()
           } else if (this.activeTab === HubTab.VERSIONS) {
             this.VersionsView()
