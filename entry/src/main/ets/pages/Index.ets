@@ -3,7 +3,7 @@ import { AIArtifact, AIMode, AIResultStatus, CodeMapping, Draft, draftRenderKey,
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
 import { publishCardSnapshot } from '../platform/CardSnapshot';
-import { DEBUG } from 'BuildProfile';
+import { AI_ENTRY, DEBUG } from 'BuildProfile';
 import { IDECapability, IDERecord, IDEState, ReviewKind, SourceCursor } from '../domain/IDEAIModels';
 import { rangeOffsets } from '../domain/IDEAIContract';
 import { assignRewriteLines, compareRewrite, resolveRewriteMapping, RewriteCodeLine, RewriteCompareSource, RewriteCompareStep, RewriteComparison, RewriteDiffLine,
@@ -1038,14 +1038,16 @@ struct Index {
         Text(`v${this.viewModel.getDraft(this.selectedId)?.version ?? 0} · ${this.saved ? '已保存' : '未保存'}`)
           .fontSize(10).fontColor('#8E8E93').margin({ top: 2 })
       }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      Button() {
-        Row({ space: 5 }) {
-          Circle().width(6).height(6).fill(this.mode === AIMode.FAITHFUL_TRANSFORM ? '#30D158' : '#FF9F0A')
-          Text(this.modeLabel()).fontSize(10).fontColor('#ECECED')
-        }
-      }.type(ButtonType.Normal).height(26).padding({ left: 9, right: 9 }).backgroundColor('#1E1E20')
-        .border({ width: 1, color: '#3A3A3D' }).borderRadius(13)
-        .onClick(() => this.toggleTool(WorkspaceTool.AI))
+      if (AI_ENTRY) {
+        Button() {
+          Row({ space: 5 }) {
+            Circle().width(6).height(6).fill(this.mode === AIMode.FAITHFUL_TRANSFORM ? '#30D158' : '#FF9F0A')
+            Text(this.modeLabel()).fontSize(10).fontColor('#ECECED')
+          }
+        }.type(ButtonType.Normal).height(26).padding({ left: 9, right: 9 }).backgroundColor('#1E1E20')
+          .border({ width: 1, color: '#3A3A3D' }).borderRadius(13)
+          .onClick(() => this.toggleTool(WorkspaceTool.AI))
+      }
       Button() {
         this.StatusChip()
       }.type(ButtonType.Normal).backgroundColor(Color.Transparent).padding({ left: 0, right: 0, top: 0, bottom: 0 })
@@ -1419,7 +1421,9 @@ struct Index {
         }
       }.height(34).padding({ left: 14, right: 14 }).fontColor('#07110A').backgroundColor('#30D158').borderRadius(4)
         .onClick(() => { this.selectFile(EditorFile.REWRITE); this.activeTool = WorkspaceTool.NONE; })
-      this.RewriteComparePanel()
+      if (AI_ENTRY) {
+        this.RewriteComparePanel()
+      }
     }.width('100%')
   }
 
@@ -1713,13 +1717,15 @@ struct Index {
             }
           }.width('100%')
 
-          Column({ space: 4 }) {
-            this.DrawerSectionTitle('AI 模式')
-            this.DrawerModeButton('忠实转换', AIMode.FAITHFUL_TRANSFORM)
-            this.DrawerModeButton('可行性分析', AIMode.FEASIBILITY_ANALYSIS)
-            this.DrawerModeButton('渐进提示', AIMode.PROGRESSIVE_HINT)
-            this.DrawerModeButton('完整解题', AIMode.FULL_SOLUTION)
-          }.width('100%')
+          if (AI_ENTRY) {
+            Column({ space: 4 }) {
+              this.DrawerSectionTitle('AI 模式')
+              this.DrawerModeButton('忠实转换', AIMode.FAITHFUL_TRANSFORM)
+              this.DrawerModeButton('可行性分析', AIMode.FEASIBILITY_ANALYSIS)
+              this.DrawerModeButton('渐进提示', AIMode.PROGRESSIVE_HINT)
+              this.DrawerModeButton('完整解题', AIMode.FULL_SOLUTION)
+            }.width('100%')
+          }
 
           Column({ space: 4 }) {
             this.DrawerCollapsibleHeader(
@@ -1802,8 +1808,10 @@ struct Index {
       this.CapsuleItem('代码', WorkspaceIcon.FILES,
         this.activeTool === WorkspaceTool.NONE && this.activeFile === EditorFile.MAIN,
         () => { this.selectFile(EditorFile.MAIN); this.activeTool = WorkspaceTool.NONE; })
-      this.CapsuleItem('AI', WorkspaceIcon.AI, this.activeTool === WorkspaceTool.AI,
-        () => this.toggleTool(WorkspaceTool.AI))
+      if (AI_ENTRY) {
+        this.CapsuleItem('AI', WorkspaceIcon.AI, this.activeTool === WorkspaceTool.AI,
+          () => this.toggleTool(WorkspaceTool.AI))
+      }
       this.CapsuleItem('复写', WorkspaceIcon.CODE, this.activeTool === WorkspaceTool.REWRITE,
         () => this.toggleTool(WorkspaceTool.REWRITE))
       this.CapsuleItem('同步', WorkspaceIcon.REFRESH, this.activeTool === WorkspaceTool.SYNC,
@@ -1858,7 +1866,7 @@ struct Index {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       this.IDEWorkspace()
-      if (this.activeTool === WorkspaceTool.AI) {
+      if (AI_ENTRY && this.activeTool === WorkspaceTool.AI) {
         Stack({ alignContent: Alignment.Bottom }) {
           Column().width('100%').height('100%').backgroundColor('#99000000')
             .onClick(() => this.toggleTool(WorkspaceTool.AI))
