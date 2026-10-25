@@ -414,9 +414,11 @@ struct Home {
 
       Scroll() {
         Column({ space: 14 }) {
-          if (this.drafts.length > 0) {
-            this.ContinueCard(this.drafts[0])
-          }
+          // A @Builder argument passed by value does not re-render when drafts
+          // reload, so key the card by draftRenderKey like the list below.
+          ForEach(this.drafts.slice(0, 1), (draft: Draft) => {
+            this.ContinueCard(draft)
+          }, (draft: Draft) => draftRenderKey(draft))
 
           this.QuickCreate()
 
