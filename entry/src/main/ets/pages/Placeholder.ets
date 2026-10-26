@@ -358,7 +358,7 @@ struct Placeholder {
 
       Column({ space: 1 }) {
         Text(this.title).fontSize(15).fontWeight(FontWeight.Bold).fontColor('#0F172A')
-        Text('ALGOFLOW // WORKSPACE CONSOLE').fontSize(9).fontFamily('monospace').fontColor('#94A3B8')
+        Text('WORKSPACE CONSOLE').fontSize(9).fontFamily('monospace').fontColor('#94A3B8')
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
 
       Button() {
