@@ -14,6 +14,9 @@ const TAG = 'AlgoFlow';
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8788';
 const RULE_VERSION = '1.0.0';
 const CONNECT_TIMEOUT_MS = 5000;
+// Longer than the AI Gateway's 30 s provider timeout (same as Web's 35 s), so a
+// slow model ends with the gateway's classified error instead of a client abort.
+export const AI_READ_TIMEOUT_MS = 35000;
 // @ohos.net.http (API 20) error codes, from the SDK's request() @throws list.
 const HTTP_OPERATION_TIMEOUT = 2300028;
 
@@ -42,7 +45,7 @@ export class HttpAIProvider implements AIProvider, IDEProvider {
   // Injectable clock so tests can tell a connect timeout from a read timeout.
   now: () => number = () => Date.now();
 
-  constructor(baseUrl: string = DEFAULT_BASE_URL, maxRetries: number = 0, readTimeoutMs: number = 10000, allowTestData: boolean = false) {
+  constructor(baseUrl: string = DEFAULT_BASE_URL, maxRetries: number = 0, readTimeoutMs: number = AI_READ_TIMEOUT_MS, allowTestData: boolean = false) {
     this.baseUrl = trimBaseUrl(baseUrl);
     this.readTimeoutMs = readTimeoutMs;
     this.allowTestData = DEBUG && allowTestData;
