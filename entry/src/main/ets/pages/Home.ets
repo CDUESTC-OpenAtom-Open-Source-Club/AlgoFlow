@@ -3,7 +3,7 @@ import { Draft, draftRenderKey, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { ResourceIcon, ResourceIconName } from '../components/ResourceIcon';
 import { publishCardSnapshot } from '../platform/CardSnapshot';
-import { AI_ENTRY } from 'BuildProfile';
+import { AI_ENTRY, SYNC_ENTRY } from 'BuildProfile';
 import { CARD_REQUEST_KEY, CardAction, decodeCardRequest, openEditor, openPlaceholder } from '../navigation/AppRoutes';
 
 // Idea-segment colours cycle by segment position (S1/S2/S3, S4 = S1 ...).
@@ -396,7 +396,7 @@ struct Home {
       .onClick(() => {
         if (label === '写思路') this.openStarterDraft();
         if (label === 'AI 转换') this.openReservedPage('AI 转换', '基于已同步草稿执行忠实转换、代码审查与本地 AI 缓存检视。');
-        if (label === '设置') this.openReservedPage('设置', AI_ENTRY ? '配置 Sync API 与 AI Gateway 端点、查看设备与版本契约状态。' : '配置 Sync API 端点、查看设备与版本契约状态。');
+        if (label === '设置') this.openReservedPage('设置', AI_ENTRY ? '配置 Sync API 与 AI Gateway 端点、查看设备与版本契约状态。' : SYNC_ENTRY ? '配置 Sync API 端点、查看设备与版本契约状态。' : '查看本机存储与版本信息。');
       });
   }
 
@@ -409,7 +409,9 @@ struct Home {
           Text(`思流 · ${this.todayLabel()}`).fontSize(10).fontColor('#5E645D')
         }.alignItems(HorizontalAlign.Start)
         Blank()
-        this.NotificationButton()
+        if (SYNC_ENTRY) {
+          this.NotificationButton()
+        }
       }.width('100%').padding({ left: 20, right: 20, top: 16, bottom: 10 })
 
       Scroll() {

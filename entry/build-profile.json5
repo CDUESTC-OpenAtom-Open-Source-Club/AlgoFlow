@@ -8,8 +8,11 @@
     },
     "arkOptions": {
       // AI_ENTRY=false hides every AI entry point; the AppGallery listing (release) build has no AI features.
+      // SYNC_ENTRY=false hides sync and pairing; the listing build is offline (filed as a 单机 app) and
+      // hvigorfile.ts drops the INTERNET permission from it.
       "buildProfileFields": {
-        "AI_ENTRY": true
+        "AI_ENTRY": true,
+        "SYNC_ENTRY": true
       }
     }
   },
@@ -18,7 +21,8 @@
       "name": "release",
       "arkOptions": {
         "buildProfileFields": {
-          "AI_ENTRY": false
+          "AI_ENTRY": false,
+          "SYNC_ENTRY": false
         },
         "obfuscation": {
           "ruleOptions": {

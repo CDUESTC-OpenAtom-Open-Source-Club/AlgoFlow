@@ -5,7 +5,7 @@ import { SyncOperation } from '../domain/SyncModels';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { ResourceIcon, ResourceIconName } from '../components/ResourceIcon';
 import { goBack, openEditor, openHome, PLACEHOLDER_DETAIL_KEY, PLACEHOLDER_DRAFT_ID_KEY, PLACEHOLDER_TITLE_KEY } from '../navigation/AppRoutes';
-import { AI_ENTRY, DEBUG } from 'BuildProfile';
+import { AI_ENTRY, DEBUG, SYNC_ENTRY } from 'BuildProfile';
 import { manualPairingInvitation, PairingError, PairingErrorCode, PairingInvitation, PairingRoute, pairingErrorMessage,
   parsePairingInvitation } from '../domain/PairingContract';
 import { canScanPairingCode, scanPairingCode } from '../platform/PairingScanner';
@@ -85,7 +85,7 @@ struct Placeholder {
   private resolveInitialTab(title: string): HubTab {
     if (AI_ENTRY && title.includes('AI')) return HubTab.AI;
     if (title.includes('版本') || title.includes('快照')) return HubTab.VERSIONS;
-    if (title.includes('同步') || title.includes('通知') || title.includes('队列')) return HubTab.SYNC;
+    if (SYNC_ENTRY && (title.includes('同步') || title.includes('通知') || title.includes('队列'))) return HubTab.SYNC;
     if (title.includes('设置')) return HubTab.SETTINGS;
     return HubTab.DRAFTS;
   }
@@ -361,14 +361,16 @@ struct Placeholder {
         Text('WORKSPACE CONSOLE').fontSize(9).fontFamily('monospace').fontColor('#94A3B8')
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
 
-      Button() {
-        Row({ space: 4 }) {
-          ResourceIcon({ name: ResourceIconName.REFRESH, iconSize: 13, tint: '#55745F' })
-          Text(this.syncing ? 'SYNC...' : '同步').fontSize(10).fontWeight(FontWeight.Bold).fontColor('#55745F')
-        }
-      }.type(ButtonType.Normal).height(34).padding({ left: 10, right: 10 })
-        .backgroundColor('#EEF6F3').borderRadius(10)
-        .onClick(() => { this.runSyncNow(); })
+      if (SYNC_ENTRY) {
+        Button() {
+          Row({ space: 4 }) {
+            ResourceIcon({ name: ResourceIconName.REFRESH, iconSize: 13, tint: '#55745F' })
+            Text(this.syncing ? 'SYNC...' : '同步').fontSize(10).fontWeight(FontWeight.Bold).fontColor('#55745F')
+          }
+        }.type(ButtonType.Normal).height(34).padding({ left: 10, right: 10 })
+          .backgroundColor('#EEF6F3').borderRadius(10)
+          .onClick(() => { this.runSyncNow(); })
+      }
     }.width('100%').padding({ left: 20, right: 20, top: 16, bottom: 10 })
   }
 
@@ -807,174 +809,182 @@ struct Placeholder {
   @Builder
   SettingsView() {
     Column({ space: 12 }) {
-      // Pebrel-style Computer Connection Hero Card
-      Column({ space: 12 }) {
-        Row() {
-          Column({ space: 2 }) {
-            Text('CONNECT COMPUTER // 连接电脑').fontSize(9).fontFamily('monospace')
-              .fontWeight(FontWeight.Bold).fontColor('#9BE7A9')
-            Text(this.pairedComputerName).fontSize(16).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      if (SYNC_ENTRY) {
+        // Pebrel-style Computer Connection Hero Card
+        Column({ space: 12 }) {
+          Row() {
+            Column({ space: 2 }) {
+              Text('CONNECT COMPUTER // 连接电脑').fontSize(9).fontFamily('monospace')
+                .fontWeight(FontWeight.Bold).fontColor('#9BE7A9')
+              Text(this.pairedComputerName).fontSize(16).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
 
-          Row({ space: 5 }) {
-            Circle().width(6).height(6).fill('#30D158')
-            Text(this.pairRoute === 'lan' ? '局域网 / USB' : '服务器中转').fontSize(10).fontFamily('monospace')
-              .fontColor('#9BE7A9')
-          }.padding({ left: 8, right: 8, top: 4, bottom: 4 })
-            .backgroundColor('#1E3A27').borderRadius(99)
-        }.width('100%')
+            Row({ space: 5 }) {
+              Circle().width(6).height(6).fill('#30D158')
+              Text(this.pairRoute === 'lan' ? '局域网 / USB' : '服务器中转').fontSize(10).fontFamily('monospace')
+                .fontColor('#9BE7A9')
+            }.padding({ left: 8, right: 8, top: 4, bottom: 4 })
+              .backgroundColor('#1E3A27').borderRadius(99)
+          }.width('100%')
 
-        Text(AI_ENTRY ? '同步与 AI 需自行提供端点：在你的电脑上运行 sync-api 和 Web 端，点击顶部「手机远程」，扫描二维码或输入 8 位配对码。应用不提供云端服务，未连接时草稿只保存在本机。'
-          : '同步需自行提供端点：在你的电脑上运行 sync-api 和 Web 端，点击顶部「手机远程」，扫描二维码或输入 8 位配对码。应用不提供云端服务，未连接时草稿只保存在本机。')
-          .fontSize(11).fontColor('#94A3B8').lineHeight(17)
+          Text(AI_ENTRY ? '同步与 AI 需自行提供端点：在你的电脑上运行 sync-api 和 Web 端，点击顶部「手机远程」，扫描二维码或输入 8 位配对码。应用不提供云端服务，未连接时草稿只保存在本机。'
+            : '同步需自行提供端点：在你的电脑上运行 sync-api 和 Web 端，点击顶部「手机远程」，扫描二维码或输入 8 位配对码。应用不提供云端服务，未连接时草稿只保存在本机。')
+            .fontSize(11).fontColor('#94A3B8').lineHeight(17)
 
-        // Route segmented toggle: 局域网 vs 服务器中转
-        Row({ space: 4 }) {
-          Button('局域网 / USB 转发')
-            .type(ButtonType.Normal).layoutWeight(1).height(30).fontSize(10).fontWeight(FontWeight.Bold)
-            .fontColor(this.pairRoute === 'lan' ? '#0F172A' : '#CBD5E1')
-            .backgroundColor(this.pairRoute === 'lan' ? '#FFFFFF' : Color.Transparent)
-            .borderRadius(7)
-            .onClick(() => { this.pairRoute = 'lan'; })
-          Button('服务器中转 (Relay)')
-            .type(ButtonType.Normal).layoutWeight(1).height(30).fontSize(10).fontWeight(FontWeight.Bold)
-            .fontColor(this.pairRoute === 'relay' ? '#0F172A' : '#CBD5E1')
-            .backgroundColor(this.pairRoute === 'relay' ? '#FFFFFF' : Color.Transparent)
-            .borderRadius(7)
-            .onClick(() => { this.pairRoute = 'relay'; })
-        }.width('100%').padding(3).backgroundColor('#1E293B').borderRadius(9)
-
-        // Pebrel 3-step summary
-        Row({ space: 8 }) {
+          // Route segmented toggle: 局域网 vs 服务器中转
           Row({ space: 4 }) {
-            Text('1').fontSize(9).fontFamily('monospace').fontWeight(FontWeight.Bold).fontColor('#07110A')
-              .width(15).height(15).textAlign(TextAlign.Center).backgroundColor('#30D158').borderRadius(8)
-            Text('找到电脑').fontSize(10).fontColor('#E2E8F0')
-          }
-          Text('→').fontSize(10).fontColor('#64748B')
-          Row({ space: 4 }) {
-            Text('2').fontSize(9).fontFamily('monospace').fontWeight(FontWeight.Bold).fontColor('#07110A')
-              .width(15).height(15).textAlign(TextAlign.Center).backgroundColor('#30D158').borderRadius(8)
-            Text('核对配对码').fontSize(10).fontColor('#E2E8F0')
-          }
-          Text('→').fontSize(10).fontColor('#64748B')
-          Row({ space: 4 }) {
-            Text('3').fontSize(9).fontFamily('monospace').fontWeight(FontWeight.Bold).fontColor('#07110A')
-              .width(15).height(15).textAlign(TextAlign.Center).backgroundColor('#30D158').borderRadius(8)
-            Text('同步草稿流').fontSize(10).fontColor('#E2E8F0')
-          }
-        }.width('100%')
-      }.width('100%').padding(16).backgroundColor('#0F172A').borderRadius(16).alignItems(HorizontalAlign.Start)
+            Button('局域网 / USB 转发')
+              .type(ButtonType.Normal).layoutWeight(1).height(30).fontSize(10).fontWeight(FontWeight.Bold)
+              .fontColor(this.pairRoute === 'lan' ? '#0F172A' : '#CBD5E1')
+              .backgroundColor(this.pairRoute === 'lan' ? '#FFFFFF' : Color.Transparent)
+              .borderRadius(7)
+              .onClick(() => { this.pairRoute = 'lan'; })
+            Button('服务器中转 (Relay)')
+              .type(ButtonType.Normal).layoutWeight(1).height(30).fontSize(10).fontWeight(FontWeight.Bold)
+              .fontColor(this.pairRoute === 'relay' ? '#0F172A' : '#CBD5E1')
+              .backgroundColor(this.pairRoute === 'relay' ? '#FFFFFF' : Color.Transparent)
+              .borderRadius(7)
+              .onClick(() => { this.pairRoute = 'relay'; })
+          }.width('100%').padding(3).backgroundColor('#1E293B').borderRadius(9)
 
-      // Pairing Method Tabs: 扫码 | 8位配对码 | 粘贴配对信息 | 手动端点
-      Column({ space: 12 }) {
-        Row({ space: 5 }) {
-          this.PairModeTab('扫码', 'scan')
-          this.PairModeTab('配对码', 'code')
-          this.PairModeTab('粘贴', 'paste')
-          this.PairModeTab('手动端点', 'endpoints')
-        }.width('100%')
-
-        if (this.pairMode === 'scan') {
-          Column({ space: 10 }) {
-            Text('扫描电脑端「手机远程」窗口中的二维码。配对码 10 分钟内有效、只能使用一次，由电脑的同步服务校验。')
-              .fontSize(11).fontColor('#64748B').lineHeight(17)
-            if (this.scanAvailable) {
-              Button(this.pairing ? '正在校验配对码...' : '扫描电脑二维码')
-                .type(ButtonType.Normal).width('100%').height(42).fontSize(13).fontWeight(FontWeight.Bold)
-                .fontColor('#FFFFFF').backgroundColor('#0F172A').borderRadius(10)
-                .enabled(!this.pairing)
-                .onClick(() => { this.applyScanPairing(); })
-              Text('扫码使用 HarmonyOS 系统扫码能力（ScanKit），也可从相册选择二维码图片。')
-                .fontSize(10).fontColor('#94A3B8')
-            } else {
-              Text('当前设备不支持系统扫码，请使用「配对码」或「粘贴」。')
-                .fontSize(11).fontColor('#B5674D')
+          // Pebrel 3-step summary
+          Row({ space: 8 }) {
+            Row({ space: 4 }) {
+              Text('1').fontSize(9).fontFamily('monospace').fontWeight(FontWeight.Bold).fontColor('#07110A')
+                .width(15).height(15).textAlign(TextAlign.Center).backgroundColor('#30D158').borderRadius(8)
+              Text('找到电脑').fontSize(10).fontColor('#E2E8F0')
             }
-          }.width('100%').alignItems(HorizontalAlign.Start)
-        } else if (this.pairMode === 'code') {
-          Column({ space: 10 }) {
-            Text('输入电脑地址和「手机远程」窗口中的 8 位配对码，由电脑的同步服务校验：')
-              .fontSize(11).fontColor('#64748B')
+            Text('→').fontSize(10).fontColor('#64748B')
+            Row({ space: 4 }) {
+              Text('2').fontSize(9).fontFamily('monospace').fontWeight(FontWeight.Bold).fontColor('#07110A')
+                .width(15).height(15).textAlign(TextAlign.Center).backgroundColor('#30D158').borderRadius(8)
+              Text('核对配对码').fontSize(10).fontColor('#E2E8F0')
+            }
+            Text('→').fontSize(10).fontColor('#64748B')
+            Row({ space: 4 }) {
+              Text('3').fontSize(9).fontFamily('monospace').fontWeight(FontWeight.Bold).fontColor('#07110A')
+                .width(15).height(15).textAlign(TextAlign.Center).backgroundColor('#30D158').borderRadius(8)
+              Text('同步草稿流').fontSize(10).fontColor('#E2E8F0')
+            }
+          }.width('100%')
+        }.width('100%').padding(16).backgroundColor('#0F172A').borderRadius(16).alignItems(HorizontalAlign.Start)
 
-            Column({ space: 4 }) {
-              Text('8 位配对码 (例如 4829 1034)').fontSize(10).fontFamily('monospace').fontColor('#475569')
-              TextInput({ text: this.pairShortCode, placeholder: '0000 0000' })
-                .width('100%').height(40).fontSize(15).fontFamily('monospace').fontWeight(FontWeight.Bold)
-                .fontColor('#0F172A').backgroundColor('#F8FAFC')
-                .border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
-                .onChange((val: string) => { this.pairShortCode = val; })
+        // Pairing Method Tabs: 扫码 | 8位配对码 | 粘贴配对信息 | 手动端点
+        Column({ space: 12 }) {
+          Row({ space: 5 }) {
+            this.PairModeTab('扫码', 'scan')
+            this.PairModeTab('配对码', 'code')
+            this.PairModeTab('粘贴', 'paste')
+            this.PairModeTab('手动端点', 'endpoints')
+          }.width('100%')
+
+          if (this.pairMode === 'scan') {
+            Column({ space: 10 }) {
+              Text('扫描电脑端「手机远程」窗口中的二维码。配对码 10 分钟内有效、只能使用一次，由电脑的同步服务校验。')
+                .fontSize(11).fontColor('#64748B').lineHeight(17)
+              if (this.scanAvailable) {
+                Button(this.pairing ? '正在校验配对码...' : '扫描电脑二维码')
+                  .type(ButtonType.Normal).width('100%').height(42).fontSize(13).fontWeight(FontWeight.Bold)
+                  .fontColor('#FFFFFF').backgroundColor('#0F172A').borderRadius(10)
+                  .enabled(!this.pairing)
+                  .onClick(() => { this.applyScanPairing(); })
+                Text('扫码使用 HarmonyOS 系统扫码能力（ScanKit），也可从相册选择二维码图片。')
+                  .fontSize(10).fontColor('#94A3B8')
+              } else {
+                Text('当前设备不支持系统扫码，请使用「配对码」或「粘贴」。')
+                  .fontSize(11).fontColor('#B5674D')
+              }
             }.width('100%').alignItems(HorizontalAlign.Start)
+          } else if (this.pairMode === 'code') {
+            Column({ space: 10 }) {
+              Text('输入电脑地址和「手机远程」窗口中的 8 位配对码，由电脑的同步服务校验：')
+                .fontSize(11).fontColor('#64748B')
 
-            Column({ space: 4 }) {
-              Text(this.pairRoute === 'lan'
-                ? '电脑同步服务地址：局域网 IP、IP:端口，或 hdc rport 后的 127.0.0.1'
-                : '中转同步服务地址 (Relay URL，需自行提供)').fontSize(10).fontColor('#64748B')
-              TextInput({ text: this.pairHostIp, placeholder: '127.0.0.1 或 192.168.x.x' })
-                .width('100%').height(38).fontSize(12).fontFamily('monospace').fontColor('#0F172A')
-                .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
-                .onChange((val: string) => { this.pairHostIp = val; })
-            }.width('100%').alignItems(HorizontalAlign.Start)
-
-            Button(this.pairing ? '正在校验配对码...' : '配对这台电脑并同步')
-              .type(ButtonType.Normal).width('100%').height(38).fontSize(12).fontWeight(FontWeight.Bold)
-              .fontColor('#FFFFFF').backgroundColor('#0F172A').borderRadius(10)
-              .enabled(!this.pairing)
-              .onClick(() => { this.applyShortCodePairing(); })
-          }.width('100%').alignItems(HorizontalAlign.Start)
-        } else if (this.pairMode === 'paste') {
-          Column({ space: 10 }) {
-            Text('粘贴电脑端「复制配对信息」的内容（与二维码内容相同）：')
-              .fontSize(11).fontColor('#64748B')
-
-            TextInput({
-              text: this.pairInvitationText,
-              placeholder: '{"type":"algoflow-pair-v1","sync_api":"http://192.168.x.x:8787","code":"00000000"}'
-            })
-              .width('100%').height(42).fontSize(11).fontFamily('monospace').fontColor('#0F172A')
-              .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
-              .onChange((val: string) => { this.pairInvitationText = val; })
-
-            Button(this.pairing ? '正在校验配对码...' : '读取配置并连接电脑')
-              .type(ButtonType.Normal).width('100%').height(38).fontSize(12).fontWeight(FontWeight.Bold)
-              .fontColor('#FFFFFF').backgroundColor('#55745F').borderRadius(10)
-              .enabled(!this.pairing)
-              .onClick(() => { this.applyPastedInvitation(); })
-          }.width('100%').alignItems(HorizontalAlign.Start)
-        } else {
-          Column({ space: 10 }) {
-            Column({ space: 4 }) {
-              Text('Sync API Base URL (真机使用 hdc rport tcp:8787 tcp:8787)').fontSize(10).fontColor('#64748B')
-              TextInput({ text: this.syncBaseUrl, placeholder: 'http://127.0.0.1:8787' })
-                .width('100%').height(38).fontSize(12).fontFamily('monospace').fontColor('#0F172A')
-                .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
-                .onChange((val: string) => { this.syncBaseUrl = val; })
-            }.width('100%').alignItems(HorizontalAlign.Start)
-
-            if (AI_ENTRY) {
               Column({ space: 4 }) {
-                Text('AI Gateway Base URL (真机使用 hdc rport tcp:8788 tcp:8788)').fontSize(10).fontColor('#64748B')
-                TextInput({ text: this.aiBaseUrl, placeholder: 'http://127.0.0.1:8788' })
+                Text('8 位配对码 (例如 4829 1034)').fontSize(10).fontFamily('monospace').fontColor('#475569')
+                TextInput({ text: this.pairShortCode, placeholder: '0000 0000' })
+                  .width('100%').height(40).fontSize(15).fontFamily('monospace').fontWeight(FontWeight.Bold)
+                  .fontColor('#0F172A').backgroundColor('#F8FAFC')
+                  .border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
+                  .onChange((val: string) => { this.pairShortCode = val; })
+              }.width('100%').alignItems(HorizontalAlign.Start)
+
+              Column({ space: 4 }) {
+                Text(this.pairRoute === 'lan'
+                  ? '电脑同步服务地址：局域网 IP、IP:端口，或 hdc rport 后的 127.0.0.1'
+                  : '中转同步服务地址 (Relay URL，需自行提供)').fontSize(10).fontColor('#64748B')
+                TextInput({ text: this.pairHostIp, placeholder: '127.0.0.1 或 192.168.x.x' })
                   .width('100%').height(38).fontSize(12).fontFamily('monospace').fontColor('#0F172A')
                   .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
-                  .onChange((val: string) => { this.aiBaseUrl = val; })
+                  .onChange((val: string) => { this.pairHostIp = val; })
               }.width('100%').alignItems(HorizontalAlign.Start)
-            }
 
-            Row({ space: 8 }) {
-              Button('保存端点配置')
-                .type(ButtonType.Normal).layoutWeight(1).height(36).fontSize(11).fontWeight(FontWeight.Bold)
+              Button(this.pairing ? '正在校验配对码...' : '配对这台电脑并同步')
+                .type(ButtonType.Normal).width('100%').height(38).fontSize(12).fontWeight(FontWeight.Bold)
                 .fontColor('#FFFFFF').backgroundColor('#0F172A').borderRadius(10)
-                .onClick(() => { this.saveEndpoints(); })
-              Button('恢复默认回环')
-                .type(ButtonType.Normal).layoutWeight(1).height(36).fontSize(11).fontWeight(FontWeight.Medium)
-                .fontColor('#475569').backgroundColor('#F1F5F9').borderRadius(10)
-                .onClick(() => { this.resetDefaultEndpoints(); })
-            }.width('100%').margin({ top: 2 })
-          }.width('100%').alignItems(HorizontalAlign.Start)
-        }
-      }.width('100%').padding(14).backgroundColor('#FFFFFF')
-        .border({ width: 1, color: '#E5E9F0' }).borderRadius(16).alignItems(HorizontalAlign.Start)
+                .enabled(!this.pairing)
+                .onClick(() => { this.applyShortCodePairing(); })
+            }.width('100%').alignItems(HorizontalAlign.Start)
+          } else if (this.pairMode === 'paste') {
+            Column({ space: 10 }) {
+              Text('粘贴电脑端「复制配对信息」的内容（与二维码内容相同）：')
+                .fontSize(11).fontColor('#64748B')
+
+              TextInput({
+                text: this.pairInvitationText,
+                placeholder: '{"type":"algoflow-pair-v1","sync_api":"http://192.168.x.x:8787","code":"00000000"}'
+              })
+                .width('100%').height(42).fontSize(11).fontFamily('monospace').fontColor('#0F172A')
+                .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
+                .onChange((val: string) => { this.pairInvitationText = val; })
+
+              Button(this.pairing ? '正在校验配对码...' : '读取配置并连接电脑')
+                .type(ButtonType.Normal).width('100%').height(38).fontSize(12).fontWeight(FontWeight.Bold)
+                .fontColor('#FFFFFF').backgroundColor('#55745F').borderRadius(10)
+                .enabled(!this.pairing)
+                .onClick(() => { this.applyPastedInvitation(); })
+            }.width('100%').alignItems(HorizontalAlign.Start)
+          } else {
+            Column({ space: 10 }) {
+              Column({ space: 4 }) {
+                Text('Sync API Base URL (真机使用 hdc rport tcp:8787 tcp:8787)').fontSize(10).fontColor('#64748B')
+                TextInput({ text: this.syncBaseUrl, placeholder: 'http://127.0.0.1:8787' })
+                  .width('100%').height(38).fontSize(12).fontFamily('monospace').fontColor('#0F172A')
+                  .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
+                  .onChange((val: string) => { this.syncBaseUrl = val; })
+              }.width('100%').alignItems(HorizontalAlign.Start)
+
+              if (AI_ENTRY) {
+                Column({ space: 4 }) {
+                  Text('AI Gateway Base URL (真机使用 hdc rport tcp:8788 tcp:8788)').fontSize(10).fontColor('#64748B')
+                  TextInput({ text: this.aiBaseUrl, placeholder: 'http://127.0.0.1:8788' })
+                    .width('100%').height(38).fontSize(12).fontFamily('monospace').fontColor('#0F172A')
+                    .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
+                    .onChange((val: string) => { this.aiBaseUrl = val; })
+                }.width('100%').alignItems(HorizontalAlign.Start)
+              }
+
+              Row({ space: 8 }) {
+                Button('保存端点配置')
+                  .type(ButtonType.Normal).layoutWeight(1).height(36).fontSize(11).fontWeight(FontWeight.Bold)
+                  .fontColor('#FFFFFF').backgroundColor('#0F172A').borderRadius(10)
+                  .onClick(() => { this.saveEndpoints(); })
+                Button('恢复默认回环')
+                  .type(ButtonType.Normal).layoutWeight(1).height(36).fontSize(11).fontWeight(FontWeight.Medium)
+                  .fontColor('#475569').backgroundColor('#F1F5F9').borderRadius(10)
+                  .onClick(() => { this.resetDefaultEndpoints(); })
+              }.width('100%').margin({ top: 2 })
+            }.width('100%').alignItems(HorizontalAlign.Start)
+          }
+        }.width('100%').padding(14).backgroundColor('#FFFFFF')
+          .border({ width: 1, color: '#E5E9F0' }).borderRadius(16).alignItems(HorizontalAlign.Start)
+      } else {
+        Column({ space: 6 }) {
+          Text('本机模式').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
+          Text('本版本不联网：草稿、思路和代码只保存在这台手机上，不上传到任何服务器。')
+            .fontSize(11).fontColor('#94A3B8').lineHeight(17)
+        }.width('100%').padding(16).backgroundColor('#0F172A').borderRadius(16).alignItems(HorizontalAlign.Start)
+      }
 
       // Collapsible Geek Diagnostics & Contract Info
       Column({ space: 8 }) {
@@ -990,7 +1000,9 @@ struct Placeholder {
 
         if (this.advancedExpanded) {
           Column({ space: 6 }) {
-            Text(`SYNC API     : ${this.syncBaseUrl}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
+            if (SYNC_ENTRY) {
+              Text(`SYNC API     : ${this.syncBaseUrl}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
+            }
             if (AI_ENTRY) {
               Text(`AI GATEWAY   : ${this.aiBaseUrl}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
             }
@@ -999,7 +1011,9 @@ struct Placeholder {
               Text('AI RULE VER  : 1.0.0 (strict source_refs & range check)').fontSize(10).fontFamily('monospace').fontColor('#475569')
             }
             Text(`CLIENT ID    : ${this.clientId}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
-            Text(`SYNC CURSOR  : ${this.syncCursor}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
+            if (SYNC_ENTRY) {
+              Text(`SYNC CURSOR  : ${this.syncCursor}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
+            }
             if (DEBUG) {
               Row() {
                 Text('允许接收标记为 is_test_data 的测试响应').fontSize(11).fontColor('#0F172A').layoutWeight(1)
@@ -1080,7 +1094,9 @@ struct Placeholder {
             this.TabChip('AI 转换', 'AI_HUB', HubTab.AI)
           }
           this.TabChip('版本快照', 'SNAPS', HubTab.VERSIONS)
-          this.TabChip('同步队列', 'QUEUE', HubTab.SYNC)
+          if (SYNC_ENTRY) {
+            this.TabChip('同步队列', 'QUEUE', HubTab.SYNC)
+          }
           this.TabChip('设置', 'CONFIG', HubTab.SETTINGS)
         }.padding({ left: 20, right: 20 })
       }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
@@ -1102,7 +1118,7 @@ struct Placeholder {
             this.AIHubView()
           } else if (this.activeTab === HubTab.VERSIONS) {
             this.VersionsView()
-          } else if (this.activeTab === HubTab.SYNC) {
+          } else if (SYNC_ENTRY && this.activeTab === HubTab.SYNC) {
             this.SyncQueueView()
           } else {
             this.SettingsView()

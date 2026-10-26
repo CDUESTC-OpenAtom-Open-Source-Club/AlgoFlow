@@ -3,7 +3,7 @@ import { AIArtifact, AIMode, AIResultStatus, CodeMapping, Draft, draftRenderKey,
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
 import { publishCardSnapshot } from '../platform/CardSnapshot';
-import { AI_ENTRY, DEBUG } from 'BuildProfile';
+import { AI_ENTRY, DEBUG, SYNC_ENTRY } from 'BuildProfile';
 import { IDECapability, IDERecord, IDEState, ReviewKind, SourceCursor } from '../domain/IDEAIModels';
 import { rangeOffsets } from '../domain/IDEAIContract';
 import { assignRewriteLines, compareRewrite, resolveRewriteMapping, RewriteCodeLine, RewriteCompareSource, RewriteCompareStep, RewriteComparison, RewriteDiffLine,
@@ -1599,12 +1599,15 @@ struct Index {
   @Builder
   SyncPanel() {
     Column() {
-      Text('保存与同步').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
-      Text('草稿始终保存在本机。同步需自行提供 sync-api 端点（如局域网内的电脑），应用不提供云端服务。').fontSize(10).lineHeight(17).fontColor('#8E8E93').margin({ top: 5, bottom: 10 })
-      TextInput({ text: this.syncBaseUrl, placeholder: 'http://电脑局域网IP:8787' }).width('100%').height(34).fontSize(10)
-        .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
-        .border({ width: 1, color: '#3A3A3D' }).borderRadius(4)
-        .onChange((value: string) => { this.syncBaseUrl = value; this.viewModel.setSyncBaseUrl(value); })
+      Text(SYNC_ENTRY ? '保存与同步' : '保存').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+      Text(SYNC_ENTRY ? '草稿始终保存在本机。同步需自行提供 sync-api 端点（如局域网内的电脑），应用不提供云端服务。'
+        : '草稿只保存在本机，本版本不联网。').fontSize(10).lineHeight(17).fontColor('#8E8E93').margin({ top: 5, bottom: 10 })
+      if (SYNC_ENTRY) {
+        TextInput({ text: this.syncBaseUrl, placeholder: 'http://电脑局域网IP:8787' }).width('100%').height(34).fontSize(10)
+          .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
+          .border({ width: 1, color: '#3A3A3D' }).borderRadius(4)
+          .onChange((value: string) => { this.syncBaseUrl = value; this.viewModel.setSyncBaseUrl(value); })
+      }
       Row() {
         Text(this.statusLabel()).fontSize(11).fontWeight(FontWeight.Bold).fontColor(this.statusColor())
         Blank()
@@ -1617,13 +1620,15 @@ struct Index {
         }
       }.width('100%').height(36).fontColor('#07110A')
         .backgroundColor('#30D158').borderRadius(4).margin({ top: 12 }).onClick(() => this.saveDraft())
-      Button() {
-        Row({ space: 5 }) {
-          this.Icon(WorkspaceIcon.REFRESH, 14, '#9BE7A9')
-          Text('立即同步').fontSize(11).fontColor('#9BE7A9')
-        }
-      }.width('100%').height(36)
-        .backgroundColor('#1E3A27').borderRadius(4).margin({ top: 7 }).onClick(() => this.synchronize())
+      if (SYNC_ENTRY) {
+        Button() {
+          Row({ space: 5 }) {
+            this.Icon(WorkspaceIcon.REFRESH, 14, '#9BE7A9')
+            Text('立即同步').fontSize(11).fontColor('#9BE7A9')
+          }
+        }.width('100%').height(36)
+          .backgroundColor('#1E3A27').borderRadius(4).margin({ top: 7 }).onClick(() => this.synchronize())
+      }
     }.width('100%').backgroundColor('#161618')
   }
 
@@ -1742,32 +1747,34 @@ struct Index {
                 this.DrawerToolButton('独立复写', WorkspaceTool.REWRITE)
                 this.DrawerToolButton('代码检查', WorkspaceTool.REVIEW)
                 this.DrawerToolButton('当前文件搜索', WorkspaceTool.SEARCH)
-                this.DrawerToolButton('保存与同步', WorkspaceTool.SYNC)
+                this.DrawerToolButton(SYNC_ENTRY ? '保存与同步' : '保存', WorkspaceTool.SYNC)
               }.width('100%').padding({ top: 2 })
             }
           }.width('100%')
 
-          Column({ space: 6 }) {
-            this.DrawerSectionTitle('同步')
+          if (SYNC_ENTRY) {
             Column({ space: 6 }) {
-              this.DrawerSummaryRow('同步', this.statusLabel(), this.statusColor())
-              this.DrawerSummaryRow('端点', this.syncBaseUrl, '#B8B8BD')
-              this.DrawerSummaryRow('版本', `v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`, '#B8B8BD')
-              Text('需自行提供端点，应用不含云端服务').fontSize(9).fontColor('#6E6E73')
-              if (this.syncMessage.length > 0) {
-                Text(this.syncMessage).fontSize(9).fontColor('#8E8E93').maxLines(2)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-              }
-            }.width('100%').padding({ left: 11, right: 11, top: 10, bottom: 10 }).alignItems(HorizontalAlign.Start)
-              .backgroundColor('#1C1C1E').border({ width: 1, color: '#2A2A2D' }).borderRadius(10)
-            Button() {
-              Row({ space: 6 }) {
-                this.Icon(WorkspaceIcon.REFRESH, 14, '#07110A')
-                Text('立即同步').fontSize(10).fontColor('#07110A')
-              }
-            }.width('100%').height(36).backgroundColor('#30D158').borderRadius(18)
-              .onClick(() => { this.closeDrawer(); this.synchronize(); })
-          }.width('100%')
+              this.DrawerSectionTitle('同步')
+              Column({ space: 6 }) {
+                this.DrawerSummaryRow('同步', this.statusLabel(), this.statusColor())
+                this.DrawerSummaryRow('端点', this.syncBaseUrl, '#B8B8BD')
+                this.DrawerSummaryRow('版本', `v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`, '#B8B8BD')
+                Text('需自行提供端点，应用不含云端服务').fontSize(9).fontColor('#6E6E73')
+                if (this.syncMessage.length > 0) {
+                  Text(this.syncMessage).fontSize(9).fontColor('#8E8E93').maxLines(2)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                }
+              }.width('100%').padding({ left: 11, right: 11, top: 10, bottom: 10 }).alignItems(HorizontalAlign.Start)
+                .backgroundColor('#1C1C1E').border({ width: 1, color: '#2A2A2D' }).borderRadius(10)
+              Button() {
+                Row({ space: 6 }) {
+                  this.Icon(WorkspaceIcon.REFRESH, 14, '#07110A')
+                  Text('立即同步').fontSize(10).fontColor('#07110A')
+                }
+              }.width('100%').height(36).backgroundColor('#30D158').borderRadius(18)
+                .onClick(() => { this.closeDrawer(); this.synchronize(); })
+            }.width('100%')
+          }
         }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 18 })
       }.layoutWeight(1).scrollBar(BarState.Auto)
 
@@ -1814,7 +1821,7 @@ struct Index {
       }
       this.CapsuleItem('复写', WorkspaceIcon.CODE, this.activeTool === WorkspaceTool.REWRITE,
         () => this.toggleTool(WorkspaceTool.REWRITE))
-      this.CapsuleItem('同步', WorkspaceIcon.REFRESH, this.activeTool === WorkspaceTool.SYNC,
+      this.CapsuleItem(SYNC_ENTRY ? '同步' : '保存', SYNC_ENTRY ? WorkspaceIcon.REFRESH : WorkspaceIcon.DOCUMENT, this.activeTool === WorkspaceTool.SYNC,
         () => this.toggleTool(WorkspaceTool.SYNC))
     }.height(52).padding({ left: 4, right: 4 }).backgroundColor('#1E1E20')
       .border({ width: 1, color: '#3A3A3D' }).borderRadius(26)
