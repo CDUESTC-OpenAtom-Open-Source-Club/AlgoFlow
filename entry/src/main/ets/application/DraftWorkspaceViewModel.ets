@@ -4,7 +4,7 @@ import { AIArtifact, AIErrorCode, AIMode, AIOutputKind, AIRequest, AIRequestSegm
 import { AIProvider } from '../domain/AIProvider';
 import { SyncRepository } from '../domain/SyncRepository';
 import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
-import { HttpAIProvider } from '../platform/HttpAIProvider';
+import { AI_READ_TIMEOUT_MS, HttpAIProvider } from '../platform/HttpAIProvider';
 import { HttpPairingClient } from '../platform/HttpPairingClient';
 import { PairingClaim, PairingInvitation, resolvePairingEndpoints } from '../domain/PairingContract';
 import { IDEAISession } from './IDEAISession';
@@ -44,13 +44,13 @@ export class DraftWorkspaceViewModel {
   async initialize(): Promise<void> {
     await this.repository.initialize();
     this.aiBaseUrl = this.repository.getAIBaseUrl();
-    this.aiProvider = new HttpAIProvider(this.aiBaseUrl, 0, 10000, this.allowTestData);
+    this.aiProvider = new HttpAIProvider(this.aiBaseUrl, 0, AI_READ_TIMEOUT_MS, this.allowTestData);
   }
 
   configureAI(repository: AIResultRepository, allowTestData: boolean): void {
     this.allowTestData = allowTestData;
     this.aiSession?.dispose();
-    const provider = new HttpAIProvider(this.aiBaseUrl, 0, 10000, allowTestData);
+    const provider = new HttpAIProvider(this.aiBaseUrl, 0, AI_READ_TIMEOUT_MS, allowTestData);
     this.aiProvider = provider;
     this.aiSession = new IDEAISession(provider, repository);
   }
@@ -169,7 +169,7 @@ export class DraftWorkspaceViewModel {
     this.aiProvider.cancel();
     this.aiBaseUrl = baseUrl;
     this.allowTestData = allowTestData;
-    const provider = new HttpAIProvider(baseUrl, 0, 10000, allowTestData);
+    const provider = new HttpAIProvider(baseUrl, 0, AI_READ_TIMEOUT_MS, allowTestData);
     this.aiProvider = provider;
     this.repository.setAIBaseUrl(baseUrl);
     this.aiSession?.setProvider(provider);
