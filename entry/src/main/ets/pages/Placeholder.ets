@@ -69,7 +69,7 @@ struct Placeholder {
   @State pairShortCode: string = '';
   @State pairHostIp: string = '127.0.0.1';
   @State pairInvitationText: string = '';
-  @State pairedComputerName: string = 'AlgoFlow-Desktop';
+  @State pairedComputerName: string = '我的电脑';
 
   aboutToAppear(): void {
     const savedTitle = AppStorage.get<string>(PLACEHOLDER_TITLE_KEY);
@@ -237,7 +237,7 @@ struct Placeholder {
       const claim = await this.viewModel.claimPairing(invitation);
       this.syncBaseUrl = claim.syncApi;
       this.aiBaseUrl = claim.aiGateway;
-      this.pairedComputerName = claim.computerName.length > 0 ? claim.computerName : 'AlgoFlow-Desktop';
+      this.pairedComputerName = claim.computerName.length > 0 ? claim.computerName : '我的电脑';
       this.pairRoute = claim.route === PairingRoute.RELAY ? 'relay' : 'lan';
       this.pairShortCode = '';
       this.pairInvitationText = '';

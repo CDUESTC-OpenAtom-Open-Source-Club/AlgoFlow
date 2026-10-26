@@ -1661,7 +1661,7 @@ struct Index {
         Row({ space: 9 }) {
           Image($r('app.media.af_logo')).width(32).height(32).objectFit(ImageFit.Contain)
           Column() {
-            Text('AlgoFlow IDE').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
+            Text('算法随想').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
             Text('OpenHarmony 移动端').fontSize(9).fontColor('#8E8E93').margin({ top: 2 })
           }.alignItems(HorizontalAlign.Start)
         }
@@ -1909,7 +1909,7 @@ function syncMessageText(message: string): string {
   if (message.startsWith('SYNC_NETWORK_')) return '连不上同步端点：需自行运行 sync-api 并在「设置 → 连接电脑」配对，草稿已保留在本机';
   if (message.startsWith('SYNC_HTTP_5')) return '同步端点暂时出错，草稿已保留在本机，稍后重试';
   if (message.startsWith('SYNC_HTTP_') || message.startsWith('SYNC_CONTRACT_') || message === 'SYNC_INVALID_RESPONSE') {
-    return '同步端点返回了无法识别的内容，请确认地址指向 AlgoFlow sync-api';
+    return '同步端点返回了无法识别的内容，请确认地址指向本应用的 sync-api 同步服务';
   }
   return message;
 }

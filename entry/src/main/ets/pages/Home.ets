@@ -405,7 +405,7 @@ struct Home {
       Row({ space: 10 }) {
         this.BrandIcon()
         Column({ space: 2 }) {
-          Text('AlgoFlow').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#252A26')
+          Text('算法随想').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#252A26')
           Text(`思流 · ${this.todayLabel()}`).fontSize(10).fontColor('#5E645D')
         }.alignItems(HorizontalAlign.Start)
         Blank()

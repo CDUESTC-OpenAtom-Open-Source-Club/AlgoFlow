@@ -59,11 +59,11 @@ export function parsePairingInvitation(text: string): PairingInvitationParse {
   try {
     parsed = JSON.parse(text.trim()) as Object;
   } catch (error) {
-    result.error = '不是 AlgoFlow 配对信息，请扫描或粘贴电脑端「手机远程」中的内容';
+    result.error = '不是算法随想的配对信息，请扫描或粘贴电脑端「手机远程」中的内容';
     return result;
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    result.error = '不是 AlgoFlow 配对信息，请扫描或粘贴电脑端「手机远程」中的内容';
+    result.error = '不是算法随想的配对信息，请扫描或粘贴电脑端「手机远程」中的内容';
     return result;
   }
   const record = parsed as Record<string, Object>;
