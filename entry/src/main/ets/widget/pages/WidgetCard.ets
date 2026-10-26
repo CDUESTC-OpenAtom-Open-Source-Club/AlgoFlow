@@ -55,7 +55,7 @@ struct WidgetCard {
       }) {
         Column({ space: 8 }) {
           Row() {
-            Text('AlgoFlow').fontSize(11).fontWeight(FontWeight.Medium).fontColor('#5E645D')
+            Text('算法随想').fontSize(11).fontWeight(FontWeight.Medium).fontColor('#5E645D')
             Blank()
             if (this.hasDraft) {
               Row({ space: 4 }) {

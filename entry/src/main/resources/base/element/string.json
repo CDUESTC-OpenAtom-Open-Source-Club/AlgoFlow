@@ -2,31 +2,31 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "AlgoFlow phone workspace"
+      "value": "算法随想手机工作区"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "Record ideas and edit code synced with the desktop workspace"
+      "value": "记录思路、编辑代码，并可与电脑工作台同步"
     },
     {
       "name": "EntryAbility_label",
-      "value": "AlgoFlow"
+      "value": "算法随想"
     },
     {
       "name": "EntryFormAbility_desc",
-      "value": "AlgoFlow recent draft service card"
+      "value": "算法随想最近草稿卡片"
     },
     {
       "name": "EntryFormAbility_label",
-      "value": "AlgoFlow card"
+      "value": "算法随想卡片"
     },
     {
       "name": "widget_display_name",
-      "value": "AlgoFlow"
+      "value": "算法随想"
     },
     {
       "name": "widget_desc",
-      "value": "Recent draft and sync status"
+      "value": "最近草稿与同步状态"
     }
   ]
 }
