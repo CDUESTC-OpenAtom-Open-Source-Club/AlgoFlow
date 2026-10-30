@@ -6,7 +6,7 @@
     },
     {
       "name": "EntryAbility_desc",
-      "value": "记录思路、编辑代码，并可与电脑工作台同步"
+      "value": "记录算法思路、编辑 C++ 代码"
     },
     {
       "name": "EntryAbility_label",
@@ -26,7 +26,7 @@
     },
     {
       "name": "widget_desc",
-      "value": "最近草稿与同步状态"
+      "value": "最近草稿与快速新建思路"
     }
   ]
 }

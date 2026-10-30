@@ -119,7 +119,7 @@ struct Home {
     if (this.expandedDraftId === draftId) {
       this.expandedDraftId = '';
     }
-    this.message = '草稿已删除，仍保留同步墓碑';
+    this.message = SYNC_ENTRY ? '草稿已删除，仍保留同步墓碑' : '草稿已删除';
   }
 
   private toggleDraftActions(draftId: string): void {
@@ -344,7 +344,7 @@ struct Home {
         }.width(32).height(32).justifyContent(FlexAlign.Center).backgroundColor('#DBE8DC').borderRadius(16)
         Column({ space: 2 }) {
           Text('记下一个思路').fontSize(14).fontWeight(FontWeight.Bold).fontColor('#252A26')
-          Text('先写想法，代码可以以后在电脑上补').fontSize(11).fontColor('#5E645D')
+          Text(SYNC_ENTRY ? '先写想法，代码可以以后在电脑上补' : '先写想法，代码可以以后再补').fontSize(11).fontColor('#5E645D')
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       }.width('100%').padding({ left: 14, right: 14 })
     }.type(ButtonType.Normal).width('100%').height(64).backgroundColor('#FBF9F4')
@@ -453,7 +453,7 @@ struct Home {
           }.width('100%')
 
           Row() {
-            Text(`${this.syncedCount()} 已同步 · ${this.localCount()} 本地`).fontSize(11).fontColor('#5E645D')
+            Text(SYNC_ENTRY ? `${this.syncedCount()} 已同步 · ${this.localCount()} 本地` : `${this.drafts.length} 个草稿 · 仅存本机`).fontSize(11).fontColor('#5E645D')
             Blank()
             Text(`${this.versionSnapshotCount()} 个版本快照 ›`).fontSize(11).fontColor('#55745F')
               .onClick(() => { this.openReservedPage('历史版本', '查看 RDB 本地已保存的草稿源码与思路片段快照。'); })

@@ -480,12 +480,14 @@ struct Placeholder {
       // Status filter pills
       Row({ space: 6 }) {
         this.FilterPill('全部', DraftFilter.ALL, this.drafts.length)
-        this.FilterPill('已同步', DraftFilter.SYNCED,
-          this.drafts.filter((d: Draft) => d.syncStatus === SyncStatus.SYNCED).length)
-        this.FilterPill('仅本地', DraftFilter.LOCAL,
-          this.drafts.filter((d: Draft) => d.syncStatus === SyncStatus.LOCAL_ONLY).length)
-        this.FilterPill('冲突/异常', DraftFilter.ISSUE,
-          this.drafts.filter((d: Draft) => d.syncStatus === SyncStatus.CONFLICT || d.syncStatus === SyncStatus.FAILED).length)
+        if (SYNC_ENTRY) {
+          this.FilterPill('已同步', DraftFilter.SYNCED,
+            this.drafts.filter((d: Draft) => d.syncStatus === SyncStatus.SYNCED).length)
+          this.FilterPill('仅本地', DraftFilter.LOCAL,
+            this.drafts.filter((d: Draft) => d.syncStatus === SyncStatus.LOCAL_ONLY).length)
+          this.FilterPill('冲突/异常', DraftFilter.ISSUE,
+            this.drafts.filter((d: Draft) => d.syncStatus === SyncStatus.CONFLICT || d.syncStatus === SyncStatus.FAILED).length)
+        }
       }.width('100%')
 
       if (this.filteredDrafts().length === 0) {
@@ -561,7 +563,7 @@ struct Placeholder {
                   .onClick(() => {
                     this.viewModel.deleteDraft(draft.id);
                     this.refreshWorkspaceData();
-                    this.feedbackMessage = '草稿已标记删除并排入同步墓碑队列';
+                    this.feedbackMessage = SYNC_ENTRY ? '草稿已标记删除并排入同步墓碑队列' : '草稿已删除';
                   })
               }.width('100%')
             }
@@ -690,7 +692,8 @@ struct Placeholder {
         if (this.availableVersions.length === 0) {
           Column({ space: 6 }) {
             Text('v0 LOCAL DRAFT // 尚无已落盘历史版本').fontSize(10).fontFamily('monospace').fontColor('#D97706')
-            Text('当前草稿处于 v0 初始态，完成首次同步或版本演进后将自动在 draft_source_history 表中记录不可变快照。')
+            Text(SYNC_ENTRY ? '当前草稿处于 v0 初始态，完成首次同步或版本演进后将自动在 draft_source_history 表中记录不可变快照。'
+              : '当前草稿还没有保存过版本，保存后会在本机记录不可变快照。')
               .fontSize(11).fontColor('#64748B').lineHeight(17)
           }.width('100%').padding(12).backgroundColor('#FAF3DC').borderRadius(12).alignItems(HorizontalAlign.Start)
         } else {
