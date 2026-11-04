@@ -3,7 +3,7 @@ import { Draft, SyncStatus } from '../domain/Models';
 import { AIArtifactPayload, ConflictRecord, DraftPayload, PullChange, ReviewResultPayload, SyncEntityType, SyncErrorCode,
   SyncResultStatus, payloadToDraft } from '../domain/SyncModels';
 import { IDERecord } from '../domain/IDEAIModels';
-import { HttpSyncClient } from './HttpSyncClient';
+import { HttpSyncClient, SYNC_AUTH_REJECTED } from './HttpSyncClient';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
@@ -17,29 +17,40 @@ export enum SyncRunStatus {
   FAILED = 'failed'
 }
 
+export const SYNC_NOT_PAIRED_MESSAGE: string = '还没有连接电脑，草稿只保存在本机。请在「设置 → 连接电脑」扫码配对后再同步';
+const SYNC_AUTH_MESSAGE: string = '这台手机的连接已失效，请在「设置 → 连接电脑」重新扫码配对；本机草稿和未同步的修改都已保留';
+
 export class SyncRunResult {
   status: SyncRunStatus;
   message: string;
+  // The server rejected the device token; the caller drops it and asks the
+  // user to pair again. Drafts, the queue and the cursor are untouched.
+  authRequired: boolean;
 
-  constructor(status: SyncRunStatus, message: string) {
+  constructor(status: SyncRunStatus, message: string, authRequired: boolean = false) {
     this.status = status;
     this.message = message;
+    this.authRequired = authRequired;
   }
 }
 
 export class PhoneSyncService {
   private repository: SyncRepository;
+  private deviceToken: string;
 
-  constructor(repository: SyncRepository) {
+  constructor(repository: SyncRepository, deviceToken: string) {
     this.repository = repository;
+    this.deviceToken = deviceToken;
   }
 
   async synchronize(): Promise<SyncRunResult> {
+    // Without a token every request would be rejected; nothing leaves the phone.
+    if (this.deviceToken.length === 0) return new SyncRunResult(SyncRunStatus.LOCAL_ONLY, SYNC_NOT_PAIRED_MESSAGE);
     const pending = this.repository.listPendingOperations();
     hilog.info(DOMAIN, TAG, '[AlgoFlow] Sync run started. pending=%{public}s cursor=%{public}s',
       pending.length.toString(), safeLogValue(this.repository.getCursor()));
     for (const operation of pending) if (entityType(operation.entity_type) === SyncEntityType.DRAFT) this.repository.setDraftSyncStatus(operation.entity_id, SyncStatus.SYNCING);
-    const client = new HttpSyncClient(this.repository.getBaseUrl());
+    const client = new HttpSyncClient(this.repository.getBaseUrl(), this.deviceToken);
     const epoch = this.repository.getServerEpoch?.() ?? '';
     let hadConflict = false;
     for (const queued of pending) {
@@ -121,7 +132,7 @@ export class PhoneSyncService {
         hilog.error(DOMAIN, TAG,
           '[AlgoFlow] Sync push phase failed. operation_id=%{public}s cause=%{public}s',
           safeLogValue(operation.operation_id), safeLogValue(message));
-        return new SyncRunResult(SyncRunStatus.FAILED, message);
+        return failure(message);
       }
     }
 
@@ -147,7 +158,7 @@ export class PhoneSyncService {
       this.markPendingFailed();
       const message = error instanceof Error ? error.message : '拉取变更失败';
       hilog.error(DOMAIN, TAG, '[AlgoFlow] Sync pull phase failed. cause=%{public}s', safeLogValue(message));
-      return new SyncRunResult(SyncRunStatus.FAILED, message);
+      return failure(message);
     }
     if (hadConflict) {
       hilog.warn(DOMAIN, TAG, '[AlgoFlow] Sync run completed with conflict.');
@@ -277,6 +288,28 @@ export class PhoneSyncService {
     else await this.repository.applyServerReview(serverEntity as ReviewResultPayload);
     await this.repository.saveConflictAIRecord(copy, record);
   }
+}
+
+// Turns the sync client's internal codes into text the user can act on; the
+// local draft and queue are untouched by a failed run. lanHints keeps the
+// Debug-only advice about running sync-api yourself.
+export function syncMessageText(message: string, lanHints: boolean): string {
+  if (message.startsWith('SYNC_NETWORK_')) {
+    return lanHints ? '连不上同步端点：需自行运行 sync-api 并在「设置 → 连接电脑」配对，草稿已保留在本机'
+      : '连不上同步服务，请检查网络后重试；草稿已保留在本机';
+  }
+  if (message.startsWith('SYNC_HTTP_429')) return '同步请求过于频繁，请稍后再试；草稿已保留在本机';
+  if (message.startsWith('SYNC_HTTP_5')) return '同步端点暂时出错，草稿已保留在本机，稍后重试';
+  if (message.startsWith('SYNC_HTTP_') || message.startsWith('SYNC_CONTRACT_') || message === 'SYNC_INVALID_RESPONSE') {
+    return lanHints ? '同步端点返回了无法识别的内容，请确认地址指向本应用的 sync-api 同步服务'
+      : '同步服务返回了无法识别的内容，草稿已保留在本机，请稍后重试';
+  }
+  return message;
+}
+
+function failure(message: string): SyncRunResult {
+  if (message === SYNC_AUTH_REJECTED) return new SyncRunResult(SyncRunStatus.FAILED, SYNC_AUTH_MESSAGE, true);
+  return new SyncRunResult(SyncRunStatus.FAILED, message);
 }
 
 function safeLogValue(value: string): string {

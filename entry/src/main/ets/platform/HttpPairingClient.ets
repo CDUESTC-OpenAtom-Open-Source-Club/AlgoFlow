@@ -16,16 +16,19 @@ class PairingClaimBody {
 }
 
 // Claims a pairing code at the desktop's sync-api (POST /v1/pairing/claims).
-// The code is never logged.
+// deviceToken is the phone's existing token for this sync-api, if any; with it
+// the phone keeps its workspace. The code and tokens are never logged.
 export class HttpPairingClient {
-  async claim(invitation: PairingInvitation, phoneClientId: string): Promise<PairingClaim> {
+  async claim(invitation: PairingInvitation, phoneClientId: string, deviceToken: string = ''): Promise<PairingClaim> {
     const request = http.createHttp();
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (deviceToken.length > 0) headers.Authorization = `Bearer ${deviceToken}`;
       let response: http.HttpResponse;
       try {
         response = await request.request(`${invitation.syncApi}/v1/pairing/claims`, {
           method: http.RequestMethod.POST,
-          header: { 'Content-Type': 'application/json' } as Record<string, string>,
+          header: headers,
           extraData: JSON.stringify(new PairingClaimBody(invitation.code, phoneClientId)),
           expectDataType: http.HttpDataType.STRING,
           connectTimeout: 5000,

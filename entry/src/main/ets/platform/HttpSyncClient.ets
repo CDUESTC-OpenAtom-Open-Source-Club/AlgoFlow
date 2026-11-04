@@ -5,6 +5,10 @@ import { PullResult, PushResult, SyncEntityType, SyncOperation, SyncOperationTyp
 
 const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
+// One pull has no paging and may carry a whole workspace over a mobile network.
+const READ_TIMEOUT_MS = 30000;
+// sync-api answers 401 AUTH_REQUIRED for a missing, revoked or unknown token.
+export const SYNC_AUTH_REJECTED: string = 'SYNC_HTTP_401_AUTH_REQUIRED';
 
 export class HttpSyncClient {
   private baseUrl: string;
@@ -63,6 +67,16 @@ export class HttpSyncClient {
     }
   }
 
+  // DELETE /v1/devices/current: retires this phone's token only.
+  async deleteCurrentDevice(): Promise<void> {
+    await this.request('/v1/devices/current', http.RequestMethod.DELETE, '', 'device-current');
+  }
+
+  // DELETE /v1/workspaces/current: deletes the synced data and every device's token.
+  async deleteWorkspace(): Promise<void> {
+    await this.request('/v1/workspaces/current', http.RequestMethod.DELETE, '', 'workspace-current');
+  }
+
   private async request(path: string, method: http.RequestMethod, body: string,
     requestId: string): Promise<HttpResult> {
     const request = http.createHttp();
@@ -77,7 +91,7 @@ export class HttpSyncClient {
           extraData: body,
           expectDataType: http.HttpDataType.STRING,
           connectTimeout: 5000,
-          readTimeout: 10000
+          readTimeout: READ_TIMEOUT_MS
         });
       } catch (error) {
         const errorInfo = readTransportError(error as BusinessError);

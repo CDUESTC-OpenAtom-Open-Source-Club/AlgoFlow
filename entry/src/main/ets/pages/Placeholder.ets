@@ -1,4 +1,4 @@
-import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
+import { DeviceActionStatus, DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
 import { AIMode, Draft, draftRenderKey, IdeaSegment, SyncStatus } from '../domain/Models';
 import { IDECapability, IDERecord, IDEState, ReviewKind } from '../domain/IDEAIModels';
 import { SyncOperation } from '../domain/SyncModels';
@@ -6,8 +6,9 @@ import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { ResourceIcon, ResourceIconName } from '../components/ResourceIcon';
 import { goBack, openEditor, openHome, PLACEHOLDER_DETAIL_KEY, PLACEHOLDER_DRAFT_ID_KEY, PLACEHOLDER_TITLE_KEY } from '../navigation/AppRoutes';
 import { AI_ENTRY, DEBUG, SYNC_ENTRY } from 'BuildProfile';
-import { manualPairingInvitation, PairingError, PairingErrorCode, PairingInvitation, PairingRoute, pairingErrorMessage,
-  parsePairingInvitation } from '../domain/PairingContract';
+import { manualPairingInvitation, PairingError, PairingErrorCode, PairingInvitation, PairingRoute, pairingConsentMessage,
+  pairingErrorMessage, parsePairingInvitation, serverAuthority } from '../domain/PairingContract';
+import { syncMessageText } from '../platform/PhoneSyncService';
 import { canScanPairingCode, scanPairingCode } from '../platform/PairingScanner';
 
 enum HubTab {
@@ -67,9 +68,12 @@ struct Placeholder {
   private scanAvailable: boolean = canScanPairingCode();
   @State pairRoute: string = 'lan'; // 'lan' | 'relay'
   @State pairShortCode: string = '';
-  @State pairHostIp: string = '127.0.0.1';
+  @State pairHostIp: string = DEBUG ? '127.0.0.1' : '';
   @State pairInvitationText: string = '';
   @State pairedComputerName: string = '我的电脑';
+  // The sync-api this phone holds a device token for; '' when not connected.
+  @State deviceServer: string = '';
+  @State deviceBusy: boolean = false;
 
   aboutToAppear(): void {
     const savedTitle = AppStorage.get<string>(PLACEHOLDER_TITLE_KEY);
@@ -104,6 +108,26 @@ struct Placeholder {
       this.ready = true;
     } catch (error) {
       this.feedbackMessage = '本地数据库读取失败，请返回重试';
+      return;
+    }
+    await this.refreshDeviceState();
+  }
+
+  private async refreshDeviceState(): Promise<void> {
+    this.deviceServer = await this.viewModel.pairedSyncApi();
+  }
+
+  // Resolves false when the user cancels or the dialog is dismissed.
+  private async confirm(title: string, message: string, action: string): Promise<boolean> {
+    try {
+      const result = await this.getUIContext().getPromptAction().showDialog({
+        title: title,
+        message: message,
+        buttons: [{ text: '取消', color: '#64748B' }, { text: action, color: '#B5674D' }]
+      });
+      return result.index === 1;
+    } catch (error) {
+      return false;
     }
   }
 
@@ -188,12 +212,15 @@ struct Placeholder {
     try {
       const result = await this.viewModel.synchronize();
       this.refreshWorkspaceData();
-      this.feedbackMessage = result !== undefined ? `${result.message} [cursor=${this.syncCursor}]` : '同步未执行';
+      const text = result !== undefined ? syncMessageText(result.message, DEBUG) : '同步未执行';
+      this.feedbackMessage = result !== undefined && DEBUG ? `${text} [cursor=${this.syncCursor}]` : text;
     } catch (error) {
       this.feedbackMessage = '同步异常，本地副本已安全保留';
     } finally {
       this.syncing = false;
     }
+    // A rejected token is dropped during the run.
+    await this.refreshDeviceState();
   }
 
   private async triggerAI(capability: IDECapability, kind: ReviewKind = ReviewKind.EXPLANATION): Promise<void> {
@@ -227,13 +254,19 @@ struct Placeholder {
     this.saveEndpoints();
   }
 
-  // Scan, manual code and paste all end here: the desktop's sync-api validates
-  // the single-use code and returns the endpoints; only then are they written.
+  // Scan, manual code and paste all end here. Nothing leaves the phone until the
+  // user has seen which server the drafts will go to. The sync-api then
+  // validates the single-use code and returns the endpoints and device token;
+  // only then are they written.
   private async pairWith(invitation: PairingInvitation): Promise<void> {
-    if (!this.ready || this.pairing) return;
+    if (!this.ready || this.pairing || this.deviceBusy) return;
     this.pairing = true;
-    this.feedbackMessage = '正在向电脑校验配对码...';
     try {
+      if (!(await this.confirm('连接这台服务器？', pairingConsentMessage(invitation.syncApi), '连接并上传'))) {
+        this.feedbackMessage = '已取消，草稿仍只保存在本机';
+        return;
+      }
+      this.feedbackMessage = '正在校验配对码...';
       const claim = await this.viewModel.claimPairing(invitation);
       this.syncBaseUrl = claim.syncApi;
       this.aiBaseUrl = claim.aiGateway;
@@ -243,13 +276,49 @@ struct Placeholder {
       this.pairInvitationText = '';
       this.saveEndpoints();
     } catch (error) {
-      this.feedbackMessage = pairingErrorMessage(error instanceof PairingError ? error.code : PairingErrorCode.NETWORK);
+      this.feedbackMessage = pairingErrorMessage(error instanceof PairingError ? error.code : PairingErrorCode.NETWORK, DEBUG);
       return;
     } finally {
       this.pairing = false;
     }
+    await this.refreshDeviceState();
     this.feedbackMessage = `已与「${this.pairedComputerName}」配对，正在执行首次同步...`;
     await this.runSyncNow();
+  }
+
+  // Retires this phone's token at the server. Local drafts stay.
+  private async disconnectThisDevice(): Promise<void> {
+    if (!this.ready || this.deviceBusy || this.syncing || this.pairing) return;
+    if (!(await this.confirm('断开此设备？', '服务器会作废这台手机的连接，之后需要重新扫码才能同步。手机上的草稿会保留。', '断开'))) return;
+    this.deviceBusy = true;
+    try {
+      this.feedbackMessage = deviceActionMessage(await this.viewModel.disconnectDevice(), '已断开，手机上的草稿仍然保留');
+    } catch (error) {
+      this.feedbackMessage = '本机连接状态更新失败，请重试';
+    } finally {
+      this.deviceBusy = false;
+    }
+    await this.refreshDeviceState();
+  }
+
+  // Deletes the workspace on the server for every device, after two confirmations.
+  private async deleteCloudData(): Promise<void> {
+    if (!this.ready || this.deviceBusy || this.syncing || this.pairing) return;
+    if (!(await this.confirm('删除云端数据？',
+      `将删除 ${serverAuthority(this.deviceServer)} 上这个工作区的全部草稿和历史，所有已连接的电脑和手机都会断开。这台手机上的草稿会保留。`,
+      '继续'))) return;
+    if (!(await this.confirm('确定删除？', '删除后无法恢复。', '删除'))) return;
+    this.deviceBusy = true;
+    try {
+      this.feedbackMessage = deviceActionMessage(await this.viewModel.deleteCloudData(),
+        '云端数据已删除，所有设备已断开；手机上的草稿仍然保留');
+      this.refreshWorkspaceData();
+    } catch (error) {
+      this.feedbackMessage = '本机连接状态更新失败，请重试';
+    } finally {
+      this.deviceBusy = false;
+    }
+    await this.refreshDeviceState();
   }
 
   private async applyScanPairing(): Promise<void> {
@@ -262,7 +331,7 @@ struct Placeholder {
       return;
     }
     if (text.length === 0) return;
-    const parsed = parsePairingInvitation(text);
+    const parsed = parsePairingInvitation(text, !DEBUG);
     if (parsed.invitation === undefined) {
       this.feedbackMessage = parsed.error;
       return;
@@ -271,7 +340,7 @@ struct Placeholder {
   }
 
   private async applyShortCodePairing(): Promise<void> {
-    const parsed = manualPairingInvitation(this.pairHostIp, this.pairShortCode);
+    const parsed = manualPairingInvitation(this.pairHostIp, this.pairShortCode, !DEBUG);
     if (parsed.invitation === undefined) {
       this.feedbackMessage = parsed.error;
       return;
@@ -284,7 +353,7 @@ struct Placeholder {
       this.feedbackMessage = '请先粘贴电脑端「复制配对信息」的内容';
       return;
     }
-    const parsed = parsePairingInvitation(this.pairInvitationText);
+    const parsed = parsePairingInvitation(this.pairInvitationText, !DEBUG);
     if (parsed.invitation === undefined) {
       this.feedbackMessage = parsed.error;
       return;
@@ -819,36 +888,41 @@ struct Placeholder {
             Column({ space: 2 }) {
               Text('CONNECT COMPUTER // 连接电脑').fontSize(9).fontFamily('monospace')
                 .fontWeight(FontWeight.Bold).fontColor('#9BE7A9')
-              Text(this.pairedComputerName).fontSize(16).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
+              Text(this.deviceServer.length > 0 ? serverAuthority(this.deviceServer) : '尚未连接')
+                .fontSize(16).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
+                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
 
             Row({ space: 5 }) {
-              Circle().width(6).height(6).fill('#30D158')
-              Text(this.pairRoute === 'lan' ? '局域网 / USB' : '服务器中转').fontSize(10).fontFamily('monospace')
-                .fontColor('#9BE7A9')
+              Circle().width(6).height(6).fill(this.deviceServer.length > 0 ? '#30D158' : '#64748B')
+              Text(this.deviceServer.length === 0 ? '仅本机' : !DEBUG ? '已连接' : this.pairRoute === 'lan' ? '局域网 / USB' : '服务器中转')
+                .fontSize(10).fontFamily('monospace').fontColor(this.deviceServer.length > 0 ? '#9BE7A9' : '#CBD5E1')
             }.padding({ left: 8, right: 8, top: 4, bottom: 4 })
-              .backgroundColor('#1E3A27').borderRadius(99)
+              .backgroundColor(this.deviceServer.length > 0 ? '#1E3A27' : '#1E293B').borderRadius(99)
           }.width('100%')
 
-          Text(AI_ENTRY ? '同步与 AI 需自行提供端点：在你的电脑上运行 sync-api 和 Web 端，点击顶部「手机远程」，扫描二维码或输入 8 位配对码。应用不提供云端服务，未连接时草稿只保存在本机。'
+          Text(!DEBUG ? '在电脑浏览器打开 AlgoFlow 网页版，点击「手机远程」，再用手机扫描二维码，或输入网页地址中的域名和 8 位配对码。未连接时草稿只保存在本机。'
+            : AI_ENTRY ? '同步与 AI 需自行提供端点：在你的电脑上运行 sync-api 和 Web 端，点击顶部「手机远程」，扫描二维码或输入 8 位配对码。应用不提供云端服务，未连接时草稿只保存在本机。'
             : '同步需自行提供端点：在你的电脑上运行 sync-api 和 Web 端，点击顶部「手机远程」，扫描二维码或输入 8 位配对码。应用不提供云端服务，未连接时草稿只保存在本机。')
             .fontSize(11).fontColor('#94A3B8').lineHeight(17)
 
-          // Route segmented toggle: 局域网 vs 服务器中转
-          Row({ space: 4 }) {
-            Button('局域网 / USB 转发')
-              .type(ButtonType.Normal).layoutWeight(1).height(30).fontSize(10).fontWeight(FontWeight.Bold)
-              .fontColor(this.pairRoute === 'lan' ? '#0F172A' : '#CBD5E1')
-              .backgroundColor(this.pairRoute === 'lan' ? '#FFFFFF' : Color.Transparent)
-              .borderRadius(7)
-              .onClick(() => { this.pairRoute = 'lan'; })
-            Button('服务器中转 (Relay)')
-              .type(ButtonType.Normal).layoutWeight(1).height(30).fontSize(10).fontWeight(FontWeight.Bold)
-              .fontColor(this.pairRoute === 'relay' ? '#0F172A' : '#CBD5E1')
-              .backgroundColor(this.pairRoute === 'relay' ? '#FFFFFF' : Color.Transparent)
-              .borderRadius(7)
-              .onClick(() => { this.pairRoute = 'relay'; })
-          }.width('100%').padding(3).backgroundColor('#1E293B').borderRadius(9)
+          // Route segmented toggle: 局域网 vs 服务器中转 (Debug only)
+          if (DEBUG) {
+            Row({ space: 4 }) {
+              Button('局域网 / USB 转发')
+                .type(ButtonType.Normal).layoutWeight(1).height(30).fontSize(10).fontWeight(FontWeight.Bold)
+                .fontColor(this.pairRoute === 'lan' ? '#0F172A' : '#CBD5E1')
+                .backgroundColor(this.pairRoute === 'lan' ? '#FFFFFF' : Color.Transparent)
+                .borderRadius(7)
+                .onClick(() => { this.pairRoute = 'lan'; })
+              Button('服务器中转 (Relay)')
+                .type(ButtonType.Normal).layoutWeight(1).height(30).fontSize(10).fontWeight(FontWeight.Bold)
+                .fontColor(this.pairRoute === 'relay' ? '#0F172A' : '#CBD5E1')
+                .backgroundColor(this.pairRoute === 'relay' ? '#FFFFFF' : Color.Transparent)
+                .borderRadius(7)
+                .onClick(() => { this.pairRoute = 'relay'; })
+            }.width('100%').padding(3).backgroundColor('#1E293B').borderRadius(9)
+          }
 
           // Pebrel 3-step summary
           Row({ space: 8 }) {
@@ -878,12 +952,15 @@ struct Placeholder {
             this.PairModeTab('扫码', 'scan')
             this.PairModeTab('配对码', 'code')
             this.PairModeTab('粘贴', 'paste')
-            this.PairModeTab('手动端点', 'endpoints')
+            if (DEBUG) {
+              this.PairModeTab('手动端点', 'endpoints')
+            }
           }.width('100%')
 
           if (this.pairMode === 'scan') {
             Column({ space: 10 }) {
-              Text('扫描电脑端「手机远程」窗口中的二维码。配对码 10 分钟内有效、只能使用一次，由电脑的同步服务校验。')
+              Text(DEBUG ? '扫描电脑端「手机远程」窗口中的二维码。配对码 10 分钟内有效、只能使用一次，由电脑的同步服务校验。'
+                : '扫描电脑网页「手机远程」窗口中的二维码。配对码 10 分钟内有效，只能使用一次。')
                 .fontSize(11).fontColor('#64748B').lineHeight(17)
               if (this.scanAvailable) {
                 Button(this.pairing ? '正在校验配对码...' : '扫描电脑二维码')
@@ -900,7 +977,8 @@ struct Placeholder {
             }.width('100%').alignItems(HorizontalAlign.Start)
           } else if (this.pairMode === 'code') {
             Column({ space: 10 }) {
-              Text('输入电脑地址和「手机远程」窗口中的 8 位配对码，由电脑的同步服务校验：')
+              Text(DEBUG ? '输入电脑地址和「手机远程」窗口中的 8 位配对码，由电脑的同步服务校验：'
+                : '输入网页地址中的域名和「手机远程」窗口中的 8 位配对码：')
                 .fontSize(11).fontColor('#64748B')
 
               Column({ space: 4 }) {
@@ -913,10 +991,10 @@ struct Placeholder {
               }.width('100%').alignItems(HorizontalAlign.Start)
 
               Column({ space: 4 }) {
-                Text(this.pairRoute === 'lan'
-                  ? '电脑同步服务地址：局域网 IP、IP:端口，或 hdc rport 后的 127.0.0.1'
+                Text(!DEBUG ? '网页地址中的域名（只支持 https）'
+                  : this.pairRoute === 'lan' ? '电脑同步服务地址：局域网 IP、IP:端口，或 hdc rport 后的 127.0.0.1'
                   : '中转同步服务地址 (Relay URL，需自行提供)').fontSize(10).fontColor('#64748B')
-                TextInput({ text: this.pairHostIp, placeholder: '127.0.0.1 或 192.168.x.x' })
+                TextInput({ text: this.pairHostIp, placeholder: DEBUG ? '127.0.0.1 或 192.168.x.x' : '域名' })
                   .width('100%').height(38).fontSize(12).fontFamily('monospace').fontColor('#0F172A')
                   .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
                   .onChange((val: string) => { this.pairHostIp = val; })
@@ -935,7 +1013,8 @@ struct Placeholder {
 
               TextInput({
                 text: this.pairInvitationText,
-                placeholder: '{"type":"algoflow-pair-v1","sync_api":"http://192.168.x.x:8787","code":"00000000"}'
+                placeholder: DEBUG ? '{"type":"algoflow-pair-v1","sync_api":"http://192.168.x.x:8787","code":"00000000"}'
+                  : '{"type":"algoflow-pair-v1","sync_api":"https://…","code":"00000000"}'
               })
                 .width('100%').height(42).fontSize(11).fontFamily('monospace').fontColor('#0F172A')
                 .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
@@ -947,7 +1026,7 @@ struct Placeholder {
                 .enabled(!this.pairing)
                 .onClick(() => { this.applyPastedInvitation(); })
             }.width('100%').alignItems(HorizontalAlign.Start)
-          } else {
+          } else if (DEBUG) {
             Column({ space: 10 }) {
               Column({ space: 4 }) {
                 Text('Sync API Base URL (真机使用 hdc rport tcp:8787 tcp:8787)').fontSize(10).fontColor('#64748B')
@@ -981,6 +1060,28 @@ struct Placeholder {
           }
         }.width('100%').padding(14).backgroundColor('#FFFFFF')
           .border({ width: 1, color: '#E5E9F0' }).borderRadius(16).alignItems(HorizontalAlign.Start)
+
+        if (this.deviceServer.length > 0) {
+          Column({ space: 8 }) {
+            Text('这台手机的连接').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#0F172A')
+            Text(serverAuthority(this.deviceServer)).fontSize(11).fontFamily('monospace').fontColor('#475569')
+            Text('断开和删除都不会删除这台手机上的草稿。删除云端数据会同时断开所有已连接的电脑和手机。')
+              .fontSize(10).fontColor('#94A3B8').lineHeight(15)
+            Row({ space: 8 }) {
+              Button('断开此设备')
+                .type(ButtonType.Normal).layoutWeight(1).height(36).fontSize(11).fontWeight(FontWeight.Medium)
+                .fontColor('#475569').backgroundColor('#F1F5F9').borderRadius(10)
+                .enabled(!this.deviceBusy && !this.syncing && !this.pairing)
+                .onClick(() => { this.disconnectThisDevice(); })
+              Button('删除云端数据')
+                .type(ButtonType.Normal).layoutWeight(1).height(36).fontSize(11).fontWeight(FontWeight.Bold)
+                .fontColor('#FFFFFF').backgroundColor('#B5674D').borderRadius(10)
+                .enabled(!this.deviceBusy && !this.syncing && !this.pairing)
+                .onClick(() => { this.deleteCloudData(); })
+            }.width('100%')
+          }.width('100%').padding(14).backgroundColor('#FFFFFF')
+            .border({ width: 1, color: '#E5E9F0' }).borderRadius(16).alignItems(HorizontalAlign.Start)
+        }
       } else {
         Column({ space: 6 }) {
           Text('本机模式').fontSize(16).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
@@ -1132,4 +1233,10 @@ struct Placeholder {
       this.BottomNavBar()
     }.width('100%').height('100%').backgroundColor('#F7F8FA')
   }
+}
+
+function deviceActionMessage(status: DeviceActionStatus, done: string): string {
+  if (status === DeviceActionStatus.DONE) return done;
+  if (status === DeviceActionStatus.NOT_PAIRED) return '这台手机还没有连接，无需操作';
+  return '操作未完成，请检查网络后重试；这台手机仍保持连接';
 }

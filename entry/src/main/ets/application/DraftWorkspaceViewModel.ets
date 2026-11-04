@@ -6,7 +6,9 @@ import { SyncRepository } from '../domain/SyncRepository';
 import { PhoneSyncService, SyncRunResult } from '../platform/PhoneSyncService';
 import { AI_READ_TIMEOUT_MS, HttpAIProvider } from '../platform/HttpAIProvider';
 import { HttpPairingClient } from '../platform/HttpPairingClient';
-import { PairingClaim, PairingInvitation, resolvePairingEndpoints } from '../domain/PairingContract';
+import { HttpSyncClient, SYNC_AUTH_REJECTED } from '../platform/HttpSyncClient';
+import { AssetDeviceTokenStore, DeviceTokenStore } from '../platform/DeviceTokenStore';
+import { PairingClaim, PairingError, PairingErrorCode, PairingInvitation, resolvePairingEndpoints } from '../domain/PairingContract';
 import { IDEAISession } from './IDEAISession';
 import { AIResultRepository, IDECapability, IDEContext, IDERecord, IDEState } from '../domain/IDEAIModels';
 import { compareSourceFromBody, createRewriteMappingRecord, RewriteCompareSource, RewriteLineMapping,
@@ -15,12 +17,19 @@ import { compareSourceFromBody, createRewriteMappingRecord, RewriteCompareSource
 const RULE_VERSION = '1.0.0';
 
 export interface PairingClient {
-  claim(invitation: PairingInvitation, phoneClientId: string): Promise<PairingClaim>;
+  claim(invitation: PairingInvitation, phoneClientId: string, deviceToken: string): Promise<PairingClaim>;
+}
+
+export enum DeviceActionStatus {
+  DONE = 'done',
+  NOT_PAIRED = 'not_paired',
+  FAILED = 'failed'
 }
 
 export class DraftWorkspaceViewModel {
   aiSession: IDEAISession | null = null;
   pairingClient: PairingClient = new HttpPairingClient();
+  tokenStore: DeviceTokenStore = new AssetDeviceTokenStore();
   private rewriteMappings: RewriteMappingRepository | null = null;
   private aiFile: string = 'main.cpp';
   private aiDraft: string = '';
@@ -108,7 +117,8 @@ export class DraftWorkspaceViewModel {
     this.cancelAI();
     try {
       await this.repository.flush();
-      const result = await new PhoneSyncService(this.syncRepository).synchronize();
+      const result = await new PhoneSyncService(this.syncRepository, await this.tokenStore.load(this.getSyncBaseUrl())).synchronize();
+      if (result.authRequired) await this.tokenStore.clear();
       await this.repository.flush();
       this.selectAIContext(this.aiDraft, this.aiFile);
       await this.aiSession?.reload();
@@ -128,16 +138,69 @@ export class DraftWorkspaceViewModel {
     return this.syncRepository?.getClientId() ?? '';
   }
 
-  // Claims the desktop's pairing code and stores the handed-over endpoints. It
-  // does not synchronize; the caller decides when to run the first push/pull.
+  // Claims the desktop's pairing code and stores the handed-over endpoints and
+  // device token. An existing token for the same sync-api is sent along, so a
+  // phone that already has a workspace keeps it and the computer joins. It does
+  // not synchronize; the caller decides when to run the first push/pull.
   async claimPairing(invitation: PairingInvitation): Promise<PairingClaim> {
-    const claim = await this.pairingClient.claim(invitation, this.getClientId());
+    const existing = await this.tokenStore.load(invitation.syncApi);
+    const claim = await this.pairingClient.claim(invitation, this.getClientId(), existing);
     const endpoints = resolvePairingEndpoints(invitation.syncApi, claim);
+    // Saved first: if the token cannot be kept, the endpoints stay unchanged too.
+    if (claim.deviceToken.length > 0) {
+      try {
+        await this.tokenStore.save(endpoints[0], claim.deviceToken);
+      } catch (error) {
+        throw new PairingError(PairingErrorCode.TOKEN_STORAGE);
+      }
+    }
     this.setSyncBaseUrl(endpoints[0]);
-    this.setAIBaseUrl(endpoints[1], this.allowTestData);
+    // A deployment without AI sends no gateway; keep whatever was configured.
+    if (endpoints[1].length > 0) this.setAIBaseUrl(endpoints[1], this.allowTestData);
     claim.syncApi = endpoints[0];
-    claim.aiGateway = endpoints[1];
+    claim.aiGateway = this.aiBaseUrl;
+    claim.deviceToken = '';
     return claim;
+  }
+
+  // The sync-api this phone holds a token for, or '' when it is not paired.
+  async pairedSyncApi(): Promise<string> {
+    const syncApi = this.getSyncBaseUrl();
+    return (await this.tokenStore.load(syncApi)).length > 0 ? syncApi : '';
+  }
+
+  // Retires this phone's token at the server, then forgets it. Local drafts stay.
+  async disconnectDevice(): Promise<DeviceActionStatus> {
+    return this.withDeviceToken(async (client: HttpSyncClient) => client.deleteCurrentDevice());
+  }
+
+  // Deletes the workspace's synced data and every device's token. Local drafts
+  // stay, and are marked local-only because no server holds them any more.
+  async deleteCloudData(): Promise<DeviceActionStatus> {
+    const status = await this.withDeviceToken(async (client: HttpSyncClient) => client.deleteWorkspace());
+    if (status === DeviceActionStatus.DONE && this.syncRepository !== undefined) {
+      for (const id of this.syncRepository.listDraftIds?.() ?? []) {
+        if (this.syncRepository.getDraft(id)?.syncStatus === SyncStatus.SYNCED) {
+          this.syncRepository.setDraftSyncStatus(id, SyncStatus.LOCAL_ONLY);
+        }
+      }
+      await this.repository.flush();
+    }
+    return status;
+  }
+
+  // A 401 means the server already dropped the token, which is the goal; any
+  // other failure keeps it so the user can retry.
+  private async withDeviceToken(action: (client: HttpSyncClient) => Promise<void>): Promise<DeviceActionStatus> {
+    const token = await this.tokenStore.load(this.getSyncBaseUrl());
+    if (token.length === 0) return DeviceActionStatus.NOT_PAIRED;
+    try {
+      await action(new HttpSyncClient(this.getSyncBaseUrl(), token));
+    } catch (error) {
+      if (!(error instanceof Error && error.message === SYNC_AUTH_REJECTED)) return DeviceActionStatus.FAILED;
+    }
+    await this.tokenStore.clear();
+    return DeviceActionStatus.DONE;
   }
 
   getSyncCursor(): string {
