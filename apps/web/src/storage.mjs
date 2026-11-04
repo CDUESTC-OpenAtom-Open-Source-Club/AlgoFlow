@@ -3,6 +3,9 @@ const QUEUE_KEY_PREFIX = 'algoflow.sync.queue.v1.';
 const CURSOR_KEY_PREFIX = 'algoflow.sync.cursor.v1.';
 // Stored per client next to the cursor: both describe one server lineage.
 const EPOCH_KEY_PREFIX = 'algoflow.sync.epoch.v1.';
+// One device token per sync-api address, shared by every tab of this browser.
+// A token is never sent to an address other than the one that issued it.
+const TOKEN_KEY_PREFIX = 'algoflow.sync.token.v1.';
 
 export class BrowserWorkspaceRepository {
   /** @param {string | null} [clientId] */
@@ -415,4 +418,27 @@ function isEmptyPlaceholderOperation(operation) {
   const value = /** @type {Record<string, unknown>} */ (payload);
   return value.title === '未命名思路' && value.idea === '' && value.code === '' &&
     value.short_code === '' && value.rewrite === '';
+}
+
+/** @param {string} syncApi @returns {string} */
+export function loadDeviceToken(syncApi) {
+  try { return localStorage.getItem(tokenKey(syncApi)) ?? ''; }
+  catch { return ''; }
+}
+
+/** @param {string} syncApi @param {string} token */
+export function saveDeviceToken(syncApi, token) {
+  localStorage.setItem(tokenKey(syncApi), token);
+}
+
+/** @param {string} syncApi */
+export function clearDeviceToken(syncApi) {
+  try { localStorage.removeItem(tokenKey(syncApi)); }
+  catch { /* storage unavailable: nothing was saved */ }
+}
+
+/** @param {string} syncApi */
+function tokenKey(syncApi) {
+  const trimmed = syncApi.trim();
+  return `${TOKEN_KEY_PREFIX}${trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed}`;
 }

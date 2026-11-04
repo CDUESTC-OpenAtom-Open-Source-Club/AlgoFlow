@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveAIResultConflict, synchronizeWorkspace } from '../src/sync-client.mjs';
 import { buildReviewRequest, LocalAIClient, reviewResultFromGateway } from '../src/ai-client.mjs';
-import { BrowserWorkspaceRepository, getReviewFreshness, hasReviewSource, queueReviewResult, sortReviewResultsNewestFirst } from '../src/storage.mjs';
+import { BrowserWorkspaceRepository, clearDeviceToken, getReviewFreshness, hasReviewSource, loadDeviceToken, queueReviewResult, saveDeviceToken, sortReviewResultsNewestFirst } from '../src/storage.mjs';
 import { createReviewResult, toggleReviewVisibility } from '../src/review-use-case.mjs';
 import { createAIGateway } from '../../../services/ai-gateway/src/server.mjs';
 
@@ -302,6 +302,26 @@ test('restores a structurally valid legacy review without inventing its source s
     assert.equal(restored.review_results.length, 1);
     assert.equal(restored.review_results[0].id, review.id);
     assert.equal(hasReviewSource(restored, restored.review_results[0]), false);
+  } finally {
+    if (previousStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = previousStorage;
+  }
+});
+
+test('a device token belongs to the sync API that issued it', () => {
+  const previousStorage = globalThis.localStorage;
+  const values = new Map();
+  globalThis.localStorage = {
+    getItem(key) { return values.get(key) ?? null; },
+    setItem(key, value) { values.set(key, value); },
+    removeItem(key) { values.delete(key); },
+  };
+  try {
+    saveDeviceToken('https://sync.example.test/', 'token-a');
+    assert.equal(loadDeviceToken('https://sync.example.test'), 'token-a');
+    assert.equal(loadDeviceToken('https://other.example.test'), '', 'another server must not receive this token');
+    clearDeviceToken('https://sync.example.test');
+    assert.equal(loadDeviceToken('https://sync.example.test'), '');
   } finally {
     if (previousStorage === undefined) delete globalThis.localStorage;
     else globalThis.localStorage = previousStorage;

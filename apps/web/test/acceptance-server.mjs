@@ -5,15 +5,20 @@ import { resolve, extname, sep } from 'node:path';
 import { createAIGateway } from '../../../services/ai-gateway/src/server.mjs';
 import { createSyncServer } from '../../../services/sync-api/src/server.mjs';
 import { SyncStore } from '../../../services/sync-api/src/sync-store.mjs';
+import { WorkspaceDirectory } from '../../../services/sync-api/src/workspace-directory.mjs';
 import { newDraft } from '../src/storage.mjs';
 import { reviewResult, completionResult } from './ai-fixtures.mjs';
 
-const store = new SyncStore();
-for (const [id, newline] of [['acceptance-a', '\r\n'], ['acceptance-b', '\n']]) {
-  const draft = { ...newDraft('fixture'), id, title: `测试草稿 ${id}`, idea: '累加当前元素',
-    code: ['// fixture', 'int count = 0;', 'count += 1;', '// done'].join(newline) };
-  store.apply({ operation_id: `seed-${id}`, entity_type: 'draft', entity_id: id,
-    operation_type: 'upsert', base_version: 0, client_id: 'fixture', occurred_at: new Date().toISOString(), payload: draft });
+// Every workspace starts from the same fixture drafts, whichever token created it.
+function seededStore() {
+  const store = new SyncStore();
+  for (const [id, newline] of [['acceptance-a', '\r\n'], ['acceptance-b', '\n']]) {
+    const draft = { ...newDraft('fixture'), id, title: `测试草稿 ${id}`, idea: '累加当前元素',
+      code: ['// fixture', 'int count = 0;', 'count += 1;', '// done'].join(newline) };
+    store.apply({ operation_id: `seed-${id}`, entity_type: 'draft', entity_id: id,
+      operation_type: 'upsert', base_version: 0, client_id: 'fixture', occurred_at: new Date().toISOString(), payload: draft });
+  }
+  return store;
 }
 let delayMs = 0;
 let mode = 'test';
@@ -36,7 +41,7 @@ function delay(signal) {
 }
 const testGateway = createAIGateway({ aiProvider: provider, responseHeaders: { 'X-AlgoFlow-Test-Data': 'true' } });
 const disabledGateway = createAIGateway();
-const sync = createSyncServer(store);
+const sync = createSyncServer({ directory: new WorkspaceDirectory({ createStore: seededStore }) });
 const dist = resolve(import.meta.dirname, '../dist');
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
@@ -51,7 +56,7 @@ const server = createServer(async (req, res) => {
     req.url = req.url.slice('/ai-api'.length);
     (mode === 'disabled' ? disabledGateway : testGateway).emit('request', req, res); return;
   }
-  if (url.pathname.startsWith('/v1/sync/')) {
+  if (url.pathname.startsWith('/v1/') || url.pathname === '/healthz') {
     if (!syncOnline) { res.setHeader('Access-Control-Allow-Origin', '*'); res.statusCode = 503; res.end('{}'); return; }
     if (delayMs) await new Promise(done => setTimeout(done, delayMs));
     sync.emit('request', req, res); return;

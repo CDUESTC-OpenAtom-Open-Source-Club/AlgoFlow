@@ -4,16 +4,21 @@ import { assertReviewResult, createAIArtifactConflictCopy, createReviewResultCon
 export { assertReviewResult } from './storage.mjs';
 
 export class LocalSyncClient {
-  /** @param {string} [apiBase] */
-  constructor(apiBase = API_BASE) {
+  /**
+   * @param {string} [apiBase]
+   * @param {string} [token] device token for this apiBase; see `loadDeviceToken`.
+   */
+  constructor(apiBase = API_BASE, token = '') {
     this.apiBase = apiBase;
+    this.token = token;
   }
 
   /** @param {import('./types').SyncOperation} operation @returns {Promise<import('./types').PushResult>} */
   async push(operation) {
     const response = await fetch(`${this.apiBase}/v1/sync/operations`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(operation)
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...this.authHeaders() }, body: JSON.stringify(operation)
     });
+    if (response.status === 401) throw new Error('AUTH_REQUIRED');
     const result = await response.json();
     if (!response.ok && response.status !== 409) {
       throw new Error(result.error_code ?? result.code ?? 'SYNC_FAILED');
@@ -24,9 +29,41 @@ export class LocalSyncClient {
   /** @param {string} cursor @param {string} [epoch] @returns {Promise<import('./types').PullResult>} */
   async pull(cursor, epoch = '') {
     const epochQuery = epoch ? `&epoch=${encodeURIComponent(epoch)}` : '';
-    const response = await fetch(`${this.apiBase}/v1/sync/changes?after=${encodeURIComponent(cursor)}${epochQuery}`);
+    const response = await fetch(`${this.apiBase}/v1/sync/changes?after=${encodeURIComponent(cursor)}${epochQuery}`, { headers: this.authHeaders() });
+    if (response.status === 401) throw new Error('AUTH_REQUIRED');
     if (!response.ok) throw new Error('SYNC_FAILED');
     return response.json();
+  }
+
+  /**
+   * Creates a new workspace with this browser as its first device. Needs no token.
+   * @param {{ device_name?: string }} [request]
+   * @returns {Promise<import('./types').WorkspaceCreateResult>}
+   */
+  async createWorkspace(request = {}) {
+    const response = await fetch(`${this.apiBase}/v1/workspaces`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request)
+    });
+    const result = await response.json();
+    if (!response.ok || result.status !== 'created' || typeof result.device_token !== 'string') {
+      throw new Error(result.error_code ?? 'SYNC_FAILED');
+    }
+    return result;
+  }
+
+  /**
+   * Deletes this device on the server. A token that is already invalid counts
+   * as done. The server deletes the workspace with its last device.
+   * @returns {Promise<void>}
+   */
+  async revokeCurrentDevice() {
+    const response = await fetch(`${this.apiBase}/v1/devices/current`, { method: 'DELETE', headers: this.authHeaders() });
+    if (!response.ok && response.status !== 401 && response.status !== 404) throw new Error('SYNC_FAILED');
+  }
+
+  /** @returns {Record<string, string>} */
+  authHeaders() {
+    return this.token ? { Authorization: `Bearer ${this.token}` } : {};
   }
 }
 
@@ -43,6 +80,9 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
   let next = { ...state, drafts: [...state.drafts], draft_history: [...(state.draft_history ?? [])], ai_artifacts: [...(state.ai_artifacts ?? [])], review_results: [...(state.review_results ?? [])], operations: [...state.operations], conflicts: [...state.conflicts], online: true };
   let hadConflict = false;
   let hadFailure = false;
+  // A rejected token fails every later request too; stop and let the caller
+  // ask for a new pairing. The queue and local drafts are kept.
+  let authRequired = false;
   const epoch = next.server_epoch ?? '';
   /** @param {import('./types').SyncOperation} item */
   const withEpoch = (item) => (epoch ? { ...item, base_epoch: epoch } : item);
@@ -155,6 +195,10 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
         continue;
       }
       hadFailure = true;
+      if (isAuthRequired(error)) {
+        authRequired = true;
+        break;
+      }
     }
   }
 
@@ -169,8 +213,9 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
       const reset = Boolean(pull.server_epoch) && (pull.reset === true || untrustedCursor);
       const merged = reset ? applyResetChanges(next, pull.changes) : applyPulledChanges(next, pull.changes, next.client_id);
       next = { ...merged, cursor: pull.next_cursor, ...(pull.server_epoch ? { server_epoch: pull.server_epoch } : {}) };
-    } catch {
+    } catch (error) {
       hadFailure = true;
+      authRequired = isAuthRequired(error);
     }
   }
 
@@ -179,10 +224,16 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
   // pull instead of reporting success while the editor still shows blank data.
   next = selectRemoteDraftWhenPlaceholder(next);
 
-  if (hadConflict || next.conflicts.some((conflict) => !conflict.resolved)) return { state: next, status: 'conflict' };
-  if (hadFailure) return { state: next, status: 'failed' };
+  const auth = authRequired ? { auth_required: true } : {};
+  if (hadConflict || next.conflicts.some((conflict) => !conflict.resolved)) return { state: next, status: 'conflict', ...auth };
+  if (hadFailure) return { state: next, status: 'failed', ...auth };
   recomputeReviewFreshness(next);
   return { state: next, status: next.operations.length ? 'local_only' : 'synced' };
+}
+
+/** @param {unknown} error */
+function isAuthRequired(error) {
+  return error instanceof Error && error.message === 'AUTH_REQUIRED';
 }
 
 /**

@@ -335,6 +335,15 @@ export interface PullResult {
 export interface SyncRunResult {
   state: WorkspaceState;
   status: SyncStatus;
+  /** The device token was rejected; local data and the queue are unchanged. */
+  auth_required?: boolean;
+}
+
+export interface WorkspaceCreateResult {
+  status: 'created';
+  workspace_id: string;
+  device_id: string;
+  device_token: string;
 }
 
 // Rewrite comparison. Mappings are local-only: they never enter Draft,

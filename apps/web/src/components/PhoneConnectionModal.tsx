@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   buildPairingInvitation,
   createPairingSession,
@@ -31,6 +31,12 @@ interface PhoneConnectionModalProps {
   config: PhoneConnectionConfig;
   onSaveConfig: (next: PhoneConnectionConfig) => void;
   onSyncNow: () => void;
+  /** Device token of this browser for `config.syncBaseUrl`, created on demand. */
+  ensureToken: () => Promise<string>;
+  /** Drops a token the sync-api rejected; the next `ensureToken` replaces it. */
+  onTokenRejected: (token: string) => void;
+  /** The phone already had a workspace; switch this browser to `token`. */
+  onTransfer: (token: string) => Promise<void>;
 }
 
 export function PhoneConnectionModal({
@@ -42,14 +48,20 @@ export function PhoneConnectionModal({
   config,
   onSaveConfig,
   onSyncNow,
+  ensureToken,
+  onTokenRejected,
+  onTransfer,
 }: PhoneConnectionModalProps) {
   const [route, setRoute] = useState<'lan' | 'relay'>(config.route);
   const [syncUrl, setSyncUrl] = useState(config.syncBaseUrl);
   const [aiUrl, setAiUrl] = useState(config.aiBaseUrl);
   const [computerName, setComputerName] = useState(config.computerName);
-  // The code is issued, expired and consumed by sync-api (/v1/pairing). It is a
-  // single-use endpoint handoff, not account authentication.
+  // The code is issued, expired and consumed by sync-api (/v1/pairing). It lets
+  // one phone join this browser's workspace; the phone gets its own token.
   const [session, setSession] = useState<(PairingSession & { code: string }) | null>(null);
+  // Only the creating device can poll a session, so polling keeps its token.
+  const sessionToken = useRef('');
+  const [transferred, setTransferred] = useState(false);
   const [sessionState, setSessionState] = useState<PairingSession['state'] | null>(null);
   const [phoneClientId, setPhoneClientId] = useState<string | null>(null);
   const [pairingError, setPairingError] = useState('');
@@ -72,16 +84,29 @@ export function PhoneConnectionModal({
     setPairingError('');
     setCopyState('idle');
     try {
-      const created = await createPairingSession(config.syncBaseUrl, {
+      const request = {
         desktop_client_id: clientId,
         computer_name: config.computerName,
         route: config.route,
         sync_api: config.syncBaseUrl,
         ai_gateway: config.aiBaseUrl,
-      });
+      };
+      let token = await ensureToken();
+      let created;
+      try {
+        created = await createPairingSession(config.syncBaseUrl, request, token);
+      } catch (error) {
+        // A restarted local sync-api no longer knows the token: replace it once.
+        if (!(error instanceof Error) || error.message !== 'AUTH_REQUIRED') throw error;
+        onTokenRejected(token);
+        token = await ensureToken();
+        created = await createPairingSession(config.syncBaseUrl, request, token);
+      }
+      sessionToken.current = token;
       setSession(created);
       setSessionState(created.state);
       setPhoneClientId(null);
+      setTransferred(false);
     } catch (error) {
       setSession(null);
       setSessionState(null);
@@ -91,25 +116,31 @@ export function PhoneConnectionModal({
     } finally {
       setLoading(false);
     }
-  }, [clientId, config]);
+  }, [clientId, config, ensureToken, onTokenRejected]);
 
   useEffect(() => {
     if (!open || !config.enabled) return;
     void startSession();
   }, [open, config.enabled, startSession]);
 
+  // Polling continues after the modal closes, so a phone that claims the code
+  // later still hands over its transfer_token.
   useEffect(() => {
-    if (!open || !session || sessionState !== 'pending') return;
+    if (!session || sessionState !== 'pending') return;
     const timer = window.setInterval(() => {
       setNow(Date.now());
-      void getPairingSession(config.syncBaseUrl, session.pairing_id).then((latest) => {
+      void getPairingSession(config.syncBaseUrl, session.pairing_id, sessionToken.current).then((latest) => {
         setSessionState(latest.state);
         setPhoneClientId(latest.phone_client_id);
+        if (latest.transfer_token) {
+          setTransferred(true);
+          void onTransfer(latest.transfer_token);
+        }
       }).catch(() => {});
     }, POLL_INTERVAL_MS);
     const tick = window.setInterval(() => setNow(Date.now()), 1000);
     return () => { window.clearInterval(timer); window.clearInterval(tick); };
-  }, [open, session, sessionState, config.syncBaseUrl]);
+  }, [session, sessionState, config.syncBaseUrl, onTransfer]);
 
   const remainingSec = session ? Math.max(0, Math.ceil((Date.parse(session.expires_at) - now) / 1000)) : 0;
   const effectiveState = sessionState === 'pending' && remainingSec === 0 ? 'expired' : sessionState;
@@ -158,7 +189,7 @@ export function PhoneConnectionModal({
           <div>
             <span className="eyebrow">SETTINGS → PHONE REMOTE</span>
             <h2>手机远程与跨端配对</h2>
-            <p className="pebrel-subtitle">在手机端打开「设置 → 连接电脑」，扫描二维码或输入 8 位配对码，把当前电脑的同步与 AI 端点交给手机。</p>
+            <p className="pebrel-subtitle">在手机端打开「设置 → 连接电脑」，扫描二维码或输入 8 位配对码，手机与这台电脑就会使用同一个同步工作区。</p>
           </div>
           <button type="button" className="quiet-button" aria-label="关闭手机连接窗口" onClick={onClose}>
             ✕
@@ -168,7 +199,7 @@ export function PhoneConnectionModal({
         {!config.enabled ? (
           <div className="pebrel-off-card">
             <h3>开启手机远程同步</h3>
-            <p>开启后由同步服务生成 10 分钟内有效、只能使用一次的配对二维码与 8 位配对码，把当前电脑使用的同步与 AI 服务端点交给 OpenHarmony 手机端。配对只移交端点，不是账号认证。</p>
+            <p>开启后由同步服务生成 10 分钟内有效、只能使用一次的配对二维码与 8 位配对码。OpenHarmony 手机端凭它加入这台电脑的同步工作区，并取得自己的设备令牌；配对码本身不能用来读取草稿。</p>
             <button
               type="button"
               className="sync-button"
@@ -234,7 +265,7 @@ export function PhoneConnectionModal({
                     <span className="step-num">3</span>
                     <div>
                       <strong>同步服务校验配对码，手机完成首次 Push &amp; Pull</strong>
-                      <p>配对码 10 分钟内有效、只能使用一次。配对只移交端点，不是账号认证；同步服务本身仍无鉴权，仅适合可信局域网。</p>
+                      <p>配对码 10 分钟内有效、只能使用一次。每台设备凭自己的令牌同步，不同工作区的数据互相隔离。如果手机已经在别的工作区，这台电脑会改用手机的工作区，本地草稿会合并上传。</p>
                     </div>
                   </li>
                 </ol>
@@ -246,7 +277,10 @@ export function PhoneConnectionModal({
                   </p>
                 )}
                 {effectiveState === 'claimed' && phoneClientId && (
-                  <p className="pebrel-desc">已与手机 <code>{phoneClientId}</code> 配对，手机将执行首次同步。</p>
+                  <p className="pebrel-desc">
+                    已与手机 <code>{phoneClientId}</code> 配对，手机将执行首次同步。
+                    {transferred && '这台电脑已改用手机的工作区。'}
+                  </p>
                 )}
 
                 <div className="pebrel-endpoint-summary">

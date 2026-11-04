@@ -21,7 +21,7 @@ export class SyncStore {
 
   #apply(operation) {
     const validationError = validateOperation(operation);
-    if (validationError) return { operation_id: operation?.operation_id ?? '', status: 'rejected', error_code: 'INVALID_REQUEST' };
+    if (validationError) return { operation_id: typeof operation?.operation_id === 'string' ? operation.operation_id : '', status: 'rejected', error_code: 'INVALID_REQUEST' };
     // A base_version > 0 from another lineage cannot be compared with this
     // store's versions. It is a conflict even if the numbers happen to match.
     if (operation.base_version > 0 && typeof operation.base_epoch === 'string' && operation.base_epoch !== this.epoch) {
@@ -107,12 +107,16 @@ export class SyncStore {
 
 export function validateOperation(operation) {
   if (!operation || typeof operation !== 'object') return 'operation is required';
-  if (!operation.operation_id || !operation.entity_id || !operation.client_id) return 'stable identifiers are required';
+  if (![operation.operation_id, operation.entity_id, operation.client_id].every(isStableId)) return 'stable identifiers are required';
   if (typeof operation.occurred_at !== 'string' || !operation.occurred_at.endsWith('Z') || Number.isNaN(Date.parse(operation.occurred_at))) return 'occurred_at must be a UTC timestamp';
   if (!Number.isInteger(operation.base_version) || operation.base_version < 0) return 'base_version is invalid';
   if (!['draft', 'ai_artifact', 'review_result'].includes(operation.entity_type)) return 'entity_type is invalid';
   if (!['upsert', 'delete'].includes(operation.operation_type)) return 'operation_type is invalid';
-  if (operation.base_epoch !== undefined && (typeof operation.base_epoch !== 'string' || operation.base_epoch.length === 0)) return 'base_epoch is invalid';
+  if (operation.base_epoch !== undefined && !isStableId(operation.base_epoch)) return 'base_epoch is invalid';
   if (!operation.payload || typeof operation.payload !== 'object' || Array.isArray(operation.payload)) return 'payload is required';
   return null;
+}
+
+function isStableId(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 128;
 }
