@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { SyncStore } from '../src/sync-store.mjs';
 import { createSyncServer } from '../src/server.mjs';
+import { WorkspaceDirectory } from '../src/workspace-directory.mjs';
 import { queueAIArtifact, queueReviewResult, queueUpsert, selectCurrentAIArtifact } from '../../../apps/web/src/storage.mjs';
 import { LocalSyncClient, synchronizeWorkspace } from '../../../apps/web/src/sync-client.mjs';
 import { validateReviewResultEntity } from '../../../packages/contracts/validate.mjs';
@@ -17,6 +18,13 @@ test('shared review entity vectors match the sync-api validator', async (t) => {
     });
   }
 });
+
+// Every sync route needs a device token; each client gets its own workspace.
+async function connectClient(base) {
+  const client = new LocalSyncClient(base);
+  client.token = (await client.createWorkspace()).device_token;
+  return client;
+}
 
 const operation = {
   operation_id: 'op-1', entity_type: 'draft', entity_id: 'draft-1', operation_type: 'upsert',
@@ -117,7 +125,7 @@ test('two Web clients preserve a stale concurrent edit as a conflict copy', asyn
   context.after(() => server.close());
   const address = server.address();
   assert.ok(address && typeof address === 'object');
-  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+  const client = await connectClient(`http://127.0.0.1:${address.port}`);
   const baseDraft = makeDraft('draft-shared', 'seed', 'web-a');
   const clientA = makeWorkspace('web-a', baseDraft);
   const clientB = makeWorkspace('web-b', { ...baseDraft, last_modified_client_id: 'web-b' });
@@ -148,7 +156,7 @@ test('an offline Web queue reuses its operation id and submits after recovery', 
   context.after(() => server.close());
   const address = server.address();
   assert.ok(address && typeof address === 'object');
-  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+  const client = await connectClient(`http://127.0.0.1:${address.port}`);
   const state = makeWorkspace('web-offline', makeDraft('draft-offline', 'seed', 'web-offline'));
 
   queueUpsert(state, { ...state.drafts[0], code: 'offline edit one' });
@@ -180,13 +188,42 @@ test('Web sync does not advance its cursor when pull fails', async () => {
   assert.equal(result.state.cursor, '7');
 });
 
+test('Web reports auth_required on a rejected token and keeps drafts, queue and cursor', async (context) => {
+  const server = createSyncServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  context.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const revoked = await connectClient(base);
+  await revoked.revokeCurrentDevice();
+
+  const state = makeWorkspace('web-401', makeDraft('draft-401', 'local work', 'web-401'));
+  queueUpsert(state, { ...state.drafts[0], code: 'unsent edit' });
+  state.cursor = '7';
+  const pushed = await synchronizeWorkspace(state, revoked);
+  assert.equal(pushed.status, 'failed');
+  assert.equal(pushed.auth_required, true);
+  assert.equal(pushed.state.operations.length, 1, 'the queued edit must survive');
+  assert.equal(pushed.state.operations[0].payload.code, 'unsent edit');
+  assert.equal(pushed.state.drafts[0].code, 'local work');
+  assert.equal(pushed.state.cursor, '7');
+
+  const pulled = await synchronizeWorkspace(makeWorkspace('web-401', makeDraft('draft-401', 'local work', 'web-401')), revoked);
+  assert.equal(pulled.status, 'failed');
+  assert.equal(pulled.auth_required, true);
+
+  // Retiring a token the server already dropped is not an error.
+  await revoked.revokeCurrentDevice();
+  const offline = { async push() { throw new Error('network'); }, async pull() { throw new Error('network'); } };
+  assert.equal((await synchronizeWorkspace(makeWorkspace('web-net', makeDraft('draft-net', 'x', 'web-net')), offline)).auth_required, undefined);
+});
+
 test('Web selects a published phone draft instead of leaving the blank placeholder selected', async (context) => {
   const server = createSyncServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => server.close());
   const address = server.address();
   assert.ok(address && typeof address === 'object');
-  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+  const client = await connectClient(`http://127.0.0.1:${address.port}`);
   const phoneDraft = makeDraft('phone-draft-1', 'phone code', 'phone-local');
   const phoneOperation = {
     operation_id: 'phone-op-1', entity_type: 'draft', entity_id: phoneDraft.id, operation_type: 'upsert',
@@ -207,7 +244,7 @@ test('Web replays the change stream when an old placeholder-only state already a
   context.after(() => server.close());
   const address = server.address();
   assert.ok(address && typeof address === 'object');
-  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+  const client = await connectClient(`http://127.0.0.1:${address.port}`);
   const phoneDraft = makeDraft('phone-draft-replay', 'replayed phone code', 'phone-local');
   assert.equal((await client.push({
     operation_id: 'phone-replay-1', entity_type: 'draft', entity_id: phoneDraft.id, operation_type: 'upsert',
@@ -243,7 +280,7 @@ test('a Web edit updates the same starter draft for the phone pull path', async 
   context.after(() => server.close());
   const address = server.address();
   assert.ok(address && typeof address === 'object');
-  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+  const client = await connectClient(`http://127.0.0.1:${address.port}`);
 
   const phoneDraft = makeDraft('draft-local', 'phone capture', 'phone-local');
   assert.equal((await client.push({
@@ -283,7 +320,7 @@ test('syncs an independent faithful artifact without changing the draft entity',
   context.after(() => server.close());
   const address = server.address();
   assert.ok(address && typeof address === 'object');
-  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+  const client = await connectClient(`http://127.0.0.1:${address.port}`);
   const draft = makeDraft('draft-artifact-independent', 'main code', 'phone-local');
   const artifact = makeArtifact('artifact-1', draft.id, 'phone-local');
   const phone = makeWorkspace('phone-local', draft);
@@ -310,7 +347,7 @@ test('two AI clients retain independent review results and choose the same curre
   context.after(() => server.close());
   const address = server.address();
   assert.ok(address && typeof address === 'object');
-  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+  const client = await connectClient(`http://127.0.0.1:${address.port}`);
   const draft = makeDraft('draft-review-concurrent', 'seed', 'web-a');
   draft.sync_status = 'synced';
   const seed = makeWorkspace('seed', structuredClone(draft));
@@ -364,7 +401,7 @@ test('two workspaces concurrently retain faithful AI artifacts and choose the sa
   context.after(() => server.close());
   const address = server.address();
   assert.ok(address && typeof address === 'object');
-  const client = new LocalSyncClient(`http://127.0.0.1:${address.port}`);
+  const client = await connectClient(`http://127.0.0.1:${address.port}`);
   const draft = makeDraft('draft-artifact-concurrent', 'seed', 'seed');
   draft.sync_status = 'synced';
   const seed = makeWorkspace('seed', structuredClone(draft));
@@ -792,10 +829,16 @@ test('pull replays everything and flags a reset for a cursor from another epoch'
   assert.equal(legacy.changes.length, 1);
 });
 
-test('Web rebases a lost draft and adopts the re-seeded server copy after a sync-api restart', async (context) => {
-  let server = createSyncServer(new SyncStore('epoch-a'));
+test('Web rebases a lost draft and adopts the re-seeded server copy after switching to another workspace', async (context) => {
+  // Each workspace is its own lineage. Switching the token to a workspace this
+  // client never synced with (a pairing transfer) looks like a server restart:
+  // a new epoch whose versions are not comparable with the old ones.
+  const stores = [new SyncStore('epoch-a'), new SyncStore('epoch-b')];
+  const directory = new WorkspaceDirectory({ createStore: () => stores.shift() });
+  const server = createSyncServer({ directory });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  let client = new LocalSyncClient(`http://127.0.0.1:${server.address().port}`);
+  context.after(() => server.close());
+  const client = await connectClient(`http://127.0.0.1:${server.address().port}`);
   let web = makeWorkspace('web-epoch', makeDraft('draft-kept', 'kept', 'web-epoch'));
   web.drafts.push(makeDraft('draft-shared', 'shared', 'web-epoch'));
   queueUpsert(web, { ...web.drafts[0], code: 'kept v1' });
@@ -804,18 +847,13 @@ test('Web rebases a lost draft and adopts the re-seeded server copy after a sync
   assert.equal(web.server_epoch, 'epoch-a');
   assert.deepEqual(web.drafts.map((draft) => draft.version), [1, 1]);
 
-  // "Restart": a new empty store (new epoch) behind the same base URL concept.
-  // A new port and client avoid fetch reusing a pooled socket of the old process.
-  server.closeAllConnections();
-  await new Promise((resolve) => server.close(resolve));
-  const fresh = new SyncStore('epoch-b');
-  // Another client re-seeds draft-shared as v1 on the new server.
+  // The phone's workspace already has its own draft-shared v1.
+  const phoneWorkspace = directory.create({ kind: 'phone', name: null });
+  const fresh = directory.authenticate(phoneWorkspace.device_token).store;
+  assert.equal(fresh.epoch, 'epoch-b');
   fresh.apply({ operation_id: 'phone-seed', entity_type: 'draft', entity_id: 'draft-shared', operation_type: 'upsert', base_version: 0,
     client_id: 'phone', occurred_at: '2026-10-22T00:00:00.000Z', payload: { ...makeDraft('draft-shared', 'phone content', 'phone'), title: 'Phone' } });
-  server = createSyncServer(fresh);
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  context.after(() => server.close());
-  client = new LocalSyncClient(`http://127.0.0.1:${server.address().port}`);
+  client.token = directory.addDevice(phoneWorkspace.workspace_id, { kind: 'web', name: null }).device_token;
 
   // A stale edit of draft-shared at base_version 1 must not overwrite the phone's v1.
   queueUpsert(web, { ...web.drafts.find((draft) => draft.id === 'draft-shared'), code: 'stale web edit' });

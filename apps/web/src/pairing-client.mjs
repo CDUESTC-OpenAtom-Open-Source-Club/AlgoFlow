@@ -1,26 +1,27 @@
 // Web side of the sync-api pairing routes (packages/contracts/schemas/sync.schema.json
-// #/$defs/pairing*). Pairing hands this computer's endpoints to a phone with a
-// short-lived, single-use code; it is not account authentication.
+// #/$defs/pairing*). Pairing lets a phone join this browser's workspace with a
+// short-lived, single-use code. Both routes need this browser's device token.
 
 export const PAIRING_INVITATION_TYPE = 'algoflow-pair-v1';
 
 /**
  * @typedef {'lan' | 'relay'} PairingRoute
  * @typedef {'pending' | 'claimed' | 'expired' | 'revoked'} PairingState
- * @typedef {{ desktop_client_id: string, computer_name: string, route: PairingRoute, sync_api: string, ai_gateway: string }} PairingSessionRequest
+ * @typedef {{ desktop_client_id: string, computer_name: string, route: PairingRoute, sync_api: string, ai_gateway?: string }} PairingSessionRequest
  * @typedef {{ pairing_id: string, code?: string, state: PairingState, computer_name: string, route: PairingRoute,
- *   sync_api: string, ai_gateway: string, created_at: string, expires_at: string, claimed_at: string | null,
- *   phone_client_id: string | null }} PairingSession
+ *   sync_api: string, ai_gateway?: string, created_at: string, expires_at: string, claimed_at: string | null,
+ *   phone_client_id: string | null, transfer_token?: string }} PairingSession
  */
 
 /**
  * @param {string} syncApi
  * @param {PairingSessionRequest} request
+ * @param {string} token device token of this browser
  * @returns {Promise<PairingSession & { code: string }>}
  */
-export async function createPairingSession(syncApi, request) {
+export async function createPairingSession(syncApi, request, token) {
   const response = await fetch(`${trimSlash(syncApi)}/v1/pairing/sessions`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request)
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(request)
   });
   const result = await response.json();
   if (!response.ok || result.status !== 'created' || typeof result.session?.code !== 'string') {
@@ -30,12 +31,18 @@ export async function createPairingSession(syncApi, request) {
 }
 
 /**
+ * Only the device that created the session can read it. `transfer_token` is
+ * present when the phone already had another workspace: this browser then
+ * switches to that token (see `onTransfer` in PhoneConnectionModal).
  * @param {string} syncApi
  * @param {string} pairingId
+ * @param {string} token device token of this browser
  * @returns {Promise<PairingSession>}
  */
-export async function getPairingSession(syncApi, pairingId) {
-  const response = await fetch(`${trimSlash(syncApi)}/v1/pairing/sessions/${encodeURIComponent(pairingId)}`);
+export async function getPairingSession(syncApi, pairingId, token) {
+  const response = await fetch(`${trimSlash(syncApi)}/v1/pairing/sessions/${encodeURIComponent(pairingId)}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
   const result = await response.json();
   if (!response.ok || result.status !== 'ok') throw new Error(result.error_code ?? 'PAIRING_FAILED');
   return result.session;

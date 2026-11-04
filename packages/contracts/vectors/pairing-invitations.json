@@ -46,6 +46,11 @@
       "text": "{\"type\":\"algoflow-pair-v1\",\"sync_api\":\"http://192.168.1.20:8787\",\"code\":\"04829103\",\"token\":\"secret\"}"
     },
     {
+      "name": "device token in invitation",
+      "valid": false,
+      "text": "{\"type\":\"algoflow-pair-v1\",\"sync_api\":\"https://relay.example.test\",\"code\":\"04829103\",\"device_token\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}"
+    },
+    {
       "name": "JSON array",
       "valid": false,
       "text": "[\"algoflow-pair-v1\"]"

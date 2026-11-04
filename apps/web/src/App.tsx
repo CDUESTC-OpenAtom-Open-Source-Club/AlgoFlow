@@ -7,7 +7,7 @@ import { PhoneConnectionModal, type PhoneConnectionConfig } from './components/P
 import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { initialDocuments } from './data';
-import { BrowserWorkspaceRepository, getAIArtifactFreshness, queueAIArtifact, queueReviewResult, queueUpsert, selectCurrentAIArtifact, sortAIArtifactsNewestFirst } from './storage.mjs';
+import { BrowserWorkspaceRepository, clearDeviceToken, getAIArtifactFreshness, loadDeviceToken, queueAIArtifact, queueReviewResult, queueUpsert, saveDeviceToken, selectCurrentAIArtifact, sortAIArtifactsNewestFirst } from './storage.mjs';
 import { LocalSyncClient, synchronizeWorkspace } from './sync-client.mjs';
 import type { AIArtifact, AIResultRecord, ConflictRecord, Documents, Draft, FileId, Mode, Panel, ReviewResult, SyncStatus, TransformOutputKind, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
@@ -27,6 +27,34 @@ interface ConflictChoice {
 const syncClient = new LocalSyncClient();
 const aiClient = new WebAIClient();
 const rewriteMappings = new BrowserRewriteMappingRepository();
+let pendingWorkspace: Promise<string> | null = null;
+
+// Only local deployments exist so far, so a browser without a token creates its
+// own workspace on first sync. The hosted build (#71 step 4) will create one
+// only after the user turns on 手机远程. Storage is read first because another
+// tab may already have created or switched the token.
+function ensureDeviceToken(): Promise<string> {
+  const apiBase = syncClient.apiBase;
+  const stored = loadDeviceToken(apiBase);
+  if (stored) {
+    syncClient.token = stored;
+    return Promise.resolve(stored);
+  }
+  pendingWorkspace ??= syncClient.createWorkspace().then((created) => {
+    saveDeviceToken(apiBase, created.device_token);
+    if (syncClient.apiBase === apiBase) syncClient.token = created.device_token;
+    return created.device_token;
+  }).finally(() => { pendingWorkspace = null; });
+  return pendingWorkspace;
+}
+
+/** Returns false when another tab has already replaced the rejected token. */
+function forgetDeviceToken(rejected: string): boolean {
+  if (syncClient.token === rejected) syncClient.token = '';
+  if (loadDeviceToken(syncClient.apiBase) !== rejected) return false;
+  clearDeviceToken(syncClient.apiBase);
+  return true;
+}
 
 export function App() {
   const [clientId] = useState(getClientId);
@@ -58,6 +86,7 @@ export function App() {
   const [revealedArtifactId, setRevealedArtifactId] = useState('');
   const [mappingRevision, setMappingRevision] = useState(0);
   const [phoneModalOpen, setPhoneModalOpen] = useState(false);
+  const [syncNotice, setSyncNotice] = useState('');
   const [phoneConfig, setPhoneConfig] = useState<PhoneConnectionConfig>(() => ({
     enabled: true,
     route: 'lan',
@@ -112,6 +141,7 @@ export function App() {
   const flushQueue = useCallback(async () => {
     if (syncRunning.current) { syncAgain.current = true; return; }
     syncRunning.current = true;
+    let renewedToken = false;
     try {
     do {
     syncAgain.current = false;
@@ -125,8 +155,27 @@ export function App() {
       return;
     }
     setSyncState('syncing');
+    let token: string;
+    try {
+      token = await ensureDeviceToken();
+    } catch {
+      setSyncState('failed');
+      setWorkspace(state);
+      aiSession.importRecords(reviewRecordsForSession(state));
+      return;
+    }
     inFlightOperations.current = new Set(state.operations.map(operation => operation.operation_id));
     const result = await synchronizeWorkspace(state, syncClient);
+    if (result.auth_required) {
+      // A restarted sync-api or a removed device. Nothing was applied and the
+      // queue is intact, so retrying once uploads it to the replacement token.
+      if (forgetDeviceToken(token)) setSyncNotice('同步服务已不再接受这台电脑的设备令牌（服务重启或设备已被移除）。本地草稿和待同步内容都已保留；手机需要重新扫码配对。');
+      if (!renewedToken) {
+        renewedToken = true;
+        syncAgain.current = true;
+        continue;
+      }
+    }
     // A save or selection during the request belongs to a newer local state.
     // Retry against that state; operation IDs make a repeated push idempotent.
     if (JSON.stringify(repository.load()) !== JSON.stringify(state)) {
@@ -149,6 +198,9 @@ export function App() {
     setSyncState(result.status);
     const pendingConflict = unresolvedConflict(result.state);
     if (pendingConflict) setConflict(pendingConflict);
+    // A new epoch (workspace transfer or server restart) re-queued the drafts the
+    // server does not have. Upload them now instead of at the next edit.
+    if (result.state.server_epoch !== state.server_epoch && result.state.operations.length > 0) syncAgain.current = true;
     } while (syncAgain.current);
     } finally {
       inFlightOperations.current.clear();
@@ -371,8 +423,23 @@ export function App() {
     setSyncState('synced');
   }
 
+  // The phone already had another workspace: this browser joins it. The old
+  // device is deleted afterwards; the next sync sees a new epoch and rebases
+  // local drafts onto the phone's workspace.
+  const handlePairingTransfer = useCallback(async (token: string) => {
+    const previous = new LocalSyncClient(syncClient.apiBase, syncClient.token);
+    saveDeviceToken(syncClient.apiBase, token);
+    syncClient.token = token;
+    setSyncNotice('');
+    if (previous.token && previous.token !== token) {
+      try { await previous.revokeCurrentDevice(); } catch { /* stays listed until removed from another device */ }
+    }
+    void flushQueue();
+  }, [flushQueue]);
+
   function handleSavePhoneConfig(next: PhoneConnectionConfig) {
     syncClient.apiBase = next.syncBaseUrl;
+    syncClient.token = loadDeviceToken(next.syncBaseUrl);
     aiClient.baseUrl = next.aiBaseUrl.replace(/\/$/, '');
     setPhoneConfig(next);
   }
@@ -381,7 +448,7 @@ export function App() {
   const reviewIssues = activeFile.endsWith('.cpp') ? reviewCpp(documents[activeFile]) : [];
 
   return (
-    <div className={conflict ? 'ide-shell has-conflict' : 'ide-shell'}>
+    <div className={conflict || syncNotice ? 'ide-shell has-conflict' : 'ide-shell'}>
       <TopBar
         saved={saved}
         syncState={syncState}
@@ -400,6 +467,9 @@ export function App() {
         config={phoneConfig}
         onSaveConfig={handleSavePhoneConfig}
         onSyncNow={syncNow}
+        ensureToken={ensureDeviceToken}
+        onTokenRejected={forgetDeviceToken}
+        onTransfer={handlePairingTransfer}
       />
       {conflict && (
         <div className="sync-conflict-banner" role="alert">
@@ -410,6 +480,18 @@ export function App() {
           <div className="conflict-actions">
             <button type="button" onClick={keepConflictCopy}>保留本地冲突副本</button>
             <button type="button" onClick={useServerVersion}>采用服务器版本</button>
+          </div>
+        </div>
+      )}
+      {!conflict && syncNotice && (
+        <div className="sync-conflict-banner" role="status">
+          <div>
+            <strong>需要重新配对手机</strong>
+            <span>{syncNotice}</span>
+          </div>
+          <div className="conflict-actions">
+            <button type="button" onClick={() => { setSyncNotice(''); setPhoneModalOpen(true); }}>打开手机远程</button>
+            <button type="button" onClick={() => setSyncNotice('')}>知道了</button>
           </div>
         </div>
       )}

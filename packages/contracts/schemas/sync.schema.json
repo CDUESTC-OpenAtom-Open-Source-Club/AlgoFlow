@@ -13,18 +13,19 @@
       "type": "object",
       "required": ["operation_id", "entity_type", "entity_id", "operation_type", "base_version", "client_id", "occurred_at", "payload"],
       "properties": {
-        "operation_id": { "type": "string", "minLength": 1 },
+        "operation_id": { "type": "string", "minLength": 1, "maxLength": 128 },
         "entity_type": { "type": "string", "enum": ["draft", "ai_artifact", "review_result"] },
-        "entity_id": { "type": "string", "minLength": 1 },
+        "entity_id": { "type": "string", "minLength": 1, "maxLength": 128 },
         "operation_type": { "type": "string", "enum": ["upsert", "delete"] },
         "base_version": { "type": "integer", "minimum": 0 },
-        "client_id": { "type": "string", "minLength": 1 },
+        "client_id": { "type": "string", "minLength": 1, "maxLength": 128 },
         "occurred_at": { "type": "string", "format": "date-time" },
         "payload": { "type": "object" },
         "base_epoch": {
           "description": "server_epoch the client last committed with its cursor. A base_version > 0 from another epoch is a conflict (EPOCH_MISMATCH). Omitted before the first pull.",
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 128
         }
       },
       "additionalProperties": false
@@ -55,7 +56,7 @@
       }
     },
     "pairingCode": {
-      "description": "Short-lived, single-use 8-digit code issued by sync-api. It authorizes an endpoint handoff only, not account access.",
+      "description": "Short-lived, single-use 8-digit code issued by sync-api. It lets one phone join the session creator's workspace; it is not itself an access token.",
       "type": "string",
       "pattern": "^[0-9]{8}$"
     },
@@ -74,20 +75,26 @@
     },
     "pairingSessionRequest": {
       "type": "object",
-      "required": ["desktop_client_id", "computer_name", "route", "sync_api", "ai_gateway"],
+      "required": ["desktop_client_id", "computer_name", "route", "sync_api"],
       "properties": {
-        "desktop_client_id": { "type": "string", "minLength": 1 },
+        "desktop_client_id": { "type": "string", "minLength": 1, "maxLength": 128 },
         "computer_name": { "type": "string", "minLength": 1, "maxLength": 64 },
         "route": { "$ref": "#/$defs/pairingRoute" },
         "sync_api": { "type": "string", "format": "uri", "pattern": "^https?://", "maxLength": 256 },
-        "ai_gateway": { "type": "string", "format": "uri", "pattern": "^https?://", "maxLength": 256 }
+        "ai_gateway": {
+          "description": "Omitted when the deployment has no AI Gateway.",
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://",
+          "maxLength": 256
+        }
       },
       "additionalProperties": false
     },
     "pairingSession": {
-      "description": "Desktop-visible session status. `code` is present only in the creation response.",
+      "description": "Session status, visible only to the device that created it. `code` is present only in the creation response; `transfer_token` only after a phone from another workspace claimed it.",
       "type": "object",
-      "required": ["pairing_id", "state", "computer_name", "route", "sync_api", "ai_gateway", "created_at", "expires_at", "claimed_at", "phone_client_id"],
+      "required": ["pairing_id", "state", "computer_name", "route", "sync_api", "created_at", "expires_at", "claimed_at", "phone_client_id"],
       "properties": {
         "pairing_id": { "type": "string", "minLength": 1 },
         "code": { "$ref": "#/$defs/pairingCode" },
@@ -99,16 +106,22 @@
         "created_at": { "type": "string", "format": "date-time" },
         "expires_at": { "type": "string", "format": "date-time" },
         "claimed_at": { "type": ["string", "null"], "format": "date-time" },
-        "phone_client_id": { "type": ["string", "null"] }
+        "phone_client_id": { "type": ["string", "null"] },
+        "transfer_token": {
+          "$ref": "#/$defs/deviceToken",
+          "description": "Issued for the creator in the claiming phone's workspace. The creator switches to it and then deletes its old device."
+        }
       },
       "additionalProperties": false
     },
     "pairingClaimRequest": {
+      "description": "Sent with the phone's own `Authorization: Bearer` token when it already has one for this sync-api; an invalid token is treated as absent.",
       "type": "object",
       "required": ["code", "phone_client_id"],
       "properties": {
         "code": { "$ref": "#/$defs/pairingCode" },
-        "phone_client_id": { "type": "string", "minLength": 1 }
+        "phone_client_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "device_name": { "$ref": "#/$defs/deviceName" }
       },
       "additionalProperties": false
     },
@@ -122,10 +135,98 @@
         "route": { "$ref": "#/$defs/pairingRoute" },
         "sync_api": { "type": "string" },
         "ai_gateway": { "type": "string" },
+        "device_token": {
+          "$ref": "#/$defs/deviceToken",
+          "description": "Present only when the phone had no valid token and joined the session's workspace as a new device."
+        },
         "error_code": {
           "type": "string",
           "enum": ["INVALID_REQUEST", "PAIRING_CODE_INVALID", "PAIRING_CODE_EXPIRED", "PAIRING_CODE_USED", "PAIRING_RATE_LIMITED"]
         }
+      }
+    },
+    "deviceToken": {
+      "description": "Device credential: 32 random bytes, base64url without padding. Sent as `Authorization: Bearer`; sync-api stores only its SHA-256. Never carried in a pairingInvitation.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "deviceName": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "deviceKind": { "type": "string", "enum": ["web", "phone"] },
+    "workspaceCreateRequest": {
+      "description": "POST /v1/workspaces. No token is needed; the caller becomes the first web device.",
+      "type": "object",
+      "properties": {
+        "device_name": { "$ref": "#/$defs/deviceName" }
+      },
+      "additionalProperties": false
+    },
+    "workspaceCreateResult": {
+      "type": "object",
+      "required": ["status", "workspace_id", "device_id", "device_token"],
+      "properties": {
+        "status": { "const": "created" },
+        "workspace_id": { "type": "string", "minLength": 1 },
+        "device_id": { "type": "string", "minLength": 1 },
+        "device_token": { "$ref": "#/$defs/deviceToken" }
+      },
+      "additionalProperties": false
+    },
+    "device": {
+      "type": "object",
+      "required": ["device_id", "kind", "name", "created_at", "last_seen_at"],
+      "properties": {
+        "device_id": { "type": "string", "minLength": 1 },
+        "kind": { "$ref": "#/$defs/deviceKind" },
+        "name": { "type": ["string", "null"], "maxLength": 64 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "last_seen_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "deviceList": {
+      "description": "GET /v1/devices: every device of the caller's workspace.",
+      "type": "object",
+      "required": ["status", "current_device_id", "devices"],
+      "properties": {
+        "status": { "const": "ok" },
+        "current_device_id": { "type": "string", "minLength": 1 },
+        "devices": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/device" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "deviceDeleteResult": {
+      "description": "DELETE /v1/devices/{device_id} or /v1/devices/current. Deleting the last device deletes the workspace and its data.",
+      "type": "object",
+      "required": ["status", "workspace_deleted"],
+      "properties": {
+        "status": { "const": "deleted" },
+        "workspace_deleted": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "workspaceDeleteResult": {
+      "description": "DELETE /v1/workspaces/current: deletes the workspace, its data and every device token.",
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "const": "deleted" }
+      },
+      "additionalProperties": false
+    },
+    "errorResult": {
+      "description": "Errors outside a sync operation result.",
+      "type": "object",
+      "required": ["status", "error_code"],
+      "properties": {
+        "status": { "const": "rejected" },
+        "error_code": {
+          "type": "string",
+          "enum": ["INVALID_REQUEST", "AUTH_REQUIRED", "DEVICE_NOT_FOUND", "PAIRING_NOT_FOUND", "NOT_FOUND", "PAYLOAD_TOO_LARGE", "INTERNAL_ERROR"]
+        },
+        "reason": { "type": "string" }
       }
     }
   }

@@ -25,16 +25,19 @@ outside the AI gateway.
 
 ## Phone pairing
 
-`sync.schema.json#/$defs/pairing*` describes how the Web workspace hands its
-sync-api and AI Gateway endpoints to a phone.
+`sync.schema.json#/$defs/pairing*` describes how a phone and the Web workspace
+end up in the same cloud workspace, and how the phone learns its endpoints.
 
 - `POST /v1/pairing/sessions` (`pairingSessionRequest`) returns a `pairingSession`
   with an 8-digit `code`. The code is returned only in this response; status
   polling (`GET /v1/pairing/sessions/{pairing_id}`) never echoes it. Creating a
-  new session revokes the same desktop client's pending one.
+  new session revokes the same device's pending one for that desktop client.
+  Both routes need the creator's device token, and another device's session
+  answers `404 PAIRING_NOT_FOUND`, even within the same workspace.
 - The QR code and the copied text carry only `pairingInvitation`
   (`type`, `sync_api`, `code`); unknown fields are rejected so a credential
-  cannot be smuggled in. The AI Gateway endpoint comes back from the claim.
+  cannot be smuggled in. The AI Gateway endpoint, when the deployment has one,
+  comes back from the claim.
 - `POST /v1/pairing/claims` (`pairingClaimRequest`) consumes the code once.
   Errors: `400 INVALID_REQUEST`, `404 PAIRING_CODE_INVALID`,
   `409 PAIRING_CODE_USED`, `410 PAIRING_CODE_EXPIRED`, `429 PAIRING_RATE_LIMITED`.
@@ -42,9 +45,46 @@ sync-api and AI Gateway endpoints to a phone.
 - Desktop-loopback endpoints in a claim are rewritten by the phone to the host
   it actually reached.
 
-Pairing is an endpoint handoff, not account authentication. The sync API is
-still unauthenticated and sessions live in process memory. `vectors/pairing-invitations.json`
-is shared by the sync-api, Web, and phone tests.
+A claim needs no token, but the phone sends its own `Authorization: Bearer`
+token if it has one for this sync-api; an invalid token counts as none.
+
+| Phone | Result | Web afterwards |
+|---|---|---|
+| No valid token | The phone joins the session's workspace; the claim returns `device_token`. | Nothing changes. |
+| Already in the session's workspace | Nothing changes. | Nothing changes. |
+| In another workspace | The phone keeps its workspace and its token. | The session gains `transfer_token`, a new web device in the phone's workspace, visible only to the creator. The Web saves it and deletes its old device. |
+
+After a transfer the Web sees a new `server_epoch`, so the reset described under
+[Server epoch](#server-epoch) merges its local drafts into the phone's workspace.
+Failed claims are limited per client address, not globally, so one client guessing
+codes cannot lock out other users. `vectors/pairing-invitations.json` is shared by
+the sync-api, Web, and phone tests.
+
+## Workspaces and device tokens
+
+A workspace is the unit of isolation on a shared sync-api: one change stream with
+its own `server_epoch`, and the devices allowed to use it. There are no accounts.
+
+- `POST /v1/workspaces` (`workspaceCreateRequest`, `workspaceCreateResult`) needs no
+  token and makes the caller the first web device.
+- `deviceToken` is 32 random bytes in base64url, sent as `Authorization: Bearer`.
+  sync-api stores only its SHA-256. It never appears in a `pairingInvitation`.
+- Every `/v1` route except workspace creation and pairing claims answers
+  `401 AUTH_REQUIRED` without a valid token. A revoked, unknown or malformed token
+  looks the same. Clients then keep their drafts and queue, and ask the user to pair
+  again. There is no mode that turns authentication off.
+- The token alone selects the workspace; no request field can. The same
+  `operation_id` or `entity_id` in two workspaces does not collide.
+- `GET /v1/devices` (`deviceList`) lists the caller's workspace.
+- `DELETE /v1/devices/{device_id}` or `/v1/devices/current` (`deviceDeleteResult`)
+  revokes one token, or answers `404 DEVICE_NOT_FOUND`. Deleting the last device
+  deletes the workspace and its data.
+- `DELETE /v1/workspaces/current` (`workspaceDeleteResult`) deletes the workspace,
+  its data and every token.
+
+Other errors use `errorResult`: `400 INVALID_REQUEST`, `404 NOT_FOUND` and
+`413 PAYLOAD_TOO_LARGE` (`SYNC_MAX_BODY_BYTES`, 1 MiB by default). `GET /healthz`
+needs no token. Workspaces, devices and sessions live in process memory for now.
 
 ## Sync write results
 
@@ -64,8 +104,9 @@ is shared by the sync-api, Web, and phone tests.
 ### Server epoch
 
 Versions and cursors only mean something inside one store lifetime, and the
-in-memory sync-api starts empty after every restart. Each store therefore has a
-random `server_epoch`, returned on every push result and pull result.
+in-memory sync-api starts empty after every restart. Each workspace's store
+therefore has a random `server_epoch`, returned on every push result and pull
+result. Switching to another workspace looks the same to a client as a restart.
 
 - Clients store `server_epoch` together with their cursor, committed only after a
   whole pull batch is applied. Before the first pull there is no epoch.
