@@ -1,7 +1,7 @@
 import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
 import { AIArtifact, AIMode, AIResultStatus, CodeMapping, Draft, draftRenderKey, IdeaSegment, PseudocodeStep, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
-import { SyncRunResult, SyncRunStatus } from '../platform/PhoneSyncService';
+import { SyncRunResult, SyncRunStatus, syncMessageText } from '../platform/PhoneSyncService';
 import { publishCardSnapshot } from '../platform/CardSnapshot';
 import { AI_ENTRY, DEBUG, SYNC_ENTRY } from 'BuildProfile';
 import { IDECapability, IDERecord, IDEState, ReviewKind, SourceCursor } from '../domain/IDEAIModels';
@@ -690,7 +690,7 @@ struct Index {
       result = await this.viewModel.synchronize();
     } catch (error) {
       this.syncStatus = SyncStatus.FAILED;
-      this.syncMessage = syncMessageText(error instanceof Error ? error.message : '同步请求失败');
+      this.syncMessage = syncMessageText(error instanceof Error ? error.message : '同步请求失败', DEBUG);
       publishCardSnapshot(getContext(this), this.viewModel.listDrafts(), SyncStatus.FAILED);
       return;
     }
@@ -703,7 +703,7 @@ struct Index {
     else if (result.status === SyncRunStatus.CONFLICT) this.syncStatus = SyncStatus.CONFLICT;
     else if (result.status === SyncRunStatus.FAILED) this.syncStatus = SyncStatus.FAILED;
     else this.syncStatus = SyncStatus.LOCAL_ONLY;
-    this.syncMessage = syncMessageText(result.message);
+    this.syncMessage = syncMessageText(result.message, DEBUG);
     this.drafts = this.viewModel.listDrafts();
     publishCardSnapshot(getContext(this), this.drafts, this.syncStatus);
     if (epoch !== this.editEpoch) return;
@@ -1600,9 +1600,11 @@ struct Index {
   SyncPanel() {
     Column() {
       Text(SYNC_ENTRY ? '保存与同步' : '保存').fontSize(13).fontWeight(FontWeight.Bold).fontColor('#ECECED')
-      Text(SYNC_ENTRY ? '草稿始终保存在本机。同步需自行提供 sync-api 端点（如局域网内的电脑），应用不提供云端服务。'
-        : '草稿只保存在本机，本版本不联网。').fontSize(10).lineHeight(17).fontColor('#8E8E93').margin({ top: 5, bottom: 10 })
-      if (SYNC_ENTRY) {
+      Text(!SYNC_ENTRY ? '草稿只保存在本机，本版本不联网。'
+        : DEBUG ? '草稿始终保存在本机。同步需自行提供 sync-api 端点（如局域网内的电脑），应用不提供云端服务。'
+        : '草稿始终保存在本机。在「设置 → 连接电脑」扫码配对后，可以和电脑上的网页同步。').fontSize(10).lineHeight(17).fontColor('#8E8E93').margin({ top: 5, bottom: 10 })
+      // Release builds only take the address from pairing, where it is checked.
+      if (SYNC_ENTRY && DEBUG) {
         TextInput({ text: this.syncBaseUrl, placeholder: 'http://电脑局域网IP:8787' }).width('100%').height(34).fontSize(10)
           .fontColor('#ECECED').placeholderColor('#6E6E73').backgroundColor('#1E1E20')
           .border({ width: 1, color: '#3A3A3D' }).borderRadius(4)
@@ -1759,7 +1761,7 @@ struct Index {
                 this.DrawerSummaryRow('同步', this.statusLabel(), this.statusColor())
                 this.DrawerSummaryRow('端点', this.syncBaseUrl, '#B8B8BD')
                 this.DrawerSummaryRow('版本', `v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`, '#B8B8BD')
-                Text('需自行提供端点，应用不含云端服务').fontSize(9).fontColor('#6E6E73')
+                Text(DEBUG ? '需自行提供端点，应用不含云端服务' : '在「设置 → 连接电脑」管理连接').fontSize(9).fontColor('#6E6E73')
                 if (this.syncMessage.length > 0) {
                   Text(this.syncMessage).fontSize(9).fontColor('#8E8E93').maxLines(2)
                     .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -1908,17 +1910,6 @@ function stepSourceRefs(body: string, stepId: string): string[] {
   } catch (error) {
     return [];
   }
-}
-
-// Turns the sync client's internal codes into text the user can act on;
-// the local draft and queue are untouched by a failed run.
-function syncMessageText(message: string): string {
-  if (message.startsWith('SYNC_NETWORK_')) return '连不上同步端点：需自行运行 sync-api 并在「设置 → 连接电脑」配对，草稿已保留在本机';
-  if (message.startsWith('SYNC_HTTP_5')) return '同步端点暂时出错，草稿已保留在本机，稍后重试';
-  if (message.startsWith('SYNC_HTTP_') || message.startsWith('SYNC_CONTRACT_') || message === 'SYNC_INVALID_RESPONSE') {
-    return '同步端点返回了无法识别的内容，请确认地址指向本应用的 sync-api 同步服务';
-  }
-  return message;
 }
 
 function draftStatusLabel(status: SyncStatus): string {

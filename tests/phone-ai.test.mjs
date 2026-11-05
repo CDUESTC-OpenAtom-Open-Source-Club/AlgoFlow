@@ -32,14 +32,49 @@ const cardFormKit = {
   },
   formInfo: {}
 };
+// In-memory Asset Store Kit stand-in keyed by alias; not device validation. It
+// enforces the flags the real kit needs: OVERWRITE to replace, RETURN_TYPE ALL
+// to get the secret back, NOT_FOUND for a missing item.
+const assetKit = { items: new Map(), failAdd: false, failQuery: false };
+const assetAlias = (map) => Buffer.from(map.get('ALIAS')).toString();
+const assetStub = {
+  Tag: { SECRET: 'SECRET', ALIAS: 'ALIAS', ACCESSIBILITY: 'ACCESSIBILITY', RETURN_TYPE: 'RETURN_TYPE', CONFLICT_RESOLUTION: 'CONFLICT_RESOLUTION' },
+  Accessibility: { DEVICE_FIRST_UNLOCKED: 1 }, ConflictResolution: { OVERWRITE: 0 }, ReturnType: { ALL: 0 },
+  ErrorCode: { NOT_FOUND: 24000002 },
+  async add(attributes) {
+    if (assetKit.failAdd) throw { code: 24000006 };
+    if (assetKit.items.has(assetAlias(attributes)) && attributes.get('CONFLICT_RESOLUTION') !== 0) throw { code: 24000003 };
+    assetKit.items.set(assetAlias(attributes), new Map(attributes));
+  },
+  async query(query) {
+    if (assetKit.failQuery) throw { code: 24000006 };
+    const item = assetKit.items.get(assetAlias(query));
+    if (!item) throw { code: 24000002 };
+    const found = new Map(item);
+    if (query.get('RETURN_TYPE') !== 0) found.delete('SECRET');
+    return [found];
+  },
+  async remove(query) { if (!assetKit.items.delete(assetAlias(query))) throw { code: 24000002 }; }
+};
+const storedDeviceToken = () => {
+  const item = assetKit.items.get('algoflow.sync.device-token.v1');
+  return item ? JSON.parse(Buffer.from(item.get('SECRET')).toString()) : undefined;
+};
+// Every hilog line, so tests can assert that credentials never reach the log.
+const hilogLines = [];
+const hilogLine = (...args) => { hilogLines.push(args.join(' ')); };
+const TOKEN = 'T'.repeat(43);
 function loader(debug = true, http = {}) {
   const cache = new Map();
   const stubs = {
     '@kit.AbilityKit': {}, '@kit.BasicServicesKit': {},
     '@kit.FormKit': cardFormKit, '@ohos.data.preferences': { default: cardPreferences }, '@ohos.router': { default: {} },
     BuildProfile: { DEBUG: debug }, '@ohos.net.http': { default: http },
-    '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {}, error() {} } },
-    '@kit.ArkTS': { util: { generateRandomUUID: randomUUID } },
+    '@kit.PerformanceAnalysisKit': { hilog: { info: hilogLine, warn: hilogLine, error: hilogLine } },
+    '@kit.ArkTS': { util: { generateRandomUUID: randomUUID,
+      TextEncoder: { create: () => ({ encodeInto: (value) => new TextEncoder().encode(value) }) },
+      TextDecoder: { create: () => ({ decodeToString: (value) => new TextDecoder().decode(value) }) } } },
+    '@kit.AssetStoreKit': { asset: assetStub },
     '@kit.ArkData': { relationalStore: { SecurityLevel: { S1: 1 } } },
   };
   function load(file) {
@@ -637,7 +672,7 @@ test('phone pull batch leaves its cursor unchanged when queued RDB writes fail',
     id: 'pulled', version: 1, code: 'remote', last_modified_client_id: 'web'
   } }], next_cursor: '5' });
   try {
-    const result = await new PhoneSyncService(repository).synchronize();
+    const result = await new PhoneSyncService(repository, TOKEN).synchronize();
     assert.equal(result.status, 'failed'); assert.equal(applied.length, 1);
     assert.equal(cursor, '4'); assert.equal(commitCalls, 0);
   } finally { HttpSyncClient.prototype.pull = oldPull; }
@@ -864,7 +899,7 @@ test('sync response preserves newer local edit and rotates operation identity', 
   const oldPush = HttpSyncClient.prototype.push;
   HttpSyncClient.prototype.push = () => new Promise(resolve => { finish = resolve; });
   try {
-    const work = new PhoneSyncService(repo).synchronize();
+    const work = new PhoneSyncService(repo, TOKEN).synchronize();
     const edited = repo.get('d'); edited.code = 'newer'; repo.save(edited);
     assert.notEqual(repo.listPendingOperations()[0].operation_id, original.operation_id);
     finish({ status: 'applied', server_entity: original.payload });
@@ -892,7 +927,7 @@ test('phone sync preserves server version and creates a local conflict copy', as
   HttpSyncClient.prototype.push = async () => ({ status: 'conflict', server_entity: serverPayload });
   HttpSyncClient.prototype.pull = async () => ({ changes: [], next_cursor: '0' });
   try {
-    const result = await new PhoneSyncService(repository).synchronize();
+    const result = await new PhoneSyncService(repository, TOKEN).synchronize();
     assert.equal(result.status, 'conflict');
     assert.equal(applied[0].code, 'server edit');
     assert.equal(conflictCopy.code, 'local edit');
@@ -937,7 +972,7 @@ test('Node ArkTS loader: PhoneSyncService orchestration retains an independent f
   HttpSyncClient.prototype.push = async (operation) => ({ status: 'applied', version: 1, server_entity: { ...operation.payload, version: 1, server_sequence: 1 } });
   HttpSyncClient.prototype.pull = async () => ({ changes: [{ cursor: '2', entity_type: 'ai_artifact', entity: { ...second, version: 1, server_sequence: 2 } }], next_cursor: '2' });
   try {
-    const result = await new PhoneSyncService(repository).synchronize();
+    const result = await new PhoneSyncService(repository, TOKEN).synchronize();
     assert.equal(result.status, 'synced');
     assert.equal(operations.length, 0);
     assert.equal(repository.cursor, '2');
@@ -963,7 +998,7 @@ test('phone sync ignores an older remote change during pull', async () => {
     id: 'ordered', version: 2, code: 'older', last_modified_client_id: 'web'
   } }], next_cursor: '3' });
   try {
-    const result = await new PhoneSyncService(repository).synchronize();
+    const result = await new PhoneSyncService(repository, TOKEN).synchronize();
     assert.equal(result.status, 'synced');
     assert.equal(repository.applied, undefined);
     assert.equal(repository.cursor, '3');
@@ -1086,6 +1121,7 @@ test('pairing client maps server rejections, transport failure and malformed cla
   const claim = await client.claim(invitation, 'phone-1');
   assert.equal(sent.url, 'http://192.168.1.5:8787/v1/pairing/claims');
   assert.deepEqual(JSON.parse(sent.options.extraData), { code: '04829103', phone_client_id: 'phone-1' });
+  assert.equal('Authorization' in sent.options.header, false, 'a phone without a token sends none');
   assert.equal(claim.pairingId, 'p1');
   for (const [status, code] of [[410, 'PAIRING_CODE_EXPIRED'], [409, 'PAIRING_CODE_USED'], [404, 'PAIRING_CODE_INVALID'], [429, 'PAIRING_RATE_LIMITED']]) {
     reply = { responseCode: status, result: JSON.stringify({ status: 'rejected', error_code: code }) };
@@ -1104,6 +1140,8 @@ test('view model stores claimed endpoints only after a successful claim', async 
   const repository = { setAIBaseUrl(value) { writes.push(['ai', value]); } };
   const sync = { getClientId: () => 'phone-1', setBaseUrl(value) { writes.push(['sync', value]); } };
   const vm = new DraftWorkspaceViewModel(repository, sync, { cancel() {} });
+  const saved = [];
+  vm.tokenStore = { async load() { return ''; }, async save(api, token) { saved.push([api, token]); } };
   const invitation = Object.assign(new PairingInvitation(), { syncApi: 'http://192.168.1.5:8787', code: '04829103' });
   vm.pairingClient = { async claim() { throw new PairingError('PAIRING_CODE_EXPIRED'); } };
   await assert.rejects(vm.claimPairing(invitation));
@@ -1115,6 +1153,7 @@ test('view model stores claimed endpoints only after a successful claim', async 
   assert.equal(claimedBy, 'phone-1');
   assert.deepEqual(writes, [['sync', 'http://192.168.1.5:8787'], ['ai', 'http://192.168.1.5:8788']]);
   assert.equal(claim.aiGateway, 'http://192.168.1.5:8788');
+  assert.deepEqual(saved, []);
 });
 test('view model ignores an unchanged update so pulled content is not re-queued as an edit', () => {
   const { DraftWorkspaceViewModel } = load('application/DraftWorkspaceViewModel');
@@ -1149,7 +1188,7 @@ test('phone sync keeps an operation when a duplicate arrives without server_enti
   HttpSyncClient.prototype.push = async (op) => ({ operation_id: op.operation_id, status: 'duplicate' });
   HttpSyncClient.prototype.pull = async () => { throw new Error('pull must not run'); };
   try {
-    const result = await new PhoneSyncService(repository).synchronize();
+    const result = await new PhoneSyncService(repository, TOKEN).synchronize();
     assert.equal(result.status, 'failed');
     assert.equal(repository.operations.length, 1, 'the unconfirmed edit stays queued');
     assert.equal(repository.applied, undefined, 'the local payload must not be applied as the server version');
@@ -1252,7 +1291,7 @@ test('phone re-creates a draft the restarted server lost and retries the push on
     changes: [{ cursor: '1', entity_type: 'draft', entity: { id: 'd', version: 1, code: 'local', last_modified_client_id: 'phone' } }],
     next_cursor: '1', server_epoch: 'epoch-b', reset: true });
   try {
-    const result = await new PhoneSyncService(repo).synchronize();
+    const result = await new PhoneSyncService(repo, TOKEN).synchronize();
     assert.deepEqual(pushes, [['old', 3, 'epoch-a'], ['rebased-d', 0, 'epoch-a']]);
     assert.equal(result.status, 'synced');
     assert.deepEqual(repo.rebased, ['d']);
@@ -1283,7 +1322,7 @@ test('phone reset pull adopts the latest server copy and re-creates drafts the s
     ], next_cursor: '2', server_epoch: 'epoch-b', reset: true };
   };
   try {
-    const result = await new PhoneSyncService(repo).synchronize();
+    const result = await new PhoneSyncService(repo, TOKEN).synchronize();
     assert.deepEqual(pulls, [['9', 'epoch-a']]);
     assert.deepEqual(repo.applied, ['shared@2'], 'the server copy wins over the old-lineage v5, latest change only');
     assert.equal(repo.drafts.get('shared').code, 'reseeded v2');
@@ -1303,7 +1342,7 @@ test('phone without a stored epoch replays from 0 once, but an epoch-less server
     upgraded.epoch = '';
     let asked;
     HttpSyncClient.prototype.pull = async (cursor) => { asked = cursor; return { changes: [], next_cursor: '0', server_epoch: 'epoch-b', reset: false }; };
-    await new PhoneSyncService(upgraded).synchronize();
+    await new PhoneSyncService(upgraded, TOKEN).synchronize();
     assert.equal(asked, '0');
     assert.deepEqual(upgraded.rebased, ['x'], 'the server has nothing for x, so it is re-created');
     assert.equal(upgraded.epoch, 'epoch-b');
@@ -1311,7 +1350,7 @@ test('phone without a stored epoch replays from 0 once, but an epoch-less server
     const legacy = epochRepository([{ id: 'y', version: 4, code: 'y', deleted: false }]);
     legacy.epoch = '';
     HttpSyncClient.prototype.pull = async () => ({ changes: [], next_cursor: '9' });
-    await new PhoneSyncService(legacy).synchronize();
+    await new PhoneSyncService(legacy, TOKEN).synchronize();
     assert.deepEqual(legacy.rebased, [], 'without a server epoch nothing is rebased');
     assert.equal(legacy.epoch, '');
   } finally {
@@ -1466,7 +1505,7 @@ test('phone sync drops a queued AI result the server permanently rejects and kee
   };
   HttpSyncClient.prototype.pull = async () => ({ changes: [], next_cursor: '4', server_epoch: 'epoch-old', reset: false });
   try {
-    const result = await new PhoneSyncService(repository).synchronize();
+    const result = await new PhoneSyncService(repository, TOKEN).synchronize();
     assert.deepEqual(pushed, ['op-artifact', 'op-review', 'op-draft']);
     assert.equal(result.status, 'synced');
     assert.equal(repository.cursor, '4');
@@ -1490,8 +1529,348 @@ test('phone sync keeps a queued AI result after a transient failure', async () =
   const oldPush = HttpSyncClient.prototype.push;
   HttpSyncClient.prototype.push = async () => { throw new Error('SYNC_NETWORK_2300007'); };
   try {
-    const result = await new PhoneSyncService(repository).synchronize();
+    const result = await new PhoneSyncService(repository, TOKEN).synchronize();
     assert.equal(result.status, 'failed');
     assert.equal(operations.length, 1);
   } finally { HttpSyncClient.prototype.push = oldPush; }
+});
+
+// --- Device token (issue #74) ---
+function tokenRecorder() {
+  const store = { api: '', token: '', saves: [], clears: 0, failSave: false,
+    async load(api) { return api.replace(/\/$/, '') === store.api ? store.token : ''; },
+    async save(api, token) { if (store.failSave) throw new Error('DEVICE_TOKEN_STORAGE'); store.saves.push([api, token]); store.api = api; store.token = token; },
+    async clear() { store.clears++; store.api = ''; store.token = ''; } };
+  return store;
+}
+function memorySyncRepository(baseUrl) {
+  const drafts = new Map();
+  return {
+    baseUrl, cursor: '0', epoch: '', operations: [], drafts,
+    getBaseUrl() { return this.baseUrl; }, setBaseUrl(value) { this.baseUrl = value; },
+    getClientId: () => 'phone-1', getCursor() { return this.cursor; }, getServerEpoch() { return this.epoch; },
+    listPendingOperations() { return this.operations.slice(); }, markInFlight() {},
+    hasPendingOperation(id) { return this.operations.some(operation => operation.entity_id === id); },
+    removeOperation(id) { this.operations = this.operations.filter(operation => operation.operation_id !== id); },
+    listDraftIds() { return [...drafts.keys()]; }, getDraft(id) { return drafts.get(id); },
+    setDraftSyncStatus(id, status) { const draft = drafts.get(id); if (draft) draft.syncStatus = status; },
+    applyServerDraft(draft) { drafts.set(draft.id, draft); }, saveConflictDraft() {},
+    applyServerAIArtifact() {}, applyServerReview() {}, getAIRecord: () => undefined,
+    async flush() {}, async commitCursor(cursor, epoch) { this.cursor = cursor; if (epoch) this.epoch = epoch; }
+  };
+}
+function phoneDraftOperation(id, title, baseVersion = 0) {
+  return { operation_id: id, entity_type: 'draft', entity_id: 'draft-phone', operation_type: 'upsert', base_version: baseVersion,
+    client_id: 'phone-1', occurred_at: '2026-11-04T00:00:00.000Z',
+    payload: { id: 'draft-phone', title, idea: '', code: '', language: 'cpp', tags: [], status: 'draft', revision: 1,
+      updated_at: '2026-11-04T00:00:00.000Z' } };
+}
+function stubHttp(handler) {
+  const sent = [];
+  const http = { RequestMethod: { POST: 'POST', GET: 'GET', DELETE: 'DELETE' }, HttpDataType: { STRING: 'STRING' }, createHttp() {
+    return { async request(url, options) { sent.push({ url, options }); return handler(url, options); }, destroy() {} };
+  } };
+  return { http, sent };
+}
+const rejectedWith = (status, code) => ({ responseCode: status, result: JSON.stringify({ status: 'rejected', error_code: code }) });
+
+test('device token store keeps one token in Asset, bound to the sync-api that issued it', async () => {
+  assetKit.items.clear(); hilogLines.length = 0;
+  const { AssetDeviceTokenStore } = load('platform/DeviceTokenStore');
+  const store = new AssetDeviceTokenStore();
+  assert.equal(await store.load('https://a.example.test'), '');
+  assert.equal(await store.server(), '');
+  await store.save('https://a.example.test/', TOKEN);
+  assert.equal(await store.load('https://a.example.test'), TOKEN);
+  assert.equal(await store.load(' https://a.example.test/ '), TOKEN);
+  assert.equal(await store.load('https://b.example.test'), '', 'never sent to another address');
+  assert.equal(await store.load('http://a.example.test'), '');
+  assert.equal(await store.server(), 'https://a.example.test');
+  const item = assetKit.items.get('algoflow.sync.device-token.v1');
+  assert.deepEqual([...item.keys()].sort(), ['ACCESSIBILITY', 'ALIAS', 'CONFLICT_RESOLUTION', 'SECRET'],
+    'no sync type: the item is not backed up or cloned');
+  assert.equal(item.get('ACCESSIBILITY'), 1);
+  const other = 'o'.repeat(43);
+  await store.save('https://b.example.test', other);
+  assert.equal(await store.load('https://a.example.test'), '');
+  assert.equal(await store.load('https://b.example.test'), other);
+  await assert.rejects(store.save('https://b.example.test', 'short'), /DEVICE_TOKEN_INVALID/);
+  assert.equal(await store.load('https://b.example.test'), other);
+  assetKit.failAdd = true;
+  await assert.rejects(store.save('https://b.example.test', TOKEN), /DEVICE_TOKEN_STORAGE/);
+  assetKit.failAdd = false;
+  assetKit.failQuery = true;
+  assert.equal(await store.load('https://b.example.test'), '', 'an unreadable item counts as no token');
+  assetKit.failQuery = false;
+  await store.clear();
+  assert.equal(await store.load('https://b.example.test'), '');
+  await store.clear();
+  assert.ok(hilogLines.every(line => !line.includes(TOKEN) && !line.includes(other)));
+});
+
+test('phone sync sends nothing without a device token', async () => {
+  const { http, sent } = stubHttp(() => { throw new Error('no request expected'); });
+  const { PhoneSyncService } = loader(true, http)('platform/PhoneSyncService');
+  const repository = memorySyncRepository('http://sync');
+  repository.operations.push(phoneDraftOperation('op-1', 'local'));
+  const result = await new PhoneSyncService(repository, '').synchronize();
+  assert.equal(result.status, 'local_only');
+  assert.match(result.message, /扫码配对/);
+  assert.equal(sent.length, 0);
+  assert.equal(repository.operations.length, 1);
+});
+
+test('phone sync sends the token and drops it on 401, keeping drafts, queue and cursor', async () => {
+  for (const phase of ['push', 'pull']) {
+    const { http, sent } = stubHttp(() => rejectedWith(401, 'AUTH_REQUIRED'));
+    const { DraftWorkspaceViewModel } = loader(true, http)('application/DraftWorkspaceViewModel');
+    const repository = memorySyncRepository('http://sync');
+    repository.cursor = '7';
+    repository.drafts.set('draft-phone', { id: 'draft-phone', syncStatus: 'local_only' });
+    if (phase === 'push') repository.operations.push(phoneDraftOperation('op-1', 'local'));
+    const vm = new DraftWorkspaceViewModel({ async flush() {}, get: () => undefined }, repository, { cancel() {} });
+    const tokens = tokenRecorder(); tokens.api = 'http://sync'; tokens.token = TOKEN;
+    vm.tokenStore = tokens;
+    const result = await vm.synchronize();
+    assert.equal(result.status, 'failed', phase);
+    assert.equal(result.authRequired, true, phase);
+    assert.match(result.message, /重新扫码配对/);
+    assert.equal(sent[0].options.header.Authorization, `Bearer ${TOKEN}`);
+    assert.equal(tokens.clears, 1);
+    assert.equal(repository.operations.length, phase === 'push' ? 1 : 0);
+    assert.equal(repository.cursor, '7');
+    assert.ok(repository.drafts.has('draft-phone'));
+  }
+  const { http } = stubHttp(() => rejectedWith(500, 'INTERNAL'));
+  const { DraftWorkspaceViewModel } = loader(true, http)('application/DraftWorkspaceViewModel');
+  const repository = memorySyncRepository('http://sync');
+  const vm = new DraftWorkspaceViewModel({ async flush() {}, get: () => undefined }, repository, { cancel() {} });
+  const tokens = tokenRecorder(); tokens.api = 'http://sync'; tokens.token = TOKEN;
+  vm.tokenStore = tokens;
+  const result = await vm.synchronize();
+  assert.equal(result.authRequired, false);
+  assert.equal(tokens.clears, 0, 'only a rejected token is dropped');
+});
+
+test('pairing claim carries an existing token, accepts no ai_gateway and checks device_token', async () => {
+  let reply;
+  const { http, sent } = stubHttp(() => reply);
+  const L = loader(true, http);
+  const { HttpPairingClient } = L('platform/HttpPairingClient');
+  const { PairingInvitation } = L('domain/PairingContract');
+  const client = new HttpPairingClient();
+  const invitation = Object.assign(new PairingInvitation(), { syncApi: 'https://sync.example.test', code: '04829103' });
+  const claimed = (extra) => ({ responseCode: 200, result: JSON.stringify({ status: 'claimed', pairing_id: 'p1',
+    computer_name: 'PC', route: 'relay', sync_api: 'https://sync.example.test', ...extra }) });
+  reply = claimed({ device_token: TOKEN });
+  const claim = await client.claim(invitation, 'phone-1', '');
+  assert.equal(claim.aiGateway, '');
+  assert.equal(claim.deviceToken, TOKEN);
+  reply = claimed({});
+  const kept = await client.claim(invitation, 'phone-1', TOKEN);
+  assert.equal(sent.at(-1).options.header.Authorization, `Bearer ${TOKEN}`);
+  assert.equal(kept.deviceToken, '');
+  for (const extra of [{ device_token: 'short' }, { device_token: 42 }, { ai_gateway: 'ftp://x' }, { ai_gateway: '' }]) {
+    reply = claimed(extra);
+    await assert.rejects(client.claim(invitation, 'phone-1', ''), (error) => error.code === 'INVALID_RESPONSE', JSON.stringify(extra));
+  }
+  assert.ok(hilogLines.every(line => !line.includes(TOKEN) && !line.includes('04829103')));
+});
+
+test('view model saves the claimed token first and keeps the AI address when none is sent', async () => {
+  const { DraftWorkspaceViewModel } = load('application/DraftWorkspaceViewModel');
+  const { PairingClaim, PairingInvitation } = load('domain/PairingContract');
+  const writes = [];
+  const repository = { setAIBaseUrl(value) { writes.push(['ai', value]); } };
+  const sync = { getClientId: () => 'phone-1', setBaseUrl(value) { writes.push(['sync', value]); } };
+  const vm = new DraftWorkspaceViewModel(repository, sync, { cancel() {} });
+  const tokens = tokenRecorder();
+  vm.tokenStore = tokens;
+  const invitation = Object.assign(new PairingInvitation(), { syncApi: 'https://sync.example.test', code: '04829103' });
+  const received = [];
+  let issue = TOKEN;
+  vm.pairingClient = { async claim(_, clientId, deviceToken) { received.push(deviceToken);
+    return Object.assign(new PairingClaim(), { pairingId: 'p1', syncApi: 'https://sync.example.test', deviceToken: issue }); } };
+
+  tokens.failSave = true;
+  await assert.rejects(vm.claimPairing(invitation), (error) => error.code === 'TOKEN_STORAGE');
+  assert.deepEqual(writes, [], 'no endpoint changes when the token cannot be kept');
+  tokens.failSave = false;
+
+  const claim = await vm.claimPairing(invitation);
+  assert.deepEqual(tokens.saves, [['https://sync.example.test', TOKEN]]);
+  assert.deepEqual(writes, [['sync', 'https://sync.example.test']], 'the AI address is untouched');
+  assert.equal(claim.aiGateway, 'http://127.0.0.1:8788');
+  assert.equal(claim.deviceToken, '', 'the token never reaches the page');
+
+  issue = '';
+  await vm.claimPairing(invitation);
+  assert.deepEqual(received, ['', '', TOKEN], 'an existing token for the same server is sent');
+  assert.equal(tokens.saves.length, 1, 'and kept when the server issues none');
+  const other = Object.assign(new PairingInvitation(), { syncApi: 'https://other.example.test', code: '04829103' });
+  await vm.claimPairing(other);
+  assert.equal(received.at(-1), '', 'never sent to another server');
+});
+
+test('release pairing only accepts https addresses; Debug keeps LAN defaults', () => {
+  const { manualPairingInvitation, parsePairingInvitation } = load('domain/PairingContract');
+  assert.equal(manualPairingInvitation('sync.example.test', '0482 9103', true).invitation.syncApi, 'https://sync.example.test');
+  assert.equal(manualPairingInvitation(' https://sync.example.test/ ', '04829103', true).invitation.syncApi, 'https://sync.example.test');
+  assert.equal(manualPairingInvitation('sync.example.test:8443', '04829103', true).invitation.syncApi, 'https://sync.example.test:8443');
+  for (const host of ['http://sync.example.test', '', 'bad host']) {
+    const parsed = manualPairingInvitation(host, '04829103', true);
+    assert.equal(parsed.invitation, undefined, host);
+    assert.ok(parsed.error.length > 0);
+    assert.doesNotMatch(parsed.error, /IP|hdc|局域网/);
+  }
+  assert.equal(manualPairingInvitation('sync.example.test', '04829103').invitation.syncApi, 'http://sync.example.test:8787');
+  const text = (syncApi) => JSON.stringify({ type: 'algoflow-pair-v1', sync_api: syncApi, code: '04829103' });
+  assert.equal(parsePairingInvitation(text('http://192.168.1.5:8787'), true).invitation, undefined);
+  assert.equal(parsePairingInvitation(text('https://sync.example.test'), true).invitation.syncApi, 'https://sync.example.test');
+  assert.equal(parsePairingInvitation(text('http://192.168.1.5:8787')).invitation.syncApi, 'http://192.168.1.5:8787');
+});
+
+test('pairing consent names the server and warns about plain http', () => {
+  const { pairingConsentMessage, pairingErrorMessage, serverAuthority } = load('domain/PairingContract');
+  const secure = pairingConsentMessage('https://sync.example.test:8443/base');
+  assert.match(secure, /服务器：sync\.example\.test:8443/);
+  assert.match(secure, /草稿会上传/);
+  assert.doesNotMatch(secure, /http 连接/);
+  assert.match(pairingConsentMessage('http://192.168.1.5:8787'), /未加密的 http 连接/);
+  assert.equal(serverAuthority('https://sync.example.test/'), 'sync.example.test');
+  assert.doesNotMatch(pairingErrorMessage('NETWORK', false), /hdc|局域网/);
+  assert.match(pairingErrorMessage('NETWORK'), /hdc/);
+  assert.match(pairingErrorMessage('TOKEN_STORAGE'), /令牌/);
+});
+
+test('sync messages keep LAN advice out of release builds', () => {
+  const { syncMessageText } = load('platform/PhoneSyncService');
+  for (const code of ['SYNC_NETWORK_2300007', 'SYNC_HTTP_400_INVALID_REQUEST', 'SYNC_INVALID_RESPONSE', 'SYNC_HTTP_503_X']) {
+    assert.doesNotMatch(syncMessageText(code, false), /sync-api|hdc|局域网|SYNC_/, code);
+  }
+  assert.match(syncMessageText('SYNC_NETWORK_2300007', true), /sync-api/);
+  assert.match(syncMessageText('SYNC_HTTP_429_RATE_LIMITED', false), /频繁/);
+  assert.equal(syncMessageText('已同步', false), '已同步');
+});
+
+test('disconnect and delete keep the token on network failure and drop it on 401', async () => {
+  for (const [reply, expected, cleared] of [[{ code: 2300007 }, 'failed', 0], [rejectedWith(500, 'INTERNAL'), 'failed', 0],
+    [rejectedWith(401, 'AUTH_REQUIRED'), 'done', 1], [{ responseCode: 200, result: '{"status":"deleted"}' }, 'done', 1]]) {
+    for (const action of ['disconnectDevice', 'deleteCloudData']) {
+      const { http, sent } = stubHttp(() => { if (reply.code) throw reply; return reply; });
+      const { DraftWorkspaceViewModel } = loader(true, http)('application/DraftWorkspaceViewModel');
+      const repository = memorySyncRepository('https://sync.example.test');
+      repository.drafts.set('a', { id: 'a', syncStatus: 'synced' });
+      repository.drafts.set('b', { id: 'b', syncStatus: 'conflict' });
+      const vm = new DraftWorkspaceViewModel({ async flush() {} }, repository, { cancel() {} });
+      const tokens = tokenRecorder(); tokens.api = 'https://sync.example.test'; tokens.token = TOKEN;
+      vm.tokenStore = tokens;
+      assert.equal(await vm[action](), expected, `${action} ${JSON.stringify(reply)}`);
+      assert.equal(tokens.clears, cleared);
+      assert.equal(sent[0].options.method, 'DELETE');
+      assert.equal(sent[0].url, `https://sync.example.test/v1/${action === 'disconnectDevice' ? 'devices' : 'workspaces'}/current`);
+      assert.equal(sent[0].options.header.Authorization, `Bearer ${TOKEN}`);
+      const deleted = action === 'deleteCloudData' && expected === 'done';
+      assert.equal(repository.drafts.get('a').syncStatus, deleted ? 'local_only' : 'synced');
+      assert.equal(repository.drafts.get('b').syncStatus, 'conflict');
+      assert.equal(repository.drafts.size, 2, 'local drafts are never deleted');
+    }
+  }
+  const { http, sent } = stubHttp(() => { throw new Error('no request expected'); });
+  const { DraftWorkspaceViewModel } = loader(true, http)('application/DraftWorkspaceViewModel');
+  const vm = new DraftWorkspaceViewModel({ async flush() {} }, memorySyncRepository('https://sync.example.test'), { cancel() {} });
+  vm.tokenStore = tokenRecorder();
+  assert.equal(await vm.disconnectDevice(), 'not_paired');
+  assert.equal(await vm.deleteCloudData(), 'not_paired');
+  assert.equal(sent.length, 0);
+});
+
+test('phone code pairs, syncs, re-pairs after revocation and deletes against the real sync-api', async () => {
+  const { createSyncServer } = await import('../services/sync-api/src/server.mjs');
+  const logs = [];
+  const originals = { log: console.log, warn: console.warn, error: console.error };
+  for (const level of Object.keys(originals)) console[level] = (...args) => { logs.push(args.join(' ')); };
+  const server = createSyncServer();
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (method, path, body, token) => {
+    const response = await fetch(`${base}${path}`, { method, body: body === undefined ? undefined : JSON.stringify(body),
+      headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const text = await response.text();
+    return { status: response.status, body: text ? JSON.parse(text) : null };
+  };
+  // The phone's HTTP module, bridged to fetch.
+  const http = { RequestMethod: { POST: 'POST', GET: 'GET', DELETE: 'DELETE' }, HttpDataType: { STRING: 'STRING' }, createHttp() {
+    return { async request(url, options) {
+      const response = await fetch(url, { method: options.method, headers: options.header, body: options.extraData || undefined });
+      return { responseCode: response.status, result: await response.text() };
+    }, destroy() {} };
+  } };
+  try {
+    assetKit.items.clear(); hilogLines.length = 0;
+    const L = loader(true, http);
+    const { DraftWorkspaceViewModel } = L('application/DraftWorkspaceViewModel');
+    const { parsePairingInvitation } = L('domain/PairingContract');
+    const web = (await call('POST', '/v1/workspaces', {})).body;
+    const codes = [];
+    const invite = async () => {
+      const session = (await call('POST', '/v1/pairing/sessions', { desktop_client_id: 'web-1', computer_name: 'PC', route: 'relay',
+        sync_api: base }, web.device_token)).body.session;
+      codes.push(session.code);
+      return parsePairingInvitation(JSON.stringify({ type: 'algoflow-pair-v1', sync_api: base, code: session.code })).invitation;
+    };
+    const repository = memorySyncRepository('http://127.0.0.1:8787');
+    repository.drafts.set('draft-phone', { id: 'draft-phone', syncStatus: 'local_only' });
+    const vm = new DraftWorkspaceViewModel({ async flush() {}, get: () => undefined, setAIBaseUrl() {} }, repository, { cancel() {} });
+
+    repository.operations.push(phoneDraftOperation('op-1', '手机草稿'));
+    assert.equal((await vm.synchronize()).status, 'local_only', 'nothing is sent before pairing');
+    await vm.claimPairing(await invite());
+    assert.equal(repository.baseUrl, base);
+    assert.equal(await vm.pairedSyncApi(), base);
+    const phoneToken = storedDeviceToken().device_token;
+    let result = await vm.synchronize();
+    assert.equal(result.status, 'synced', result.message);
+    assert.equal(repository.operations.length, 0);
+    const pulled = await call('GET', '/v1/sync/changes?after=0', undefined, web.device_token);
+    assert.ok(pulled.body.changes.some(change => change.entity?.id === 'draft-phone' && change.entity.title === '手机草稿'));
+
+    // The computer revokes the phone; the next sync drops the token and keeps the edit queued.
+    const devices = (await call('GET', '/v1/devices', undefined, web.device_token)).body.devices;
+    const phone = devices.find(device => device.kind === 'phone');
+    assert.equal((await call('DELETE', `/v1/devices/${phone.device_id}`, undefined, web.device_token)).status, 200);
+    repository.operations.push(phoneDraftOperation('op-2', '离线修改', 1));
+    const cursor = repository.cursor;
+    result = await vm.synchronize();
+    assert.equal(result.authRequired, true);
+    assert.equal(repository.operations.length, 1);
+    assert.equal(repository.cursor, cursor);
+    assert.equal(await vm.pairedSyncApi(), '');
+
+    // Pairing again joins the computer's workspace and sends the queued edit.
+    await vm.claimPairing(await invite());
+    result = await vm.synchronize();
+    assert.equal(result.status, 'synced', result.message);
+    const after = await call('GET', '/v1/sync/changes?after=0', undefined, web.device_token);
+    assert.ok(after.body.changes.some(change => change.entity?.title === '离线修改'));
+
+    assert.equal(await vm.disconnectDevice(), 'done');
+    assert.equal(await vm.pairedSyncApi(), '');
+    assert.equal((await call('GET', '/v1/sync/changes?after=0', undefined, web.device_token)).status, 200, 'the computer stays connected');
+
+    await vm.claimPairing(await invite());
+    const secondToken = storedDeviceToken().device_token;
+    assert.equal(await vm.deleteCloudData(), 'done');
+    assert.equal((await call('GET', '/v1/sync/changes?after=0', undefined, web.device_token)).status, 401, 'every device is signed out');
+    assert.equal((await call('GET', '/v1/devices', undefined, secondToken)).status, 401);
+    assert.equal(repository.drafts.get('draft-phone').syncStatus, 'local_only');
+    assert.equal(await vm.pairedSyncApi(), '');
+
+    for (const line of [...logs, ...hilogLines]) {
+      for (const secret of [web.device_token, phoneToken, secondToken, ...codes]) assert.ok(!line.includes(secret), line);
+    }
+  } finally {
+    Object.assign(console, originals);
+    await new Promise((done) => server.close(done));
+  }
 });
