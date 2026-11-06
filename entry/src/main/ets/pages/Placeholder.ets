@@ -74,6 +74,9 @@ struct Placeholder {
   // The sync-api this phone holds a device token for; '' when not connected.
   @State deviceServer: string = '';
   @State deviceBusy: boolean = false;
+  // Actions wait for a reload started by onPageShow so they never act on the
+  // repository instance it is replacing.
+  private hubReload: Promise<void> = Promise.resolve();
 
   aboutToAppear(): void {
     const savedTitle = AppStorage.get<string>(PLACEHOLDER_TITLE_KEY);
@@ -86,6 +89,15 @@ struct Placeholder {
     this.initializeHub();
   }
 
+  onPageShow(): void {
+    // Index and Home keep their own repository instances, and this page stays
+    // on the router stack under them; reload so drafts, the sync queue and the
+    // connection are current when returning, and a sync from here never runs on
+    // a stale queue.
+    if (!this.ready || this.syncing || this.pairing || this.deviceBusy || this.aiLoading) return;
+    this.hubReload = this.hubReload.then(() => this.reloadHub()).catch(() => {});
+  }
+
   private resolveInitialTab(title: string): HubTab {
     if (AI_ENTRY && title.includes('AI')) return HubTab.AI;
     if (title.includes('版本') || title.includes('快照')) return HubTab.VERSIONS;
@@ -96,21 +108,41 @@ struct Placeholder {
 
   private async initializeHub(): Promise<void> {
     try {
-      const repo = new RdbDraftRepository(getContext(this));
-      this.repository = repo;
-      this.viewModel = new DraftWorkspaceViewModel(repo, repo);
-      await this.viewModel.initialize();
-      this.viewModel.configureAI(repo.aiResults(this.allowTestData), this.allowTestData);
-      if (this.viewModel.aiSession !== null) {
-        this.viewModel.aiSession.onChange = () => { this.syncAIState(); };
-      }
-      this.refreshWorkspaceData();
+      await this.loadHub();
       this.ready = true;
     } catch (error) {
       this.feedbackMessage = '本地数据库读取失败，请返回重试';
       return;
     }
     await this.refreshDeviceState();
+  }
+
+  // Reads everything from RDB again through a fresh repository, as Home does.
+  // This page's own pending writes land first so the reload sees them.
+  private async reloadHub(): Promise<void> {
+    await this.repository?.flush().catch(() => {});
+    const previous = this.viewModel;
+    try {
+      await this.loadHub();
+    } catch (error) {
+      this.feedbackMessage = '本地数据库读取失败，请返回重试';
+      return;
+    }
+    previous.aiSession?.dispose();
+    await this.refreshDeviceState();
+  }
+
+  private async loadHub(): Promise<void> {
+    const repo = new RdbDraftRepository(getContext(this));
+    const viewModel = new DraftWorkspaceViewModel(repo, repo);
+    await viewModel.initialize();
+    viewModel.configureAI(repo.aiResults(this.allowTestData), this.allowTestData);
+    if (viewModel.aiSession !== null) {
+      viewModel.aiSession.onChange = () => { this.syncAIState(); };
+    }
+    this.repository = repo;
+    this.viewModel = viewModel;
+    this.refreshWorkspaceData();
   }
 
   private async refreshDeviceState(): Promise<void> {
@@ -206,6 +238,7 @@ struct Placeholder {
   }
 
   private async runSyncNow(): Promise<void> {
+    await this.hubReload;
     if (!this.ready || this.syncing) return;
     this.syncing = true;
     this.feedbackMessage = '正在执行增量同步 (push -> pull)...';
@@ -224,6 +257,7 @@ struct Placeholder {
   }
 
   private async triggerAI(capability: IDECapability, kind: ReviewKind = ReviewKind.EXPLANATION): Promise<void> {
+    await this.hubReload;
     if (!this.ready || this.selectedDraftId.length === 0) return;
     this.viewModel.selectAIContext(this.selectedDraftId, 'main.cpp');
     await this.viewModel.aiSession?.request(capability, kind);
@@ -259,6 +293,7 @@ struct Placeholder {
   // validates the single-use code and returns the endpoints and device token;
   // only then are they written.
   private async pairWith(invitation: PairingInvitation): Promise<void> {
+    await this.hubReload;
     if (!this.ready || this.pairing || this.deviceBusy) return;
     this.pairing = true;
     try {
@@ -288,6 +323,7 @@ struct Placeholder {
 
   // Retires this phone's token at the server. Local drafts stay.
   private async disconnectThisDevice(): Promise<void> {
+    await this.hubReload;
     if (!this.ready || this.deviceBusy || this.syncing || this.pairing) return;
     if (!(await this.confirm('断开此设备？', '服务器会作废这台手机的连接，之后需要重新扫码才能同步。手机上的草稿会保留。', '断开'))) return;
     this.deviceBusy = true;
@@ -303,6 +339,7 @@ struct Placeholder {
 
   // Deletes the workspace on the server for every device, after two confirmations.
   private async deleteCloudData(): Promise<void> {
+    await this.hubReload;
     if (!this.ready || this.deviceBusy || this.syncing || this.pairing) return;
     if (!(await this.confirm('删除云端数据？',
       `将删除 ${serverAuthority(this.deviceServer)} 上这个工作区的全部草稿和历史，所有已连接的电脑和手机都会断开。这台手机上的草稿会保留。`,
