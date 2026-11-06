@@ -1615,22 +1615,31 @@ struct Index {
         Blank()
         Text(`v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`).fontSize(10).fontColor('#8E8E93')
       }.width('100%')
-      Button() {
-        Row({ space: 5 }) {
-          this.Icon(WorkspaceIcon.DOCUMENT, 14)
-          Text('保存当前内容').fontSize(11).fontColor('#FFFFFF')
-        }
-      }.width('100%').height(36).fontColor('#07110A')
-        .backgroundColor('#30D158').borderRadius(4).margin({ top: 12 }).onClick(() => this.saveDraft())
-      if (SYNC_ENTRY) {
+      // The reason behind the status and the next step, e.g. re-pairing after
+      // the computer removed this phone; this is where the user taps sync.
+      if (SYNC_ENTRY && this.syncMessage.length > 0) {
+        Text(this.syncMessage).width('100%').fontSize(10).lineHeight(16)
+          .fontColor(this.syncStatus === SyncStatus.FAILED ? '#FF9A94' : '#8E8E93').margin({ top: 5 })
+      }
+      // Side by side so the message above never pushes 立即同步 below the panel.
+      Row({ space: 7 }) {
         Button() {
           Row({ space: 5 }) {
-            this.Icon(WorkspaceIcon.REFRESH, 14, '#9BE7A9')
-            Text('立即同步').fontSize(11).fontColor('#9BE7A9')
+            this.Icon(WorkspaceIcon.DOCUMENT, 14)
+            Text('保存当前内容').fontSize(11).fontColor('#FFFFFF')
           }
-        }.width('100%').height(36)
-          .backgroundColor('#1E3A27').borderRadius(4).margin({ top: 7 }).onClick(() => this.synchronize())
-      }
+        }.layoutWeight(1).height(36).fontColor('#07110A')
+          .backgroundColor('#30D158').borderRadius(4).onClick(() => this.saveDraft())
+        if (SYNC_ENTRY) {
+          Button() {
+            Row({ space: 5 }) {
+              this.Icon(WorkspaceIcon.REFRESH, 14, '#9BE7A9')
+              Text('立即同步').fontSize(11).fontColor('#9BE7A9')
+            }
+          }.layoutWeight(1).height(36)
+            .backgroundColor('#1E3A27').borderRadius(4).onClick(() => this.synchronize())
+        }
+      }.width('100%').margin({ top: 12 })
     }.width('100%').backgroundColor('#161618')
   }
 
