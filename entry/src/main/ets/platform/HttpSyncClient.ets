@@ -85,14 +85,16 @@ export class HttpSyncClient {
       if (this.authToken.length > 0) headers.Authorization = `Bearer ${this.authToken}`;
       let response: http.HttpResponse;
       try {
-        response = await request.request(`${this.baseUrl}${path}`, {
+        const options: http.HttpRequestOptions = {
           method,
           header: headers,
-          extraData: body,
           expectDataType: http.HttpDataType.STRING,
           connectTimeout: 5000,
           readTimeout: READ_TIMEOUT_MS
-        });
+        };
+        // The system HTTP module rejects an empty extraData on DELETE with error 401.
+        if (body.length > 0) options.extraData = body;
+        response = await request.request(`${this.baseUrl}${path}`, options);
       } catch (error) {
         const errorInfo = readTransportError(error as BusinessError);
         hilog.error(DOMAIN, TAG,

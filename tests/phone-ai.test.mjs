@@ -1768,6 +1768,7 @@ test('disconnect and delete keep the token on network failure and drop it on 401
       assert.equal(await vm[action](), expected, `${action} ${JSON.stringify(reply)}`);
       assert.equal(tokens.clears, cleared);
       assert.equal(sent[0].options.method, 'DELETE');
+      assert.equal('extraData' in sent[0].options, false, 'the system HTTP module rejects an empty body on DELETE');
       assert.equal(sent[0].url, `https://sync.example.test/v1/${action === 'disconnectDevice' ? 'devices' : 'workspaces'}/current`);
       assert.equal(sent[0].options.header.Authorization, `Bearer ${TOKEN}`);
       const deleted = action === 'deleteCloudData' && expected === 'done';
@@ -1799,10 +1800,13 @@ test('phone code pairs, syncs, re-pairs after revocation and deletes against the
     const text = await response.text();
     return { status: response.status, body: text ? JSON.parse(text) : null };
   };
-  // The phone's HTTP module, bridged to fetch.
+  // The phone's HTTP module, bridged to fetch. Like the device (2026-11-05,
+  // emulator), it rejects a DELETE that carries an empty extraData.
   const http = { RequestMethod: { POST: 'POST', GET: 'GET', DELETE: 'DELETE' }, HttpDataType: { STRING: 'STRING' }, createHttp() {
     return { async request(url, options) {
-      const response = await fetch(url, { method: options.method, headers: options.header, body: options.extraData || undefined });
+      if (options.method === 'DELETE' && options.extraData === '') throw { code: 401, message: 'Parameter error' };
+      const response = await fetch(url, { method: options.method, headers: options.header,
+        body: options.method === 'GET' ? undefined : options.extraData });
       return { responseCode: response.status, result: await response.text() };
     }, destroy() {} };
   } };
