@@ -215,30 +215,33 @@ test('does not advance the cursor when a pulled review result is invalid', async
   assert.equal(result.state.review_results.length, 0);
 });
 
-test('does not apply a review result whose source Draft version is absent locally', async () => {
+test('keeps a pulled review whose source Draft version never arrived, read-only and stale', async () => {
+  // The server keeps only the latest change of each entity and recent Draft
+  // versions, so the review's source may be gone before this client pulls.
   const draft = makeDraft('draft-source-review', 'int main() {}', 'web-a');
   draft.version = 2;
   const state = makeWorkspace('web-a', draft);
   state.cursor = '4';
   const review = makeReview('review-missing-source', 0, 'web-b', 'risk');
   review.draft_id = draft.id;
-  review.source_draft_version = 3;
+  review.source_draft_version = 1;
   const result = await synchronizeWorkspace(state, {
     async push() { throw new Error('not expected'); },
     async pull() { return { changes: [{ cursor: '5', entity_type: 'review_result', entity: review }], next_cursor: '5' }; }
   });
-  assert.equal(result.status, 'failed');
-  assert.equal(result.state.cursor, '4');
-  assert.equal(result.state.review_results.length, 0);
+  assert.equal(result.status, 'synced');
+  assert.equal(result.state.cursor, '5');
+  assert.equal(hasReviewSource(result.state, result.state.review_results[0]), false);
+  assert.equal(getReviewFreshness(result.state, result.state.review_results[0]), 'stale');
 });
 
-test('rejects a review source version that is not the locally available Draft version', async () => {
+test('still checks a pulled review against its source when the source is known', async () => {
   const draft = makeDraft('draft-history-review', 'short', 'web-a');
   draft.version = 2;
   const state = makeWorkspace('web-a', draft);
-  const review = makeReview('review-history', 0, 'web-b', 'risk');
+  const review = makeReview('review-history', 0, 'web-b', 'risk', { start_line: 3, start_char: 0, end_line: 3, end_char: 1 });
   review.draft_id = draft.id;
-  review.source_draft_version = 1;
+  review.source_draft_version = 2;
   const result = await synchronizeWorkspace(state, {
     async push() { throw new Error('not expected'); },
     async pull() { return { changes: [{ cursor: '1', entity_type: 'review_result', entity: review }], next_cursor: '1' }; }

@@ -51,7 +51,7 @@
         "status": { "type": "string", "enum": ["applied", "duplicate", "conflict", "rejected"] },
         "version": { "type": "integer", "minimum": 1 },
         "server_entity": { "type": ["object", "null"] },
-        "error_code": { "type": "string", "enum": ["INVALID_REQUEST", "INVALID_AI_ARTIFACT", "INVALID_REVIEW_RESULT", "VERSION_CONFLICT", "EPOCH_MISMATCH", "OUT_OF_ORDER"] },
+        "error_code": { "type": "string", "enum": ["INVALID_REQUEST", "INVALID_AI_ARTIFACT", "INVALID_REVIEW_RESULT", "VERSION_CONFLICT", "EPOCH_MISMATCH", "OUT_OF_ORDER", "WORKSPACE_QUOTA_EXCEEDED"] },
         "server_epoch": { "type": "string", "minLength": 1 }
       }
     },
@@ -224,7 +224,7 @@
         "status": { "const": "rejected" },
         "error_code": {
           "type": "string",
-          "enum": ["INVALID_REQUEST", "AUTH_REQUIRED", "DEVICE_NOT_FOUND", "PAIRING_NOT_FOUND", "NOT_FOUND", "PAYLOAD_TOO_LARGE", "INTERNAL_ERROR"]
+          "enum": ["INVALID_REQUEST", "AUTH_REQUIRED", "DEVICE_NOT_FOUND", "PAIRING_NOT_FOUND", "NOT_FOUND", "PAYLOAD_TOO_LARGE", "RATE_LIMITED", "SERVER_AT_CAPACITY", "INTERNAL_ERROR"]
         },
         "reason": { "type": "string" }
       }

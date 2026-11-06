@@ -7,8 +7,8 @@ import { WorkspaceDirectory, isDeviceName } from './workspace-directory.mjs';
 // token returned by the claim, never the code itself.
 export const PAIRING_TTL_MS = 10 * 60 * 1000;
 export const PAIRING_INVITATION_TYPE = 'algoflow-pair-v1';
-const MAX_FAILED_CLAIMS = 10;
-const FAILED_CLAIM_WINDOW_MS = 60 * 1000;
+export const MAX_FAILED_CLAIMS = 10;
+export const FAILED_CLAIM_WINDOW_MS = 60 * 1000;
 const MAX_TRACKED_CLAIM_ADDRESSES = 10000;
 const RETAIN_AFTER_EXPIRY_MS = 10 * 60 * 1000;
 const CODE_PATTERN = /^\d{8}$/;
@@ -19,11 +19,13 @@ export class PairingStore {
   #failedClaims = new Map();
   #now;
   #directory;
+  #maxFailedClaims;
 
-  /** @param {{ now?: () => number, directory?: WorkspaceDirectory }} [options] */
-  constructor({ now = () => Date.now(), directory = new WorkspaceDirectory({ now }) } = {}) {
+  /** @param {{ now?: () => number, directory?: WorkspaceDirectory, maxFailedClaims?: number }} [options] */
+  constructor({ now = () => Date.now(), directory = new WorkspaceDirectory({ now }), maxFailedClaims = MAX_FAILED_CLAIMS } = {}) {
     this.#now = now;
     this.#directory = directory;
+    this.#maxFailedClaims = maxFailedClaims;
   }
 
   /** @param {{ workspace_id: string, device_id: string }} creator authenticated caller */
@@ -85,7 +87,7 @@ export class PairingStore {
     }
     // Failures are counted per address, so one client guessing codes cannot
     // lock everybody else out of pairing.
-    if (this.#recentFailures(ip, now).length >= MAX_FAILED_CLAIMS) return { status: 'rejected', error_code: 'PAIRING_RATE_LIMITED' };
+    if (this.#recentFailures(ip, now).length >= this.#maxFailedClaims) return { status: 'rejected', error_code: 'PAIRING_RATE_LIMITED' };
     const candidates = [...this.#sessions.values()].filter((session) => session.code === request.code);
     // A session whose creator has since been removed has nobody to pair with.
     const pending = candidates.find((session) => session.state === 'pending' && this.#stateAt(session, now) === 'pending' &&

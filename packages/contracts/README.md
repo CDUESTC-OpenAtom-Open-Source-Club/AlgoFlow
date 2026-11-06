@@ -82,9 +82,48 @@ its own `server_epoch`, and the devices allowed to use it. There are no accounts
 - `DELETE /v1/workspaces/current` (`workspaceDeleteResult`) deletes the workspace,
   its data and every token.
 
-Other errors use `errorResult`: `400 INVALID_REQUEST`, `404 NOT_FOUND` and
-`413 PAYLOAD_TOO_LARGE` (`SYNC_MAX_BODY_BYTES`, 1 MiB by default). `GET /healthz`
-needs no token. Workspaces, devices and sessions live in process memory for now.
+Other errors use `errorResult`: `400 INVALID_REQUEST`, `404 NOT_FOUND`,
+`413 PAYLOAD_TOO_LARGE`, `429 RATE_LIMITED` and `503 SERVER_AT_CAPACITY`, the last
+two with `Retry-After` in seconds. `GET /healthz` needs no token.
+
+## Storage, limits and retention
+
+With `SYNC_DB_PATH` set, workspaces, devices and sync data are kept in that SQLite
+file and survive restarts with the same `server_epoch`. Without it they live in
+process memory. Pairing sessions are always in memory: they last 10 minutes and a
+`transfer_token` is never written to disk.
+
+| Limit | Default | Variable | Answer |
+|---|---|---|---|
+| Request body | 1 MiB | `SYNC_MAX_BODY_BYTES` | `413 PAYLOAD_TOO_LARGE` |
+| New workspaces per client address per hour | 10 | `SYNC_LIMIT_WORKSPACES_PER_HOUR` | `429 RATE_LIMITED` |
+| Requests per device per minute | 600 | `SYNC_LIMIT_REQUESTS_PER_MINUTE` | `429 RATE_LIMITED` |
+| Failed pairing claims per client address per minute | 10 | `SYNC_LIMIT_PAIRING_FAILURES_PER_MINUTE` | `429 PAIRING_RATE_LIMITED` |
+| Workspaces on the server | 1000 | `SYNC_LIMIT_WORKSPACES` | `503 SERVER_AT_CAPACITY` |
+| Live entities per workspace | 2000 | `SYNC_LIMIT_WORKSPACE_ENTRIES` | `507 WORKSPACE_QUOTA_EXCEEDED` |
+| Stored bytes per workspace | 20 MiB | `SYNC_LIMIT_WORKSPACE_BYTES` | `507 WORKSPACE_QUOTA_EXCEEDED` |
+
+The client address is the socket address, or `X-Real-IP` only with
+`SYNC_TRUST_PROXY=1` behind a proxy that overwrites it. Stored bytes count every
+entity and kept Draft version. A delete is never refused, and deleting a Draft
+also drops its kept versions. `WORKSPACE_QUOTA_EXCEEDED` is a sync write result,
+not an `errorResult`; the operation is not recorded, so it can be retried after
+space is freed.
+
+A workspace is deleted with all its data when no device has used it for 180 days,
+when it never received any data and has not been used for 24 hours, or when its
+last device is removed.
+
+To stay within those limits the server keeps, per workspace, only:
+
+- the latest change of each entity. A pull returns those changes in cursor order,
+  and `next_cursor` is the newest cursor. A client may never see an intermediate
+  version;
+- the last 50 versions of each Draft, which AI results and reviews are checked
+  against when they are pushed. An AI result or review whose source version a
+  client never received is still accepted on pull, checked for shape only, and
+  shown as stale;
+- the last 1000 applied `operation_id`s.
 
 ## Sync write results
 
@@ -92,10 +131,13 @@ needs no token. Workspaces, devices and sessions live in process memory for now.
 
 - `applied`: this operation changed the entity; `server_entity` is the new version.
 - `duplicate`: this `operation_id` was already **applied** earlier. sync-api only
-  remembers applied operations, so a duplicate always carries the
-  `server_entity` that operation produced. Clients must treat a duplicate
-  without `server_entity` as a failure and keep the operation queued; never
-  substitute the local payload, because nothing proves the server has it.
+  remembers applied operations, so a duplicate always carries a
+  `server_entity`: the Draft version that operation produced while it is kept,
+  otherwise the current entity, which is the same or newer. Clients must treat a
+  duplicate without `server_entity` as a failure and keep the operation queued;
+  never substitute the local payload, because nothing proves the server has it.
+  An `operation_id` older than the last 1000 is checked like a new operation and
+  usually gets a `conflict`.
 - `conflict`: `base_version` does not match. A conflict changes nothing and is
   not remembered, so a retry of the same `operation_id` is checked again against
   the current version. `server_entity` is the current entity, or `null` when
@@ -103,9 +145,9 @@ needs no token. Workspaces, devices and sessions live in process memory for now.
 
 ### Server epoch
 
-Versions and cursors only mean something inside one store lifetime, and the
+Versions and cursors only mean something inside one store lifetime, and an
 in-memory sync-api starts empty after every restart. Each workspace's store
-therefore has a random `server_epoch`, returned on every push result and pull
+therefore has a random `server_epoch`, kept in the database when there is one, returned on every push result and pull
 result. Switching to another workspace looks the same to a client as a restart.
 
 - Clients store `server_epoch` together with their cursor, committed only after a

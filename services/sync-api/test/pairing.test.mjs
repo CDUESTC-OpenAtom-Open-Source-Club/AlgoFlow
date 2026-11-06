@@ -3,8 +3,13 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PAIRING_TTL_MS, PairingStore } from '../src/pairing-store.mjs';
 import { createSyncServer } from '../src/server.mjs';
-import { WorkspaceDirectory } from '../src/workspace-directory.mjs';
+import { MemoryBackend, WorkspaceDirectory } from '../src/workspace-directory.mjs';
 import { validatePairingInvitation } from '../../../packages/contracts/validate.mjs';
+
+// persistence.test.mjs imports this file again with ?backend=sqlite, so every
+// test here also runs against SQLite.
+const sqlite = new URL(import.meta.url).searchParams.get('backend') === 'sqlite' ? await import('../src/sqlite-backend.mjs') : null;
+const newBackend = () => sqlite ? new sqlite.SqliteBackend(':memory:') : new MemoryBackend();
 
 const sessionRequest = {
   desktop_client_id: 'web-desktop-1',
@@ -20,7 +25,7 @@ function clock(start = Date.parse('2026-10-22T00:00:00.000Z')) {
 }
 
 function setup(time = clock()) {
-  const directory = new WorkspaceDirectory({ now: time.now });
+  const directory = new WorkspaceDirectory({ now: time.now, backend: newBackend() });
   const store = new PairingStore({ now: time.now, directory });
   const web = directory.create({ kind: 'web', name: null });
   return { time, directory, store, web };
@@ -135,7 +140,7 @@ test('rejects session requests with invalid route or endpoints', () => {
 });
 
 test('sync-api pairing routes create, claim and report status over HTTP', async () => {
-  const server = createSyncServer();
+  const server = createSyncServer({ directory: new WorkspaceDirectory({ backend: newBackend() }) });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   const logs = [];
