@@ -1,0 +1,121 @@
+# AlgoFlow: web app and sync API on one HTTPS origin.
+#
+# Install as /etc/nginx/conf.d/algoflow.conf after replacing example.com with
+# the real domain (deploy/README.md). Written for nginx 1.18 to 1.24; nginx
+# 1.25.1 and later warn that "listen ... http2" is deprecated but still work.
+# Add "listen [::]:80;" and "listen [::]:443 ssl http2;" if the server has IPv6.
+
+# Access log fields: client address, time, method, path, status, size and
+# duration. No query string, user agent or referer. Kept 7 days (README).
+log_format algoflow '$remote_addr [$time_local] "$request_method $uri" $status $body_bytes_sent $request_time';
+
+# Any other host name, or the bare server address, gets no answer. Certificate
+# checks still work, so a new subdomain can get its certificate (README).
+server {
+    listen 80 default_server;
+    server_name _;
+    access_log off;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 444;
+    }
+}
+
+# nginx 1.19.4 and later can refuse TLS for other host names too:
+# server {
+#     listen 443 ssl default_server;
+#     ssl_reject_handshake on;
+# }
+
+server {
+    listen 80;
+    server_name example.com;
+    access_log /var/log/nginx/algoflow/access.log algoflow;
+    error_log /var/log/nginx/algoflow/error.log warn;
+
+    # Certificate renewal (certbot --webroot -w /var/www/certbot).
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://example.com$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name example.com;
+    server_tokens off;
+    access_log /var/log/nginx/algoflow/access.log algoflow;
+    error_log /var/log/nginx/algoflow/error.log warn;
+
+    ssl_certificate /etc/letsencrypt/live/example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:algoflow_tls:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    # A location with its own add_header drops all of these, so locations
+    # below use "expires" for caching instead.
+    # CodeMirror injects <style> elements, and the build inlines small images
+    # as data: URLs.
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy no-referrer always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+
+    # Static files only. API responses are not compressed: some carry device tokens.
+    gzip on;
+    gzip_min_length 1024;
+    gzip_types text/css application/javascript image/svg+xml;
+
+    # The web build (apps/web/dist) plus privacy.html.
+    root /var/www/algoflow;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+        expires -1;
+    }
+
+    # Vite puts a content hash in every file name under assets/.
+    location /assets/ {
+        try_files $uri =404;
+        expires 1y;
+    }
+
+    # sync-api answers bodies over SYNC_MAX_BODY_BYTES (1 MiB) with its own
+    # JSON 413, so the limit here is higher. /ai-api is not proxied.
+    location /v1/ {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        # Overwritten, never passed through: sync-api rate-limits by this
+        # address when SYNC_TRUST_PROXY=1.
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For "";
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+        client_max_body_size 2m;
+        client_body_timeout 30s;
+    }
+
+    location = /healthz {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+    }
+}

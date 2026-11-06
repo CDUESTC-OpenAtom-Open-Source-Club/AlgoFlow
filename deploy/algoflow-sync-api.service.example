@@ -1,0 +1,55 @@
+# AlgoFlow sync-api behind Nginx (deploy/nginx.conf.example).
+#
+# Install as /etc/systemd/system/algoflow-sync-api.service after replacing
+# example.com with the real domain (deploy/README.md). Needs Node 24: the
+# SQLite store uses the built-in node:sqlite module.
+
+[Unit]
+Description=AlgoFlow sync API
+After=network.target
+
+[Service]
+Type=simple
+User=algoflow
+Group=algoflow
+# A checkout of the repository; the service only reads it.
+WorkingDirectory=/opt/algoflow
+ExecStart=/usr/bin/node services/sync-api/src/server.mjs
+Environment=SYNC_API_HOST=127.0.0.1
+Environment=SYNC_API_PORT=8787
+Environment=SYNC_DB_PATH=/var/lib/algoflow/sync.db
+Environment=SYNC_TRUST_PROXY=1
+Environment=SYNC_CORS_ORIGIN=https://example.com
+# Limits keep their defaults unless set here; size them to the disk (README).
+#Environment=SYNC_LIMIT_WORKSPACES=1000
+#Environment=SYNC_LIMIT_WORKSPACE_BYTES=20971520
+Restart=on-failure
+RestartSec=5s
+
+# /var/lib/algoflow, readable by this user only.
+StateDirectory=algoflow
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# Not MemoryDenyWriteExecute: the V8 JIT needs writable executable memory.
+
+[Install]
+WantedBy=multi-user.target
