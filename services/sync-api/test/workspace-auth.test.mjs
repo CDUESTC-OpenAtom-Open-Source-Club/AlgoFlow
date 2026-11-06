@@ -2,7 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { connect } from 'node:net';
 import { createSyncServer } from '../src/server.mjs';
-import { DEVICE_TOKEN_PATTERN, WorkspaceDirectory } from '../src/workspace-directory.mjs';
+import { DEVICE_TOKEN_PATTERN, MemoryBackend, WorkspaceDirectory } from '../src/workspace-directory.mjs';
+
+// persistence.test.mjs imports this file again with ?backend=sqlite, so every
+// test here also runs against SQLite.
+const sqlite = new URL(import.meta.url).searchParams.get('backend') === 'sqlite' ? await import('../src/sqlite-backend.mjs') : null;
+const newBackend = () => sqlite ? new sqlite.SqliteBackend(':memory:') : new MemoryBackend();
 
 const sessionRequest = (base, id = 'web-1') => ({ desktop_client_id: id, computer_name: 'AlgoFlow-Desktop', route: 'relay', sync_api: base });
 
@@ -18,7 +23,7 @@ async function withServer(options, run) {
   const logs = [];
   const originals = { log: console.log, warn: console.warn, error: console.error };
   for (const level of Object.keys(originals)) console[level] = (...args) => { logs.push(args.join(' ')); };
-  const server = createSyncServer(options);
+  const server = createSyncServer({ directory: new WorkspaceDirectory({ backend: newBackend() }), ...options });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = async (method, path, { token, body, headers = {} } = {}) => {
@@ -40,7 +45,7 @@ async function withServer(options, run) {
 }
 
 test('a new workspace issues a well-formed token that the device list never repeats', async () => {
-  const directory = new WorkspaceDirectory();
+  const directory = new WorkspaceDirectory({ backend: newBackend() });
   await withServer({ directory }, async ({ call }) => {
     const created = await call('POST', '/v1/workspaces', { body: { device_name: '  我的电脑 ' } });
     assert.equal(created.status, 201);
@@ -196,7 +201,7 @@ test('a pairing session is not visible to another device of the same workspace',
 });
 
 test('removing a device revokes only that token and removing the last one deletes the workspace', async () => {
-  const directory = new WorkspaceDirectory();
+  const directory = new WorkspaceDirectory({ backend: newBackend() });
   await withServer({ directory }, async ({ base, call, createWorkspace }) => {
     const web = await createWorkspace();
     const other = await createWorkspace();

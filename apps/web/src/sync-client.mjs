@@ -1,5 +1,5 @@
 const API_BASE = import.meta.env?.VITE_SYNC_API_BASE ?? 'http://127.0.0.1:8787';
-import { assertReviewResult, createAIArtifactConflictCopy, createReviewResultConflictCopy, queueAIArtifact, queueReviewResult, queueUpsert, recordDraftSnapshot, recomputeReviewFreshness } from './storage.mjs';
+import { assertReviewResult, assertReviewSource, createAIArtifactConflictCopy, createReviewResultConflictCopy, hasReviewSource, queueAIArtifact, queueReviewResult, queueUpsert, recordDraftSnapshot, recomputeReviewFreshness } from './storage.mjs';
 
 export { assertReviewResult } from './storage.mjs';
 
@@ -367,7 +367,12 @@ function applyPulledChanges(state, changes, clientId) {
       continue;
     }
     if (change.entity_type === 'review_result') {
-      assertReviewResult(change.entity, next);
+      // The server keeps only recent Draft versions and the latest change of
+      // each entity, so an older source may never arrive. Like an AI result
+      // without its source, such a review is checked for shape and shown stale.
+      assertReviewResult(change.entity);
+      const review = /** @type {import('./types').ReviewResult} */ (/** @type {unknown} */ (change.entity));
+      if (hasReviewSource(next, review)) assertReviewSource(next, review);
       if (change.entity.last_modified_client_id === clientId) continue;
       const local = next.review_results.find((item) => item.id === change.entity.id);
       const pending = next.operations.some((operation) => operation.entity_type === 'review_result' && operation.entity_id === change.entity.id);

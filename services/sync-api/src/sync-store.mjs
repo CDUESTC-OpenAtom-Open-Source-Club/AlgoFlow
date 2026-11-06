@@ -1,40 +1,67 @@
 import { randomUUID } from 'node:crypto';
 import { validateAIArtifactEntity, validateReviewResultEntity } from '../../../packages/contracts/validate.mjs';
 
-export class SyncStore {
-  #entities = new Map();
-  #draftHistory = new Map();
-  #operations = new Map();
-  #changes = [];
+// What one workspace may keep. Deletes are always accepted, so a full
+// workspace can still free space.
+export const DEFAULT_WORKSPACE_QUOTA = Object.freeze({ entries: 2000, bytes: 20 * 1024 * 1024 });
+// Older Draft versions are only needed to validate AI results made on them.
+export const MAX_DRAFT_HISTORY = 50;
+// A retry normally follows its lost response within one sync run.
+export const MAX_OPERATION_RECORDS = 1000;
 
-  // Versions and cursors only mean something inside one store lifetime. The
-  // in-memory store starts empty after a restart, so a new random epoch lets
-  // clients detect that their base_version / cursor belong to a lost lineage.
-  /** @param {string} [epoch] */
-  constructor(epoch = randomUUID()) {
-    this.epoch = epoch;
+/**
+ * Sync rules for one workspace. Data lives in a storage: MemorySyncStorage here,
+ * or a workspace view from sqlite-backend.mjs. Both keep only the latest change
+ * per entity, the last MAX_DRAFT_HISTORY versions of each Draft and the last
+ * MAX_OPERATION_RECORDS applied operations.
+ */
+export class SyncStore {
+  #storage;
+  #quota;
+
+  /**
+   * @param {string | MemorySyncStorage | object} [storage] a storage, or the
+   *   epoch of a new in-memory one.
+   * @param {{ entries: number, bytes: number }} [quota]
+   */
+  constructor(storage = randomUUID(), quota = DEFAULT_WORKSPACE_QUOTA) {
+    this.#storage = typeof storage === 'string' ? new MemorySyncStorage(storage) : storage;
+    this.#quota = quota;
+  }
+
+  // Versions and cursors only mean something inside one storage lifetime. A
+  // new random epoch lets clients detect that their base_version / cursor
+  // belong to a lost lineage, for example after an in-memory restart.
+  get epoch() {
+    return this.#storage.epoch;
   }
 
   apply(operation) {
-    return { ...this.#apply(operation), server_epoch: this.epoch };
+    return { ...this.#storage.transaction(() => this.#apply(operation)), server_epoch: this.epoch };
   }
 
   #apply(operation) {
+    const storage = this.#storage;
     const validationError = validateOperation(operation);
     if (validationError) return { operation_id: typeof operation?.operation_id === 'string' ? operation.operation_id : '', status: 'rejected', error_code: 'INVALID_REQUEST' };
     // A base_version > 0 from another lineage cannot be compared with this
     // store's versions. It is a conflict even if the numbers happen to match.
-    if (operation.base_version > 0 && typeof operation.base_epoch === 'string' && operation.base_epoch !== this.epoch) {
-      const current = this.#entities.get(`${operation.entity_type}:${operation.entity_id}`);
+    if (operation.base_version > 0 && typeof operation.base_epoch === 'string' && operation.base_epoch !== storage.epoch) {
+      const current = storage.entity(operation.entity_type, operation.entity_id);
       return { operation_id: operation.operation_id, status: 'conflict', error_code: 'EPOCH_MISMATCH', server_entity: current ?? null };
     }
     // Only applied operations are remembered, so `duplicate` always means "this
-    // operation_id already changed the entity" and carries that server_entity.
-    if (this.#operations.has(operation.operation_id)) {
-      return { ...this.#operations.get(operation.operation_id), status: 'duplicate' };
+    // operation_id already changed the entity". Only its version is kept: the
+    // entity it produced is that Draft snapshot, or the current entity once the
+    // snapshot is gone.
+    const applied = storage.operation(operation.operation_id);
+    if (applied) {
+      const serverEntity = (applied.entity_type === 'draft' ? storage.draftSnapshot(applied.entity_id, applied.version) : undefined) ??
+        storage.entity(applied.entity_type, applied.entity_id) ?? null;
+      return { operation_id: operation.operation_id, status: 'duplicate', version: applied.version, server_entity: serverEntity };
     }
     if (operation.entity_type === 'ai_artifact' && operation.operation_type === 'upsert') {
-      const sourceDraft = this.#draftHistory.get(operation.payload.draft_id)?.get(operation.payload.source_draft_version);
+      const sourceDraft = storage.draftSnapshot(operation.payload.draft_id, operation.payload.source_draft_version);
       const sourceIds = sourceDraft?.idea_segments instanceof Array
         ? new Set(sourceDraft.idea_segments.map((segment) => segment?.id).filter((id) => typeof id === 'string' && id.length > 0))
         : undefined;
@@ -44,14 +71,13 @@ export class SyncStore {
       }
     }
     if (operation.entity_type === 'review_result' && operation.operation_type === 'upsert') {
-      const sourceDraft = this.#draftHistory.get(operation.payload.draft_id)?.get(operation.payload.source_draft_version);
+      const sourceDraft = storage.draftSnapshot(operation.payload.draft_id, operation.payload.source_draft_version);
       if (!sourceDraft ||
         validateReviewResultEntity(operation.payload, sourceDraft).length > 0) {
         return { operation_id: operation.operation_id, status: 'rejected', error_code: 'INVALID_REVIEW_RESULT' };
       }
     }
-    const key = `${operation.entity_type}:${operation.entity_id}`;
-    const current = this.#entities.get(key);
+    const current = storage.entity(operation.entity_type, operation.entity_id);
     if (['ai_artifact', 'review_result'].includes(operation.entity_type) && operation.operation_type === 'delete' && !current) {
       return { operation_id: operation.operation_id, status: 'rejected', error_code: 'INVALID_REQUEST' };
     }
@@ -64,9 +90,10 @@ export class SyncStore {
     }
     const version = currentVersion + 1;
     if (operation.entity_type === 'ai_artifact' && operation.operation_type === 'upsert' &&
-      !this.#draftHistory.get(operation.payload.draft_id)?.has(operation.payload.source_draft_version)) {
-      return { operation_id: operation.operation_id, status: 'rejected', error_code: operation.entity_type === 'review_result' ? 'INVALID_REVIEW_RESULT' : 'INVALID_AI_ARTIFACT' };
+      !storage.draftSnapshot(operation.payload.draft_id, operation.payload.source_draft_version)) {
+      return { operation_id: operation.operation_id, status: 'rejected', error_code: 'INVALID_AI_ARTIFACT' };
     }
+    const cursor = storage.lastCursor() + 1;
     const entity = {
       ...(current ?? {}),
       ...operation.payload,
@@ -76,23 +103,23 @@ export class SyncStore {
       updated_at: operation.occurred_at,
       last_modified_client_id: operation.client_id
     };
-    if (['ai_artifact', 'review_result'].includes(operation.entity_type)) entity.server_sequence = this.#changes.length + 1;
-    this.#entities.set(key, entity);
-    if (operation.entity_type === 'draft') {
-      const history = this.#draftHistory.get(entity.id) ?? new Map();
-      const snapshot = operation.payload && typeof operation.payload === 'object'
-        ? { ...(current ?? {}), ...operation.payload, id: entity.id, version: operation.base_version }
-        : { ...entity, version: operation.base_version };
-      // A source version is immutable. Later Draft writes must never replace
-      // the snapshot used to validate historical AI artifacts.
-      if (!history.has(operation.base_version)) history.set(operation.base_version, structuredClone(snapshot));
-      if (!history.has(entity.version)) history.set(entity.version, structuredClone(entity));
-      this.#draftHistory.set(entity.id, history);
+    if (['ai_artifact', 'review_result'].includes(operation.entity_type)) entity.server_sequence = cursor;
+    if (!entity.deleted && this.#exceedsQuota(entity, current)) {
+      return { operation_id: operation.operation_id, status: 'rejected', error_code: 'WORKSPACE_QUOTA_EXCEEDED' };
     }
-    this.#changes.push({ cursor: String(this.#changes.length + 1), entity_type: operation.entity_type, entity });
-    const result = { operation_id: operation.operation_id, status: 'applied', version, server_entity: entity };
-    this.#operations.set(operation.operation_id, result);
-    return result;
+    // A source version is immutable: the snapshot used to validate historical
+    // AI results is never replaced by a later write of the same version.
+    const snapshots = operation.entity_type === 'draft'
+      ? [[operation.base_version, { ...(current ?? {}), ...operation.payload, id: entity.id, version: operation.base_version }], [version, entity]]
+      : [];
+    storage.commit({ operation_id: operation.operation_id, entity_type: operation.entity_type, entity, cursor, snapshots });
+    return { operation_id: operation.operation_id, status: 'applied', version, server_entity: entity };
+  }
+
+  #exceedsQuota(entity, current) {
+    const { entries, bytes } = this.#storage.usage();
+    const added = current === undefined || current.deleted ? 1 : 0;
+    return entries + added > this.#quota.entries || bytes + byteLength(entity) > this.#quota.bytes;
   }
 
   // A cursor from another epoch points into a change log that no longer
@@ -101,7 +128,84 @@ export class SyncStore {
     const reset = typeof clientEpoch === 'string' && clientEpoch.length > 0 && clientEpoch !== this.epoch;
     const position = reset ? 0 : Number.parseInt(afterCursor, 10);
     const safePosition = Number.isFinite(position) && position >= 0 ? position : 0;
-    return { changes: this.#changes.slice(safePosition), next_cursor: String(this.#changes.length), server_epoch: this.epoch, reset };
+    return { changes: this.#storage.changesAfter(safePosition), next_cursor: String(this.#storage.lastCursor()), server_epoch: this.epoch, reset };
+  }
+}
+
+/**
+ * One workspace's data in process memory, lost on restart. Values are kept as
+ * JSON so callers can never mutate stored entities, as with SQLite.
+ */
+export class MemorySyncStorage {
+  // Re-inserted on every write, so iteration follows cursor order.
+  #entities = new Map();
+  #history = new Map();
+  #operations = new Map();
+  #cursor = 0;
+
+  /** @param {string} [epoch] */
+  constructor(epoch = randomUUID()) {
+    this.epoch = epoch;
+  }
+
+  transaction(run) {
+    return run();
+  }
+
+  entity(entityType, entityId) {
+    const row = this.#entities.get(`${entityType}:${entityId}`);
+    return row ? JSON.parse(row.body) : undefined;
+  }
+
+  draftSnapshot(draftId, version) {
+    const row = this.#history.get(draftId)?.get(version);
+    return row ? JSON.parse(row.body) : undefined;
+  }
+
+  operation(operationId) {
+    return this.#operations.get(operationId);
+  }
+
+  lastCursor() {
+    return this.#cursor;
+  }
+
+  usage() {
+    let entries = 0;
+    let bytes = 0;
+    for (const row of this.#entities.values()) {
+      if (!row.deleted) entries += 1;
+      bytes += row.size;
+    }
+    for (const versions of this.#history.values()) for (const row of versions.values()) bytes += row.size;
+    return { entries, bytes };
+  }
+
+  changesAfter(cursor) {
+    return [...this.#entities.values()].filter((row) => row.cursor > cursor)
+      .map((row) => ({ cursor: String(row.cursor), entity_type: row.entity_type, entity: JSON.parse(row.body) }));
+  }
+
+  commit({ operation_id, entity_type, entity, cursor, snapshots }) {
+    const key = `${entity_type}:${entity.id}`;
+    this.#entities.delete(key);
+    this.#entities.set(key, { cursor, entity_type, deleted: entity.deleted, ...serialize(entity) });
+    if (entity_type === 'draft') {
+      // A deleted Draft takes no new AI results, so its history only uses space.
+      if (entity.deleted) this.#history.delete(entity.id);
+      else {
+        const versions = this.#history.get(entity.id) ?? new Map();
+        for (const [version, snapshot] of snapshots) if (!versions.has(version)) versions.set(version, serialize(snapshot));
+        for (const version of [...versions.keys()].sort((left, right) => left - right).slice(0, -MAX_DRAFT_HISTORY)) versions.delete(version);
+        this.#history.set(entity.id, versions);
+      }
+    }
+    this.#operations.set(operation_id, { entity_type, entity_id: entity.id, version: entity.version, cursor });
+    for (const [id, record] of this.#operations) {
+      if (record.cursor > cursor - MAX_OPERATION_RECORDS) break;
+      this.#operations.delete(id);
+    }
+    this.#cursor = cursor;
   }
 }
 
@@ -115,6 +219,16 @@ export function validateOperation(operation) {
   if (operation.base_epoch !== undefined && !isStableId(operation.base_epoch)) return 'base_epoch is invalid';
   if (!operation.payload || typeof operation.payload !== 'object' || Array.isArray(operation.payload)) return 'payload is required';
   return null;
+}
+
+/** @returns {{ body: string, size: number }} */
+export function serialize(value) {
+  const body = JSON.stringify(value);
+  return { body, size: Buffer.byteLength(body) };
+}
+
+function byteLength(value) {
+  return Buffer.byteLength(JSON.stringify(value));
 }
 
 function isStableId(value) {

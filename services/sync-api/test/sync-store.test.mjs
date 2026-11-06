@@ -1,12 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { SyncStore } from '../src/sync-store.mjs';
 import { createSyncServer } from '../src/server.mjs';
-import { WorkspaceDirectory } from '../src/workspace-directory.mjs';
+import { MemoryBackend, WorkspaceDirectory } from '../src/workspace-directory.mjs';
 import { queueAIArtifact, queueReviewResult, queueUpsert, selectCurrentAIArtifact } from '../../../apps/web/src/storage.mjs';
 import { LocalSyncClient, synchronizeWorkspace } from '../../../apps/web/src/sync-client.mjs';
 import { validateReviewResultEntity } from '../../../packages/contracts/validate.mjs';
+
+// persistence.test.mjs imports this file again with ?backend=sqlite, so every
+// test here also runs against SQLite.
+const sqlite = new URL(import.meta.url).searchParams.get('backend') === 'sqlite' ? await import('../src/sqlite-backend.mjs') : null;
+const newBackend = () => sqlite ? new sqlite.SqliteBackend(':memory:') : new MemoryBackend();
+
+function newStore(epoch = randomUUID()) {
+  const backend = newBackend();
+  backend.createWorkspace({ workspace_id: 'workspace-test', epoch, created_at: new Date().toISOString() });
+  return new SyncStore(backend.storage('workspace-test'));
+}
+
+const newServer = () => createSyncServer({ directory: new WorkspaceDirectory({ backend: newBackend() }) });
 
 test('shared review entity vectors match the sync-api validator', async (t) => {
   const source = new URL('../../../packages/contracts/vectors/review-results.json', import.meta.url);
@@ -32,14 +46,14 @@ const operation = {
 };
 
 test('applies once and treats a retry as duplicate', () => {
-  const store = new SyncStore();
+  const store = newStore();
   assert.equal(store.apply(operation).status, 'applied');
   assert.equal(store.apply(operation).status, 'duplicate');
   assert.equal(store.pull('0').changes.length, 1);
 });
 
 test('returns the server entity on version conflict', () => {
-  const store = new SyncStore();
+  const store = newStore();
   store.apply(operation);
   const result = store.apply({ ...operation, operation_id: 'op-2', client_id: 'phone-local' });
   assert.equal(result.status, 'conflict');
@@ -47,7 +61,7 @@ test('returns the server entity on version conflict', () => {
 });
 
 test('keeps a deletion tombstone in the change stream', () => {
-  const store = new SyncStore();
+  const store = newStore();
   store.apply(operation);
   const result = store.apply({ ...operation, operation_id: 'op-3', operation_type: 'delete', base_version: 1, payload: { deleted: true } });
   assert.equal(result.server_entity.deleted, true);
@@ -55,7 +69,7 @@ test('keeps a deletion tombstone in the change stream', () => {
 });
 
 test('accepts independent operations that arrive out of order and preserves cursor order', () => {
-  const store = new SyncStore();
+  const store = newStore();
   const firstEntity = { ...operation, operation_id: 'op-a', entity_id: 'draft-a' };
   const secondEntity = { ...operation, operation_id: 'op-b', entity_id: 'draft-b' };
 
@@ -68,7 +82,7 @@ test('accepts independent operations that arrive out of order and preserves curs
 });
 
 test('rejects a stale concurrent update without overwriting the server version', () => {
-  const store = new SyncStore();
+  const store = newStore();
   assert.equal(store.apply(operation).status, 'applied');
 
   const concurrentUpdate = {
@@ -86,7 +100,7 @@ test('rejects a stale concurrent update without overwriting the server version',
 });
 
 test('supports cursor recovery after consuming a batch and later changes', () => {
-  const store = new SyncStore();
+  const store = newStore();
   assert.equal(store.apply(operation).status, 'applied');
   const firstPull = store.pull('0');
   assert.equal(firstPull.changes.length, 1);
@@ -105,7 +119,7 @@ test('supports cursor recovery after consuming a batch and later changes', () =>
 });
 
 test('rejects malformed operations as a negative contract case', () => {
-  const store = new SyncStore('epoch-test');
+  const store = newStore('epoch-test');
   const result = store.apply({
     ...operation,
     operation_id: '',
@@ -120,7 +134,7 @@ test('rejects malformed operations as a negative contract case', () => {
 });
 
 test('two Web clients preserve a stale concurrent edit as a conflict copy', async (context) => {
-  const server = createSyncServer();
+  const server = newServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => server.close());
   const address = server.address();
@@ -151,7 +165,7 @@ test('two Web clients preserve a stale concurrent edit as a conflict copy', asyn
 });
 
 test('an offline Web queue reuses its operation id and submits after recovery', async (context) => {
-  const server = createSyncServer();
+  const server = newServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => server.close());
   const address = server.address();
@@ -189,7 +203,7 @@ test('Web sync does not advance its cursor when pull fails', async () => {
 });
 
 test('Web reports auth_required on a rejected token and keeps drafts, queue and cursor', async (context) => {
-  const server = createSyncServer();
+  const server = newServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -218,7 +232,7 @@ test('Web reports auth_required on a rejected token and keeps drafts, queue and 
 });
 
 test('Web selects a published phone draft instead of leaving the blank placeholder selected', async (context) => {
-  const server = createSyncServer();
+  const server = newServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => server.close());
   const address = server.address();
@@ -239,7 +253,7 @@ test('Web selects a published phone draft instead of leaving the blank placehold
 });
 
 test('Web replays the change stream when an old placeholder-only state already advanced its cursor', async (context) => {
-  const server = createSyncServer();
+  const server = newServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => server.close());
   const address = server.address();
@@ -259,7 +273,7 @@ test('Web replays the change stream when an old placeholder-only state already a
 });
 
 test('repeated starter edits keep one shared draft entity', () => {
-  const store = new SyncStore();
+  const store = newStore();
   const starter = makeDraft('draft-local', 'phone code', 'phone-local');
   const first = store.apply({
     operation_id: 'phone-starter-1', entity_type: 'draft', entity_id: 'draft-local', operation_type: 'upsert',
@@ -275,7 +289,7 @@ test('repeated starter edits keep one shared draft entity', () => {
 });
 
 test('a Web edit updates the same starter draft for the phone pull path', async (context) => {
-  const server = createSyncServer();
+  const server = newServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => server.close());
   const address = server.address();
@@ -308,14 +322,14 @@ test('a Web edit updates the same starter draft for the phone pull path', async 
 });
 
 test('rejects code_document until the entity has an implemented sync contract', () => {
-  const store = new SyncStore();
+  const store = newStore();
   const result = store.apply({ ...operation, operation_id: 'code-document-op', entity_type: 'code_document', entity_id: 'code-1' });
   assert.equal(result.status, 'rejected');
   assert.equal(result.error_code, 'INVALID_REQUEST');
 });
 
 test('syncs an independent faithful artifact without changing the draft entity', async (context) => {
-  const server = createSyncServer();
+  const server = newServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => server.close());
   const address = server.address();
@@ -342,7 +356,7 @@ test('syncs an independent faithful artifact without changing the draft entity',
 });
 
 test('two AI clients retain independent review results and choose the same current slot winner', async (context) => {
-  const server = createSyncServer();
+  const server = newServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => server.close());
   const address = server.address();
@@ -396,7 +410,7 @@ test('two AI clients retain independent review results and choose the same curre
 });
 
 test('two workspaces concurrently retain faithful AI artifacts and choose the same current result', async (context) => {
-  const server = createSyncServer();
+  const server = newServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => server.close());
   const address = server.address();
@@ -458,7 +472,7 @@ test('two workspaces concurrently retain faithful AI artifacts and choose the sa
 });
 
 test('rejects malformed independent AI artifacts before they enter the change stream', () => {
-  const store = new SyncStore();
+  const store = newStore();
   const malformed = store.apply({
     operation_id: 'artifact-invalid', entity_type: 'ai_artifact', entity_id: 'artifact-invalid', operation_type: 'upsert',
     base_version: 0, client_id: 'web-local', occurred_at: '2026-09-15T00:00:00.000Z',
@@ -470,7 +484,7 @@ test('rejects malformed independent AI artifacts before they enter the change st
 });
 
 test('rejects an AI artifact mapping to an unknown pseudocode step', () => {
-  const store = new SyncStore();
+  const store = newStore();
   seedDraft(store, makeDraft('draft-1', '', 'draft-owner'));
   const artifact = makeArtifact('artifact-ghost-step', 'draft-1', 'web-local');
   artifact.output_kind = 'code_snippet';
@@ -486,7 +500,7 @@ test('rejects an AI artifact mapping to an unknown pseudocode step', () => {
 });
 
 test('rejects an AI artifact referencing a source segment absent from the source draft version', () => {
-  const store = new SyncStore();
+  const store = newStore();
   seedDraft(store, makeDraft('draft-source-check', '', 'draft-owner'));
   const artifact = makeArtifact('artifact-ghost-source', 'draft-source-check', 'web-local');
   artifact.pseudocode[0].source_refs = ['ghost'];
@@ -498,7 +512,7 @@ test('rejects an AI artifact referencing a source segment absent from the source
 });
 
 test('rejects an unknown AI artifact delete instead of publishing an incomplete tombstone', () => {
-  const store = new SyncStore();
+  const store = newStore();
   const result = store.apply({
     operation_id: 'artifact-delete-unknown', entity_type: 'ai_artifact', entity_id: 'missing-artifact', operation_type: 'delete',
     base_version: 0, client_id: 'web-local', occurred_at: '2026-09-15T00:00:00.000Z', payload: {}
@@ -509,7 +523,7 @@ test('rejects an unknown AI artifact delete instead of publishing an incomplete 
 });
 
 test('persists an independent review result without changing Draft.version', () => {
-  const store = new SyncStore();
+  const store = newStore();
   const draft = makeDraft('draft-review', 'int main() {}', 'web-review');
   assert.equal(seedDraft(store, draft).status, 'applied');
   const review = makeReview('review-1', draft.id, 'web-review');
@@ -523,7 +537,7 @@ test('persists an independent review result without changing Draft.version', () 
 });
 
 test('accepts each independent review kind', () => {
-  const store = new SyncStore();
+  const store = newStore();
   const draft = makeDraft('draft-review-kinds', 'int main() {}', 'web-review');
   assert.equal(seedDraft(store, draft).status, 'applied');
   for (const reviewKind of ['explanation', 'risk', 'complexity']) {
@@ -538,7 +552,7 @@ test('accepts each independent review kind', () => {
 });
 
 test('accepts a review against an exact historical Draft snapshot after Draft advances', () => {
-  const store = new SyncStore();
+  const store = newStore();
   const draft = makeDraft('draft-review-history', 'x', 'web-review');
   assert.equal(seedDraft(store, draft).status, 'applied');
   const updated = { ...draft, version: 1, code: 'longer code', updated_at: '2026-09-16T00:00:00.000Z' };
@@ -558,7 +572,7 @@ test('accepts a review against an exact historical Draft snapshot after Draft ad
 });
 
 test('rejects malformed review results and inverted diagnostic ranges', () => {
-  const store = new SyncStore();
+  const store = newStore();
   const review = makeReview('review-invalid', 'draft-1', 'web-review');
   review.diagnostics[0].range = { start_line: 4, start_char: 0, end_line: 2, end_char: 0 };
   const result = store.apply({ operation_id: 'review-invalid-op', entity_type: 'review_result', entity_id: review.id, operation_type: 'upsert', base_version: 0, client_id: 'web-review', occurred_at: review.updated_at, payload: review });
@@ -567,7 +581,7 @@ test('rejects malformed review results and inverted diagnostic ranges', () => {
 });
 
 test('rejects a review diagnostic outside the source Draft code range', () => {
-  const store = new SyncStore();
+  const store = newStore();
   const draft = makeDraft('draft-review-range', 'x', 'web-review');
   assert.equal(seedDraft(store, draft).status, 'applied');
   const review = makeReview('review-range-invalid', draft.id, 'web-review');
@@ -581,7 +595,7 @@ test('rejects a review diagnostic outside the source Draft code range', () => {
 });
 
 test('retries the same AI artifact operation idempotently', () => {
-  const store = new SyncStore();
+  const store = newStore();
   seedDraft(store, makeDraft('draft-1', '', 'draft-owner'));
   const artifact = makeArtifact('artifact-duplicate', 'draft-1', 'web-local');
   const operation = {
@@ -594,7 +608,7 @@ test('retries the same AI artifact operation idempotently', () => {
 });
 
 test('keeps source snapshots immutable across Draft edits and artifact updates', () => {
-  const store = new SyncStore();
+  const store = newStore();
   const draft = makeDraft('draft-history', '', 'draft-owner');
   draft.idea_segments = [{ id: 'segment-old', content: 'Old thought', position: 0 }];
   assert.equal(seedDraft(store, draft).status, 'applied');
@@ -617,7 +631,7 @@ test('keeps source snapshots immutable across Draft edits and artifact updates',
 });
 
 test('does not let caller mutations change historical Draft source refs', () => {
-  const store = new SyncStore();
+  const store = newStore();
   const draft = makeDraft('draft-isolated-history', '', 'draft-owner');
   draft.idea_segments = [{ id: 'segment-original', content: 'Thought', position: 0 }];
   assert.equal(seedDraft(store, draft).status, 'applied');
@@ -759,7 +773,7 @@ function makeReview(id, draftId, clientId) {
 }
 
 test('a retried conflicting operation is checked again instead of reported as duplicate', () => {
-  const store = new SyncStore();
+  const store = newStore();
   const stale = { ...operation, operation_id: 'op-stale', base_version: 1, client_id: 'phone-local', payload: { title: 'Phone edit' } };
   // The entity does not exist yet (for example the in-memory server restarted).
   const first = store.apply(stale);
@@ -777,7 +791,7 @@ test('a retried conflicting operation is checked again instead of reported as du
 });
 
 test('a duplicate always carries the entity the operation produced', () => {
-  const store = new SyncStore();
+  const store = newStore();
   store.apply(operation);
   const replay = store.apply(operation);
   assert.equal(replay.status, 'duplicate');
@@ -798,7 +812,7 @@ test('Web sync keeps a duplicate without server_entity queued and reports failur
 });
 
 test('a base_version from another epoch conflicts even when the version numbers match', () => {
-  const store = new SyncStore('epoch-b');
+  const store = newStore('epoch-b');
   store.apply({ ...operation, operation_id: 'reseed', payload: { title: 'Reseeded by another client' } });
   const stale = store.apply({ ...operation, operation_id: 'stale', base_version: 1, base_epoch: 'epoch-a', payload: { title: 'Old lineage edit' } });
   assert.equal(stale.status, 'conflict');
@@ -817,7 +831,7 @@ test('a base_version from another epoch conflicts even when the version numbers 
 });
 
 test('pull replays everything and flags a reset for a cursor from another epoch', () => {
-  const store = new SyncStore('epoch-b');
+  const store = newStore('epoch-b');
   store.apply(operation);
   store.apply({ ...operation, operation_id: 'second', entity_id: 'draft-2' });
   assert.deepEqual({ ...store.pull('2', 'epoch-b'), changes: undefined }, { changes: undefined, next_cursor: '2', server_epoch: 'epoch-b', reset: false });
@@ -833,8 +847,7 @@ test('Web rebases a lost draft and adopts the re-seeded server copy after switch
   // Each workspace is its own lineage. Switching the token to a workspace this
   // client never synced with (a pairing transfer) looks like a server restart:
   // a new epoch whose versions are not comparable with the old ones.
-  const stores = [new SyncStore('epoch-a'), new SyncStore('epoch-b')];
-  const directory = new WorkspaceDirectory({ createStore: () => stores.shift() });
+  const directory = new WorkspaceDirectory({ backend: newBackend() });
   const server = createSyncServer({ directory });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => server.close());
@@ -844,13 +857,14 @@ test('Web rebases a lost draft and adopts the re-seeded server copy after switch
   queueUpsert(web, { ...web.drafts[0], code: 'kept v1' });
   queueUpsert(web, { ...web.drafts[1], code: 'shared v1' });
   web = (await synchronizeWorkspace(web, client)).state;
-  assert.equal(web.server_epoch, 'epoch-a');
+  const firstEpoch = web.server_epoch;
+  assert.equal(typeof firstEpoch, 'string');
   assert.deepEqual(web.drafts.map((draft) => draft.version), [1, 1]);
 
   // The phone's workspace already has its own draft-shared v1.
   const phoneWorkspace = directory.create({ kind: 'phone', name: null });
   const fresh = directory.authenticate(phoneWorkspace.device_token).store;
-  assert.equal(fresh.epoch, 'epoch-b');
+  assert.notEqual(fresh.epoch, firstEpoch);
   fresh.apply({ operation_id: 'phone-seed', entity_type: 'draft', entity_id: 'draft-shared', operation_type: 'upsert', base_version: 0,
     client_id: 'phone', occurred_at: '2026-10-22T00:00:00.000Z', payload: { ...makeDraft('draft-shared', 'phone content', 'phone'), title: 'Phone' } });
   client.token = directory.addDevice(phoneWorkspace.workspace_id, { kind: 'web', name: null }).device_token;
@@ -859,7 +873,7 @@ test('Web rebases a lost draft and adopts the re-seeded server copy after switch
   queueUpsert(web, { ...web.drafts.find((draft) => draft.id === 'draft-shared'), code: 'stale web edit' });
   const first = await synchronizeWorkspace(web, client);
   assert.equal(first.status, 'conflict');
-  assert.equal(first.state.server_epoch, 'epoch-b');
+  assert.equal(first.state.server_epoch, fresh.epoch);
   assert.equal(first.state.drafts.find((draft) => draft.id === 'draft-shared').code, 'phone content');
   const copyId = first.state.conflicts[0].local_copy_id;
   assert.equal(first.state.drafts.find((draft) => draft.id === copyId).code, 'stale web edit', 'the stale edit is kept as a conflict copy');
