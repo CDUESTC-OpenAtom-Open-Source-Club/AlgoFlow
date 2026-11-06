@@ -222,13 +222,17 @@ struct Placeholder {
     this.loadSelectedDraftContext();
   }
 
+  private matchesFilter(draft: Draft, filter: DraftFilter): boolean {
+    if (filter === DraftFilter.SYNCED) return draft.syncStatus === SyncStatus.SYNCED;
+    if (filter === DraftFilter.LOCAL) return draft.syncStatus === SyncStatus.LOCAL_ONLY;
+    if (filter === DraftFilter.ISSUE) return draft.syncStatus === SyncStatus.CONFLICT || draft.syncStatus === SyncStatus.FAILED;
+    return true;
+  }
+
   private filteredDrafts(): Draft[] {
     const query = this.searchQuery.trim().toLowerCase();
     return this.drafts.filter((draft: Draft) => {
-      if (this.draftFilter === DraftFilter.SYNCED && draft.syncStatus !== SyncStatus.SYNCED) return false;
-      if (this.draftFilter === DraftFilter.LOCAL && draft.syncStatus !== SyncStatus.LOCAL_ONLY) return false;
-      if (this.draftFilter === DraftFilter.ISSUE &&
-        draft.syncStatus !== SyncStatus.CONFLICT && draft.syncStatus !== SyncStatus.FAILED) return false;
+      if (!this.matchesFilter(draft, this.draftFilter)) return false;
       if (query.length === 0) return true;
       return draft.title.toLowerCase().includes(query) ||
         draft.idea.toLowerCase().includes(query) ||
@@ -538,13 +542,15 @@ struct Placeholder {
     }
   }
 
+  // The count is read here rather than passed in: a value passed to a @Builder
+  // is not refreshed when the drafts change, e.g. after a sync or a reload.
   @Builder
-  FilterPill(label: string, filter: DraftFilter, count: number) {
+  FilterPill(label: string, filter: DraftFilter) {
     Button() {
       Row({ space: 4 }) {
         Text(label).fontSize(10).fontWeight(this.draftFilter === filter ? FontWeight.Bold : FontWeight.Medium)
           .fontColor(this.draftFilter === filter ? '#55745F' : '#64748B')
-        Text(`${count}`).fontSize(9).fontFamily('monospace')
+        Text(`${this.drafts.filter((draft: Draft) => this.matchesFilter(draft, filter)).length}`).fontSize(9).fontFamily('monospace')
           .fontColor(this.draftFilter === filter ? '#55745F' : '#94A3B8')
       }
     }.type(ButtonType.Normal).height(28).padding({ left: 10, right: 10 })
@@ -585,14 +591,11 @@ struct Placeholder {
 
       // Status filter pills
       Row({ space: 6 }) {
-        this.FilterPill('全部', DraftFilter.ALL, this.drafts.length)
+        this.FilterPill('全部', DraftFilter.ALL)
         if (SYNC_ENTRY) {
-          this.FilterPill('已同步', DraftFilter.SYNCED,
-            this.drafts.filter((d: Draft) => d.syncStatus === SyncStatus.SYNCED).length)
-          this.FilterPill('仅本地', DraftFilter.LOCAL,
-            this.drafts.filter((d: Draft) => d.syncStatus === SyncStatus.LOCAL_ONLY).length)
-          this.FilterPill('冲突/异常', DraftFilter.ISSUE,
-            this.drafts.filter((d: Draft) => d.syncStatus === SyncStatus.CONFLICT || d.syncStatus === SyncStatus.FAILED).length)
+          this.FilterPill('已同步', DraftFilter.SYNCED)
+          this.FilterPill('仅本地', DraftFilter.LOCAL)
+          this.FilterPill('冲突/异常', DraftFilter.ISSUE)
         }
       }.width('100%')
 
