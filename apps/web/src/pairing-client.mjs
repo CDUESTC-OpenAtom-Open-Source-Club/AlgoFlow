@@ -2,6 +2,8 @@
 // #/$defs/pairing*). Pairing lets a phone join this browser's workspace with a
 // short-lived, single-use code. Both routes need this browser's device token.
 
+import { waitText } from './sync-client.mjs';
+
 export const PAIRING_INVITATION_TYPE = 'algoflow-pair-v1';
 
 /**
@@ -70,6 +72,51 @@ export function isLoopbackEndpoint(url) {
     const host = new URL(url).hostname;
     return host === 'localhost' || host === '[::1]' || host.startsWith('127.');
   } catch { return false; }
+}
+
+const MAX_DEVICE_NAME = 64;
+
+/**
+ * Name shown for this browser in the device list, e.g. "Edge · Windows". Only
+ * the browser family and system leave the user agent.
+ * @param {string | undefined} userAgent
+ * @returns {string}
+ */
+export function describeBrowser(userAgent) {
+  const ua = userAgent ?? '';
+  const browser = /Edg\//.test(ua) ? 'Edge'
+    : /OPR\//.test(ua) ? 'Opera'
+    : /Firefox\//.test(ua) ? 'Firefox'
+    : /Chrome\//.test(ua) ? 'Chrome'
+    : /Safari\//.test(ua) ? 'Safari' : '';
+  const system = /HarmonyOS|OpenHarmony/.test(ua) ? 'HarmonyOS'
+    : /Windows/.test(ua) ? 'Windows'
+    : /Android/.test(ua) ? 'Android'
+    : /iPhone|iPad/.test(ua) ? 'iOS'
+    : /Mac OS X|Macintosh/.test(ua) ? 'macOS'
+    : /Linux/.test(ua) ? 'Linux' : '';
+  const name = [browser, system].filter(Boolean).join(' · ');
+  return (name || '网页浏览器').slice(0, MAX_DEVICE_NAME);
+}
+
+/**
+ * Text for a failed pairing session start. The hosted build has no endpoint
+ * form, so its texts never point at sync-api settings.
+ * @param {unknown} error
+ * @param {string} syncApi
+ * @param {boolean} hosted
+ * @returns {string}
+ */
+export function pairingErrorText(error, syncApi, hosted) {
+  const code = error instanceof Error ? error.message : '';
+  if (code === 'SERVER_AT_CAPACITY') return '服务器暂时无法创建新的同步工作区，请 1 小时后再试';
+  if (code === 'RATE_LIMITED') {
+    const seconds = /** @type {{ retryAfter?: number }} */ (error).retryAfter;
+    return `请求太频繁，请${waitText(seconds)}再试`;
+  }
+  if (code === 'INVALID_REQUEST' && !hosted) return '端点配置无效，请检查 Sync API 与 AI Gateway 地址';
+  if (hosted) return code === 'INVALID_REQUEST' ? '配对请求无效，请刷新页面后重试' : '无法连接同步服务，请检查网络后重试';
+  return `无法连接同步服务 ${syncApi}，请先启动 sync-api`;
 }
 
 /** @param {string} value */

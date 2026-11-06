@@ -1,3 +1,4 @@
+import { AI_ENTRY } from '../site-config.mjs';
 import type { Panel } from '../types';
 import { Icon } from './Icon';
 
@@ -8,16 +9,16 @@ interface ActivityBarProps {
 
 const activities: Array<{ panel: Panel; icon: string; label: string }> = [
   { panel: 'files', icon: 'files', label: '文件' },
-  { panel: 'search', icon: 'search', label: '搜索' },
   { panel: 'source', icon: 'source', label: '来源' },
-  { panel: 'ai', icon: 'spark', label: 'AI' },
-  { panel: 'versions', icon: 'history', label: '版本' },
 ];
+const bottomActivities: Array<{ panel: Panel; icon: string; label: string }> = AI_ENTRY
+  ? [{ panel: 'ai', icon: 'spark', label: 'AI' }]
+  : [];
 
 export function ActivityBar({ activePanel, onPanelChange }: ActivityBarProps) {
   return (
     <aside className="activity-bar" aria-label="工作区工具">
-      {activities.slice(0, 3).map((activity) => (
+      {activities.map((activity) => (
         <ActivityButton
           key={activity.panel}
           activity={activity}
@@ -26,7 +27,7 @@ export function ActivityBar({ activePanel, onPanelChange }: ActivityBarProps) {
         />
       ))}
       <div className="activity-spacer" />
-      {activities.slice(3).map((activity) => (
+      {bottomActivities.map((activity) => (
         <ActivityButton
           key={activity.panel}
           activity={activity}

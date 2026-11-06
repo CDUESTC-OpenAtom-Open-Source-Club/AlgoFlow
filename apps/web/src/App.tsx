@@ -7,9 +7,11 @@ import { PhoneConnectionModal, type PhoneConnectionConfig } from './components/P
 import { TopBar } from './components/TopBar';
 import { WorkspaceSidebar } from './components/WorkspaceSidebar';
 import { initialDocuments } from './data';
-import { BrowserWorkspaceRepository, clearDeviceToken, getAIArtifactFreshness, loadDeviceToken, queueAIArtifact, queueReviewResult, queueUpsert, saveDeviceToken, selectCurrentAIArtifact, sortAIArtifactsNewestFirst } from './storage.mjs';
-import { LocalSyncClient, synchronizeWorkspace } from './sync-client.mjs';
-import type { AIArtifact, AIResultRecord, ConflictRecord, Documents, Draft, FileId, Mode, Panel, ReviewResult, SyncStatus, TransformOutputKind, WorkspaceState } from './types';
+import { BrowserWorkspaceRepository, clearDeviceToken, getAIArtifactFreshness, loadDeviceToken, markSyncedDraftsLocal, queueAIArtifact, queueReviewResult, queueUpsert, saveDeviceToken, selectCurrentAIArtifact, sortAIArtifactsNewestFirst } from './storage.mjs';
+import { LocalSyncClient, synchronizeWorkspace, syncNoticeFor } from './sync-client.mjs';
+import { describeBrowser } from './pairing-client.mjs';
+import { AI_ENTRY, HOSTED, ICP_RECORD, PRIVACY_URL } from './site-config.mjs';
+import type { AIArtifact, AIResultRecord, ConflictRecord, Documents, Draft, FileId, Mode, Panel, ReviewResult, SyncNotice, SyncStatus, TransformOutputKind, WorkspaceState } from './types';
 import { reviewCpp } from './code-review';
 import { artifactFromGateway, buildAIRequest, transformErrorMessage, WebAIClient, toCursor } from './ai-client.mjs';
 import { assertAIArtifact } from './sync-client.mjs';
@@ -29,18 +31,22 @@ const aiClient = new WebAIClient();
 const rewriteMappings = new BrowserRewriteMappingRepository();
 let pendingWorkspace: Promise<string> | null = null;
 
-// Only local deployments exist so far, so a browser without a token creates its
-// own workspace on first sync. The hosted build (#71 step 4) will create one
-// only after the user turns on 手机远程. Storage is read first because another
-// tab may already have created or switched the token.
+// Storage is read first because another tab may already have created or
+// switched the token.
+function storedDeviceToken(): string {
+  const stored = loadDeviceToken(syncClient.apiBase);
+  if (stored) syncClient.token = stored;
+  return stored;
+}
+
+// The local build creates a workspace on first sync; acceptance-server and LAN
+// testing rely on it. The hosted build calls this only after the user agrees on
+// the 手机远程 card, so nothing is uploaded before that.
 function ensureDeviceToken(): Promise<string> {
   const apiBase = syncClient.apiBase;
-  const stored = loadDeviceToken(apiBase);
-  if (stored) {
-    syncClient.token = stored;
-    return Promise.resolve(stored);
-  }
-  pendingWorkspace ??= syncClient.createWorkspace().then((created) => {
+  const stored = storedDeviceToken();
+  if (stored) return Promise.resolve(stored);
+  pendingWorkspace ??= syncClient.createWorkspace({ device_name: describeBrowser(navigator.userAgent) }).then((created) => {
     saveDeviceToken(apiBase, created.device_token);
     if (syncClient.apiBase === apiBase) syncClient.token = created.device_token;
     return created.device_token;
@@ -68,10 +74,8 @@ export function App() {
   const [activeFile, setActiveFile] = useState<FileId>('main.cpp');
   const [activePanel, setActivePanel] = useState<Panel>('files');
   const [mode, setMode] = useState<Mode>(currentDraft?.ai_mode ?? 'faithful_transform');
-  const [bottomOpen, setBottomOpen] = useState(false);
   const [saved, setSaved] = useState(true);
   const [inspectorHidden, setInspectorHidden] = useState(false);
-  const [query, setQuery] = useState('');
   const [syncState, setSyncState] = useState<SyncStatus>(
     workspace.conflicts.some((item) => !item.resolved) ? 'conflict' : currentDraft?.sync_status ?? 'local_only',
   );
@@ -86,11 +90,12 @@ export function App() {
   const [revealedArtifactId, setRevealedArtifactId] = useState('');
   const [mappingRevision, setMappingRevision] = useState(0);
   const [phoneModalOpen, setPhoneModalOpen] = useState(false);
-  const [syncNotice, setSyncNotice] = useState('');
+  const [syncNotice, setSyncNotice] = useState<SyncNotice | null>(null);
+  // Hosted: 手机远程 counts as on while this browser holds a token.
   const [phoneConfig, setPhoneConfig] = useState<PhoneConnectionConfig>(() => ({
-    enabled: true,
-    route: 'lan',
-    computerName: 'AlgoFlow-Desktop',
+    enabled: HOSTED ? loadDeviceToken(syncClient.apiBase) !== '' : true,
+    route: HOSTED ? 'relay' : 'lan',
+    computerName: HOSTED ? describeBrowser(navigator.userAgent) : 'AlgoFlow-Desktop',
     syncBaseUrl: syncClient.apiBase,
     aiBaseUrl: aiClient.baseUrl,
   }));
@@ -138,6 +143,16 @@ export function App() {
     for (const draft of workspace.drafts) if (draft.deleted) { aiSession.removeDraft(draft.id); rewriteMappings.removeDraft(draft.id); }
   }, [aiSession, workspace.drafts]);
 
+  // The server no longer accepts the token: a removed device, deleted cloud
+  // data or a restarted in-memory sync-api. Local drafts and the queue stay.
+  // The local build gets a new token on the next sync; the hosted build waits
+  // until the user turns 手机远程 on again.
+  const rejectToken = useCallback((token: string) => {
+    if (!forgetDeviceToken(token)) return;
+    setSyncNotice(syncNoticeFor({ auth_required: true }, HOSTED));
+    if (HOSTED) setPhoneConfig(config => ({ ...config, enabled: false }));
+  }, []);
+
   const flushQueue = useCallback(async () => {
     if (syncRunning.current) { syncAgain.current = true; return; }
     syncRunning.current = true;
@@ -154,10 +169,16 @@ export function App() {
       aiSession.importRecords(reviewRecordsForSession(state));
       return;
     }
+    let token = HOSTED ? storedDeviceToken() : '';
+    if (HOSTED && !token) {
+      setSyncState('local_only');
+      setWorkspace(state);
+      aiSession.importRecords(reviewRecordsForSession(state));
+      return;
+    }
     setSyncState('syncing');
-    let token: string;
     try {
-      token = await ensureDeviceToken();
+      token ||= await ensureDeviceToken();
     } catch {
       setSyncState('failed');
       setWorkspace(state);
@@ -167,9 +188,9 @@ export function App() {
     inFlightOperations.current = new Set(state.operations.map(operation => operation.operation_id));
     const result = await synchronizeWorkspace(state, syncClient);
     if (result.auth_required) {
-      // A restarted sync-api or a removed device. Nothing was applied and the
-      // queue is intact, so retrying once uploads it to the replacement token.
-      if (forgetDeviceToken(token)) setSyncNotice('同步服务已不再接受这台电脑的设备令牌（服务重启或设备已被移除）。本地草稿和待同步内容都已保留；手机需要重新扫码配对。');
+      // Nothing was applied and the queue is intact, so the local build retries
+      // once with a replacement token; the hosted build ends as local_only.
+      rejectToken(token);
       if (!renewedToken) {
         renewedToken = true;
         syncAgain.current = true;
@@ -196,6 +217,9 @@ export function App() {
       setMode(draft.ai_mode);
     }
     setSyncState(result.status);
+    // A full workspace or rate limit needs the user; a later clean run clears it.
+    const notice = syncNoticeFor(result, HOSTED);
+    setSyncNotice(previous => notice ?? (previous?.kind === 'auth' ? previous : null));
     const pendingConflict = unresolvedConflict(result.state);
     if (pendingConflict) setConflict(pendingConflict);
     // A new epoch (workspace transfer or server restart) re-queued the drafts the
@@ -206,7 +230,7 @@ export function App() {
       inFlightOperations.current.clear();
       syncRunning.current = false;
     }
-  }, [aiSession, repository]);
+  }, [aiSession, rejectToken, repository]);
 
   useEffect(() => {
     aiSession.setPersistedResultHandler((record) => {
@@ -218,7 +242,7 @@ export function App() {
         queueReviewResult(state, review);
         repository.save(state);
         setWorkspace(state);
-        setSyncState(navigator.onLine ? 'syncing' : 'local_only');
+        setSyncState(willSync() ? 'syncing' : 'local_only');
         if (navigator.onLine) void flushQueue();
       } catch (error) {
         // The session still keeps the local result visible; source/version
@@ -276,7 +300,7 @@ export function App() {
       ai_mode: mode,
       updated_at: new Date().toISOString(),
       last_modified_client_id: clientId,
-      sync_status: navigator.onLine ? 'syncing' : 'local_only',
+      sync_status: willSync() ? 'syncing' : 'local_only',
     };
     const next = replaceDraft({ ...base, online: navigator.onLine }, updated);
     queueUpsert(next, updated);
@@ -289,7 +313,7 @@ export function App() {
     setWorkspace(next);
     hasUnsavedEdits.current = false;
     setSaved(true);
-    setSyncState(navigator.onLine ? 'syncing' : 'local_only');
+    setSyncState(willSync() ? 'syncing' : 'local_only');
     if (navigator.onLine) void flushQueue();
   }
 
@@ -387,7 +411,7 @@ export function App() {
     const state = repository.load();
     const copy: Draft = {
       ...conflict.copy,
-      sync_status: navigator.onLine ? 'syncing' : 'local_only',
+      sync_status: willSync() ? 'syncing' : 'local_only',
     };
     const next = replaceDraft({ ...state, selected_id: copy.id }, copy);
     next.conflicts = state.conflicts.map((record) => record.local_copy_id === copy.id ? { ...record, resolved: true } : record);
@@ -399,7 +423,7 @@ export function App() {
     setSaved(true);
     setMode(copy.ai_mode);
     setConflict(null);
-    setSyncState(navigator.onLine ? 'syncing' : 'local_only');
+    setSyncState(willSync() ? 'syncing' : 'local_only');
     if (navigator.onLine) void flushQueue();
   }
 
@@ -430,12 +454,80 @@ export function App() {
     const previous = new LocalSyncClient(syncClient.apiBase, syncClient.token);
     saveDeviceToken(syncClient.apiBase, token);
     syncClient.token = token;
-    setSyncNotice('');
+    setSyncNotice(null);
     if (previous.token && previous.token !== token) {
       try { await previous.revokeCurrentDevice(); } catch { /* stays listed until removed from another device */ }
     }
     void flushQueue();
   }, [flushQueue]);
+
+  // The first workspace of this browser: upload the queue now so the phone sees
+  // the drafts right after it scans the code.
+  const ensurePairingToken = useCallback(async () => {
+    const hadToken = loadDeviceToken(syncClient.apiBase) !== '';
+    const token = await ensureDeviceToken();
+    if (!hadToken) {
+      setSyncNotice(null);
+      void flushQueue();
+    }
+    return token;
+  }, [flushQueue]);
+
+  // Device actions treat a rejected token like a sync run does.
+  const withDeviceToken = useCallback(async <T,>(action: () => Promise<T>): Promise<T> => {
+    const token = storedDeviceToken();
+    if (!token) throw new Error('AUTH_REQUIRED');
+    try {
+      return await action();
+    } catch (error) {
+      if (error instanceof Error && error.message === 'AUTH_REQUIRED') rejectToken(token);
+      throw error;
+    }
+  }, [rejectToken]);
+
+  // Disconnecting, deleting the cloud data or removing the last device: only
+  // the token goes, every local draft and queued edit stays.
+  const leaveWorkspace = useCallback(() => {
+    syncClient.token = '';
+    clearDeviceToken(syncClient.apiBase);
+    setPhoneConfig(config => ({ ...config, enabled: false }));
+    setSyncState('local_only');
+  }, []);
+
+  const listDevices = useCallback(() => withDeviceToken(() => syncClient.listDevices()), [withDeviceToken]);
+
+  const removeDevice = useCallback(async (deviceId: string) => {
+    const result = await withDeviceToken(() => syncClient.removeDevice(deviceId));
+    if (result.workspace_deleted) leaveWorkspace();
+    return result;
+  }, [leaveWorkspace, withDeviceToken]);
+
+  const disconnectDevice = useCallback(async () => {
+    storedDeviceToken();
+    await syncClient.revokeCurrentDevice();
+    leaveWorkspace();
+  }, [leaveWorkspace]);
+
+  // Like the phone: a token the server already dropped counts as deleted. The
+  // synced drafts become local-only again; turning 手机远程 back on uploads
+  // them to a new workspace through the epoch reset.
+  const deleteCloudData = useCallback(async () => {
+    storedDeviceToken();
+    try {
+      await syncClient.deleteWorkspace();
+    } catch (error) {
+      if (!(error instanceof Error && error.message === 'AUTH_REQUIRED')) throw error;
+    }
+    leaveWorkspace();
+    const state = repository.load();
+    markSyncedDraftsLocal(state);
+    repository.save(state);
+    setWorkspace(previous => {
+      const next = { ...previous };
+      markSyncedDraftsLocal(next);
+      return next;
+    });
+  }, [leaveWorkspace, repository]);
 
   function handleSavePhoneConfig(next: PhoneConnectionConfig) {
     syncClient.apiBase = next.syncBaseUrl;
@@ -448,7 +540,7 @@ export function App() {
   const reviewIssues = activeFile.endsWith('.cpp') ? reviewCpp(documents[activeFile]) : [];
 
   return (
-    <div className={conflict || syncNotice ? 'ide-shell has-conflict' : 'ide-shell'}>
+    <div className="ide-shell">
       <TopBar
         saved={saved}
         syncState={syncState}
@@ -456,7 +548,7 @@ export function App() {
         onOpenPhoneModal={() => setPhoneModalOpen(true)}
         draftTitle={currentDraft ? currentDraft.title || currentDraft.id : undefined}
         draftVersion={currentDraft?.version}
-        mode={mode}
+        mode={AI_ENTRY ? mode : undefined}
       />
       <PhoneConnectionModal
         open={phoneModalOpen}
@@ -467,9 +559,13 @@ export function App() {
         config={phoneConfig}
         onSaveConfig={handleSavePhoneConfig}
         onSyncNow={syncNow}
-        ensureToken={ensureDeviceToken}
-        onTokenRejected={forgetDeviceToken}
+        ensureToken={ensurePairingToken}
+        onTokenRejected={rejectToken}
         onTransfer={handlePairingTransfer}
+        listDevices={listDevices}
+        removeDevice={removeDevice}
+        onDisconnect={disconnectDevice}
+        onDeleteCloud={deleteCloudData}
       />
       {conflict && (
         <div className="sync-conflict-banner" role="alert">
@@ -486,12 +582,14 @@ export function App() {
       {!conflict && syncNotice && (
         <div className="sync-conflict-banner" role="status">
           <div>
-            <strong>需要重新配对手机</strong>
-            <span>{syncNotice}</span>
+            <strong>{syncNotice.title}</strong>
+            <span>{syncNotice.message}</span>
           </div>
           <div className="conflict-actions">
-            <button type="button" onClick={() => { setSyncNotice(''); setPhoneModalOpen(true); }}>打开手机远程</button>
-            <button type="button" onClick={() => setSyncNotice('')}>知道了</button>
+            {syncNotice.kind === 'auth' && (
+              <button type="button" onClick={() => { setSyncNotice(null); setPhoneModalOpen(true); }}>打开手机远程</button>
+            )}
+            <button type="button" onClick={() => setSyncNotice(null)}>知道了</button>
           </div>
         </div>
       )}
@@ -503,21 +601,17 @@ export function App() {
           drafts={workspace.drafts}
           selectedDraftId={workspace.selected_id}
           mode={mode}
-          query={query}
           saved={saved}
           onDraftChange={selectDraft}
           onFileChange={selectFile}
           onModeChange={selectMode}
-          onQueryChange={setQuery}
           ideaSegments={aiState.segments}
         />
         <EditorStage
           activeFile={activeFile}
-          bottomOpen={bottomOpen}
           code={documents[activeFile]}
           mode={mode}
           saved={saved}
-          onBottomToggle={() => setBottomOpen((open) => !open)}
           onChange={updateActiveDocument}
           onSave={saveWorkspace}
           jumpToLine={jumpToLine}
@@ -529,7 +623,7 @@ export function App() {
           onSelectionLines={handleSelectionLines}
           compareOpen={compareOpen}
           onCompareToggle={() => setCompareOpen(open => !open)}
-          sidePanel={activeFile === 'rewrite.cpp' && compareOpen ? (
+          sidePanel={AI_ENTRY && activeFile === 'rewrite.cpp' && compareOpen ? (
             <RewriteComparePanel
               artifact={compareArtifact}
               draftVersion={currentDraft?.version ?? 0}
@@ -577,8 +671,20 @@ export function App() {
           onRetryStorage={() => aiSession.retryStorage()}
         />
       </main>
+      {(ICP_RECORD || PRIVACY_URL) && (
+        <footer className="site-footer">
+          {PRIVACY_URL && <a href={PRIVACY_URL} target="_blank" rel="noreferrer">隐私政策</a>}
+          {PRIVACY_URL && ICP_RECORD && <span aria-hidden="true">·</span>}
+          {ICP_RECORD && <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer">{ICP_RECORD}</a>}
+        </footer>
+      )}
     </div>
   );
+}
+
+// Hosted builds upload nothing until 手机远程 is on, so a save stays local-only.
+function willSync(): boolean {
+  return navigator.onLine && (!HOSTED || loadDeviceToken(syncClient.apiBase) !== '');
 }
 
 function makeAIContext(draft: Draft, documents: Documents, fileId: FileId, mode: Mode): AIContext {

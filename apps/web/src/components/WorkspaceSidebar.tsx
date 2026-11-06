@@ -1,4 +1,5 @@
 import { files, modes } from '../data';
+import { AI_ENTRY } from '../site-config.mjs';
 import type { Draft, FileId, IdeaSegment, Mode, Panel } from '../types';
 import { Icon } from './Icon';
 import { SourceTag } from './SourceTag';
@@ -6,10 +7,8 @@ import { SyncChip } from './TopBar';
 
 const panelTitles: Record<Panel, string> = {
   files: '工作区',
-  search: '搜索',
   source: '来源轨道',
   ai: 'AI 模式',
-  versions: '版本',
 };
 
 interface WorkspaceSidebarProps {
@@ -18,12 +17,10 @@ interface WorkspaceSidebarProps {
   drafts: Draft[];
   selectedDraftId: string;
   mode: Mode;
-  query: string;
   saved: boolean;
   onDraftChange: (draftId: string) => void;
   onFileChange: (file: FileId) => void;
   onModeChange: (mode: Mode) => void;
-  onQueryChange: (query: string) => void;
   ideaSegments: IdeaSegment[];
 }
 
@@ -33,12 +30,10 @@ export function WorkspaceSidebar({
   drafts,
   selectedDraftId,
   mode,
-  query,
   saved,
   onDraftChange,
   onFileChange,
   onModeChange,
-  onQueryChange,
   ideaSegments,
 }: WorkspaceSidebarProps) {
   return (
@@ -48,12 +43,8 @@ export function WorkspaceSidebar({
         <FilesPanel activeFile={activeFile} saved={saved} drafts={drafts} selectedDraftId={selectedDraftId}
           onDraftChange={onDraftChange} onFileChange={onFileChange} segments={ideaSegments} />
       )}
-      {activePanel === 'search' && (
-        <SearchPanel query={query} onQueryChange={onQueryChange} />
-      )}
       {activePanel === 'source' && <SourcePanel segments={ideaSegments} />}
-      {activePanel === 'ai' && <AiPanel mode={mode} onModeChange={onModeChange} />}
-      {activePanel === 'versions' && <VersionsPanel />}
+      {AI_ENTRY && activePanel === 'ai' && <AiPanel mode={mode} onModeChange={onModeChange} />}
     </aside>
   );
 }
@@ -73,12 +64,7 @@ function FilesPanel({ activeFile, saved, drafts, selectedDraftId, onDraftChange,
   const currentDraft = visibleDrafts.find((draft) => draft.id === selectedDraftId);
   return (
     <>
-      <div className="side-heading">
-        <span>文件</span>
-        <button type="button" className="quiet-button" aria-label="新建文件">
-          <Icon name="plus" />
-        </button>
-      </div>
+      <div className="side-heading"><span>文件</span></div>
       <div className="file-tree">
         {files.map((file) => (
           <button
@@ -134,34 +120,13 @@ function IdeaRail({ segments, showIds = false }: { segments: IdeaSegment[]; show
   );
 }
 
-interface SearchPanelProps {
-  query: string;
-  onQueryChange: (query: string) => void;
-}
-
-function SearchPanel({ query, onQueryChange }: SearchPanelProps) {
-  return (
-    <div className="panel-content">
-      <label className="search-box">
-        <Icon name="search" />
-        <input
-          value={query}
-          onChange={(event) => onQueryChange(event.target.value)}
-          placeholder="在工作区中搜索"
-        />
-      </label>
-      <p className="muted-copy">
-        {query ? `正在搜索“${query}”` : '搜索标题、思路和代码。'}
-      </p>
-    </div>
-  );
-}
-
 function SourcePanel({ segments }: { segments: IdeaSegment[] }) {
   return (
     <div className="panel-content">
       <IdeaRail segments={segments} showIds />
-      <p className="muted-copy">来源轨道颜色按片段顺序在三种颜色间循环；AI 步骤和复写对比用同一组标记引用这些片段。</p>
+      <p className="muted-copy">
+        来源轨道颜色按片段顺序在三种颜色间循环{AI_ENTRY ? '；AI 步骤和复写对比用同一组标记引用这些片段' : ''}。
+      </p>
     </div>
   );
 }
@@ -190,34 +155,6 @@ function AiPanel({ mode, onModeChange }: AiPanelProps) {
       <div className="ai-disabled">
         <strong>{mode === 'faithful_transform' ? '忠实转换 · 按需请求' : '该 AI 模式尚未接入'}</strong>
         <p>在右侧思路检查中请求审查或预览局部补全。未配置模型时会明确显示 AI 不可用。</p>
-      </div>
-    </div>
-  );
-}
-
-function VersionsPanel() {
-  return (
-    <div className="panel-content">
-      <VersionRow current title="当前编辑" detail="刚刚 · 本机" />
-      <VersionRow title="手机端草稿" detail="今天 09:42 · 已同步" />
-      <VersionRow title="初始思路" detail="昨天 21:18 · 仅本地" />
-    </div>
-  );
-}
-
-interface VersionRowProps {
-  current?: boolean;
-  title: string;
-  detail: string;
-}
-
-function VersionRow({ current = false, title, detail }: VersionRowProps) {
-  return (
-    <div className="version-row">
-      <span className={current ? 'version-dot current' : 'version-dot'} />
-      <div>
-        <strong>{title}</strong>
-        <small>{detail}</small>
       </div>
     </div>
   );

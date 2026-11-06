@@ -1,7 +1,9 @@
-const API_BASE = import.meta.env?.VITE_SYNC_API_BASE ?? 'http://127.0.0.1:8787';
 import { assertReviewResult, assertReviewSource, createAIArtifactConflictCopy, createReviewResultConflictCopy, hasReviewSource, queueAIArtifact, queueReviewResult, queueUpsert, recordDraftSnapshot, recomputeReviewFreshness } from './storage.mjs';
+import { HOSTED, resolveApiBase } from './site-config.mjs';
 
 export { assertReviewResult } from './storage.mjs';
+
+const API_BASE = resolveApiBase(HOSTED, import.meta.env?.VITE_SYNC_API_BASE, globalThis.location?.origin);
 
 export class LocalSyncClient {
   /**
@@ -19,11 +21,8 @@ export class LocalSyncClient {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...this.authHeaders() }, body: JSON.stringify(operation)
     });
     if (response.status === 401) throw new Error('AUTH_REQUIRED');
-    const result = await response.json();
-    if (!response.ok && response.status !== 409) {
-      throw new Error(result.error_code ?? result.code ?? 'SYNC_FAILED');
-    }
-    return result;
+    if (!response.ok && response.status !== 409) throw await responseError(response, 'SYNC_FAILED');
+    return response.json();
   }
 
   /** @param {string} cursor @param {string} [epoch] @returns {Promise<import('./types').PullResult>} */
@@ -31,7 +30,7 @@ export class LocalSyncClient {
     const epochQuery = epoch ? `&epoch=${encodeURIComponent(epoch)}` : '';
     const response = await fetch(`${this.apiBase}/v1/sync/changes?after=${encodeURIComponent(cursor)}${epochQuery}`, { headers: this.authHeaders() });
     if (response.status === 401) throw new Error('AUTH_REQUIRED');
-    if (!response.ok) throw new Error('SYNC_FAILED');
+    if (!response.ok) throw await responseError(response, 'SYNC_FAILED');
     return response.json();
   }
 
@@ -44,10 +43,9 @@ export class LocalSyncClient {
     const response = await fetch(`${this.apiBase}/v1/workspaces`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request)
     });
+    if (!response.ok) throw await responseError(response, 'SYNC_FAILED');
     const result = await response.json();
-    if (!response.ok || result.status !== 'created' || typeof result.device_token !== 'string') {
-      throw new Error(result.error_code ?? 'SYNC_FAILED');
-    }
+    if (result.status !== 'created' || typeof result.device_token !== 'string') throw new Error('SYNC_FAILED');
     return result;
   }
 
@@ -58,13 +56,66 @@ export class LocalSyncClient {
    */
   async revokeCurrentDevice() {
     const response = await fetch(`${this.apiBase}/v1/devices/current`, { method: 'DELETE', headers: this.authHeaders() });
-    if (!response.ok && response.status !== 401 && response.status !== 404) throw new Error('SYNC_FAILED');
+    if (!response.ok && response.status !== 401 && response.status !== 404) throw await responseError(response, 'SYNC_FAILED');
+  }
+
+  /** @returns {Promise<import('./types').DeviceList>} */
+  async listDevices() {
+    const response = await fetch(`${this.apiBase}/v1/devices`, { headers: this.authHeaders() });
+    if (response.status === 401) throw new Error('AUTH_REQUIRED');
+    if (!response.ok) throw await responseError(response, 'SYNC_FAILED');
+    return response.json();
+  }
+
+  /**
+   * Retires another device's token, e.g. a lost phone. The server deletes the
+   * workspace with its last device (`workspace_deleted`).
+   * @param {string} deviceId
+   * @returns {Promise<import('./types').DeviceDeleteResult>}
+   */
+  async removeDevice(deviceId) {
+    const response = await fetch(`${this.apiBase}/v1/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE', headers: this.authHeaders() });
+    if (response.status === 401) throw new Error('AUTH_REQUIRED');
+    if (!response.ok) throw await responseError(response, 'SYNC_FAILED');
+    return response.json();
+  }
+
+  /**
+   * Deletes the workspace's synced data and every device's token. Local drafts
+   * are not touched here; see `markSyncedDraftsLocal`.
+   * @returns {Promise<void>}
+   */
+  async deleteWorkspace() {
+    const response = await fetch(`${this.apiBase}/v1/workspaces/current`, { method: 'DELETE', headers: this.authHeaders() });
+    if (response.status === 401) throw new Error('AUTH_REQUIRED');
+    if (!response.ok) throw await responseError(response, 'SYNC_FAILED');
   }
 
   /** @returns {Record<string, string>} */
   authHeaders() {
     return this.token ? { Authorization: `Bearer ${this.token}` } : {};
   }
+}
+
+/**
+ * The sync-api `error_code` as the message, plus `Retry-After` seconds on 429
+ * and 503. A body that is not JSON (e.g. a proxy error page) keeps `fallback`.
+ * @param {Response} response
+ * @param {string} fallback
+ * @returns {Promise<Error & { retryAfter?: number }>}
+ */
+async function responseError(response, fallback) {
+  /** @type {unknown} */
+  let body = null;
+  try { body = await response.json(); } catch { /* not JSON */ }
+  const code = body && typeof body === 'object' && 'error_code' in body && typeof body.error_code === 'string' ? body.error_code : fallback;
+  const retryAfter = Number(response.headers.get('Retry-After'));
+  return Object.assign(new Error(code), Number.isFinite(retryAfter) && retryAfter > 0 ? { retryAfter } : {});
+}
+
+/** @param {unknown} error @returns {number | undefined} */
+function retryAfterOf(error) {
+  return error instanceof Error && 'retryAfter' in error && typeof error.retryAfter === 'number' ? error.retryAfter : undefined;
 }
 
 /**
@@ -83,6 +134,14 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
   // A rejected token fails every later request too; stop and let the caller
   // ask for a new pairing. The queue and local drafts are kept.
   let authRequired = false;
+  // RATE_LIMITED stops the run like a rejected token. WORKSPACE_QUOTA_EXCEEDED
+  // keeps that operation queued but still pushes the rest and pulls, so a
+  // deletion from another device can free space. Neither is retried here.
+  /** @type {string | undefined} */
+  let errorCode;
+  /** @type {number | undefined} */
+  let retryAfter;
+  let quotaExceeded = false;
   const epoch = next.server_epoch ?? '';
   /** @param {import('./types').SyncOperation} item */
   const withEpoch = (item) => (epoch ? { ...item, base_epoch: epoch } : item);
@@ -194,9 +253,19 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
         next.operations = next.operations.filter((item) => item.operation_id !== operation.operation_id);
         continue;
       }
+      if (errorMessage(error) === 'WORKSPACE_QUOTA_EXCEEDED') {
+        quotaExceeded = true;
+        errorCode = 'WORKSPACE_QUOTA_EXCEEDED';
+        continue;
+      }
       hadFailure = true;
       if (isAuthRequired(error)) {
         authRequired = true;
+        break;
+      }
+      if (errorMessage(error) === 'RATE_LIMITED') {
+        errorCode = 'RATE_LIMITED';
+        retryAfter = retryAfterOf(error);
         break;
       }
     }
@@ -216,6 +285,10 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
     } catch (error) {
       hadFailure = true;
       authRequired = isAuthRequired(error);
+      if (errorMessage(error) === 'RATE_LIMITED') {
+        errorCode = 'RATE_LIMITED';
+        retryAfter = retryAfterOf(error);
+      }
     }
   }
 
@@ -224,16 +297,56 @@ export async function synchronizeWorkspace(state, client, createId = () => crypt
   // pull instead of reporting success while the editor still shows blank data.
   next = selectRemoteDraftWhenPlaceholder(next);
 
-  const auth = authRequired ? { auth_required: true } : {};
-  if (hadConflict || next.conflicts.some((conflict) => !conflict.resolved)) return { state: next, status: 'conflict', ...auth };
-  if (hadFailure) return { state: next, status: 'failed', ...auth };
+  const extra = {
+    ...(authRequired ? { auth_required: true } : {}),
+    ...(errorCode ? { error_code: errorCode } : {}),
+    ...(retryAfter ? { retry_after: retryAfter } : {}),
+  };
+  if (hadConflict || next.conflicts.some((conflict) => !conflict.resolved)) return { state: next, status: 'conflict', ...extra };
+  if (hadFailure || quotaExceeded) return { state: next, status: 'failed', ...extra };
   recomputeReviewFreshness(next);
   return { state: next, status: next.operations.length ? 'local_only' : 'synced' };
 }
 
 /** @param {unknown} error */
 function isAuthRequired(error) {
-  return error instanceof Error && error.message === 'AUTH_REQUIRED';
+  return errorMessage(error) === 'AUTH_REQUIRED';
+}
+
+/** @param {unknown} error */
+function errorMessage(error) {
+  return error instanceof Error ? error.message : '';
+}
+
+/**
+ * The banner for a sync run that needs the user, or null. The Web never
+ * retries on its own (AGENTS.md); the text says what to do next.
+ * @param {Pick<import('./types').SyncRunResult, 'auth_required' | 'error_code' | 'retry_after'>} result
+ * @param {boolean} hosted
+ * @returns {import('./types').SyncNotice | null}
+ */
+export function syncNoticeFor(result, hosted) {
+  if (result.auth_required) {
+    return { kind: 'auth', title: '需要重新配对手机', message: hosted
+      ? '服务器已不再接受这台电脑的连接（设备已被移除或云端数据已删除）。本地草稿和待同步内容都已保留；需要同步时重新开启手机远程并扫码配对。'
+      : '同步服务已不再接受这台电脑的设备令牌（服务重启或设备已被移除）。本地草稿和待同步内容都已保留；手机需要重新扫码配对。' };
+  }
+  if (result.error_code === 'WORKSPACE_QUOTA_EXCEEDED') {
+    return { kind: 'quota', title: '云端空间已满', message: '这个工作区在服务器上的空间已用完，新的修改没有上传。删除不需要的草稿后再点同步；本地内容都已保留。' };
+  }
+  if (result.error_code === 'RATE_LIMITED') {
+    return { kind: 'rate_limited', title: '同步请求太频繁', message: `请${waitText(result.retry_after)}再点同步；本地内容都已保留。` };
+  }
+  return null;
+}
+
+/**
+ * @param {number | undefined} seconds Retry-After
+ * @returns {string} e.g. 「 30 秒后」, 「 2 分钟后」 or 「稍后」
+ */
+export function waitText(seconds) {
+  if (!seconds || seconds <= 0) return '稍后';
+  return seconds < 60 ? ` ${Math.ceil(seconds)} 秒后` : ` ${Math.ceil(seconds / 60)} 分钟后`;
 }
 
 /**

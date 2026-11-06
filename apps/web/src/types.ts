@@ -1,4 +1,4 @@
-export type Panel = 'files' | 'search' | 'source' | 'ai' | 'versions';
+export type Panel = 'files' | 'source' | 'ai';
 
 export type Mode =
   | 'faithful_transform'
@@ -337,6 +337,38 @@ export interface SyncRunResult {
   status: SyncStatus;
   /** The device token was rejected; local data and the queue are unchanged. */
   auth_required?: boolean;
+  /** `RATE_LIMITED` or `WORKSPACE_QUOTA_EXCEEDED`; the status is then `failed`. */
+  error_code?: string;
+  /** Seconds from `Retry-After` when rate limited. */
+  retry_after?: number;
+}
+
+/** Banner text for a sync run the user has to act on (`syncNoticeFor`). */
+export interface SyncNotice {
+  kind: 'auth' | 'quota' | 'rate_limited';
+  title: string;
+  message: string;
+}
+
+// packages/contracts/schemas/sync.schema.json #/$defs/device*
+export interface Device {
+  device_id: string;
+  kind: 'web' | 'phone';
+  name: string | null;
+  created_at: string;
+  last_seen_at: string;
+}
+
+export interface DeviceList {
+  status: 'ok';
+  current_device_id: string;
+  devices: Device[];
+}
+
+export interface DeviceDeleteResult {
+  status: 'deleted';
+  /** The last device was removed, so the workspace and its data are gone. */
+  workspace_deleted: boolean;
 }
 
 export interface WorkspaceCreateResult {
