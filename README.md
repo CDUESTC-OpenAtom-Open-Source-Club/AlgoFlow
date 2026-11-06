@@ -27,7 +27,7 @@ AlgoFlow 是面向算法学习者的思路验证代码工作台：在 OpenHarmon
 - **应用市场版本为不联网单机版**：草稿只保存在手机本机，上架包（Release）不显示同步和 AI 入口、不申请网络权限；双端同步与 AI 只在 Debug 包中启用，需用户自行提供可访问的 sync-api / AI Gateway 端点，不含云端服务。
 - **AI 演示**：仓库自带的演示 Provider 只回显思路；演示视频中，开发者在本机为 AI Gateway 接入了真实大模型完成忠实转换（该适配脚本未放入仓库），不是应用提供的云端服务。
 - **验证范围**：手机端在 HarmonyOS 模拟器（Mate 70 Pro，API 20）上完成本地验证，尚未做真机验证。
-- **同步**：普通 HTTP push/pull，sync-api 默认进程内存储，设置 `SYNC_DB_PATH` 后存入 SQLite，目前用于局域网联调；不是 OpenHarmony 分布式能力，也不是生产云同步。
+- **同步**：普通 HTTP push/pull，sync-api 默认进程内存储，设置 `SYNC_DB_PATH` 后存入 SQLite，目前用于局域网联调；`deploy/` 里有公网部署示例，但公共同步服务器尚未上线。不是 OpenHarmony 分布式能力，也不是生产云同步。
 - **扫码配对**使用 HarmonyOS Scan Kit（系统扫码界面，不申请相机权限），属于 HarmonyOS 专有能力；不支持的设备可手输或粘贴配对码。
 
 ## 仓库结构
@@ -39,6 +39,7 @@ apps/openharmony/        手机端说明文档
 packages/contracts/      API JSON Schema、领域枚举和测试向量（各端唯一契约来源）
 services/sync-api/       同步、冲突、版本和配对接口（Node 标准库）
 services/ai-gateway/     AI 请求 / 产物契约校验与 Provider 调度（Node 标准库）
+deploy/                  公网部署示例（Nginx、systemd、隐私政策模板，只有占位符）
 tests/                   手机端用例的 Node 测试（真实 ArkTS 源码 + SDK 替身）
 docs/                    UI 指南、演示脚本、进度与设计记录
 ```
@@ -92,6 +93,7 @@ Node 手机端测试运行真实 ArkTS 源码加 SDK 替身，不等于设备验
 - [`CONTEXT.md`](CONTEXT.md)：产品术语
 - [`packages/contracts/README.md`](packages/contracts/README.md)：数据契约与同步语义
 - [`docs/WEB_UI_GUIDE.md`](docs/WEB_UI_GUIDE.md)：Web / ArkUI 视觉规范
+- [`deploy/README.md`](deploy/README.md)：公网部署示例（Nginx、systemd、备份恢复、隐私政策模板），服务器尚未上线
 
 ## 许可证
 

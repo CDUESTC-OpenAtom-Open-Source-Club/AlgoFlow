@@ -343,9 +343,13 @@ test('logs never contain device tokens, transfer tokens or pairing codes', async
     const { transfer_token: transfer } = (await call('GET', `/v1/pairing/sessions/${session.pairing_id}`, { token: web.device_token })).body.session;
     await call('POST', '/v1/pairing/claims', { body: { code: session.code, phone_client_id: 'phone-2' } });
     await call('GET', '/v1/devices', { token: 'B'.repeat(43) });
+    // Restoring a backup re-applies device removals from this line.
+    const removed = (await call('GET', '/v1/devices', { token: phoneOwner.device_token })).body.current_device_id;
+    assert.equal((await call('DELETE', '/v1/devices/current', { token: phoneOwner.device_token })).status, 200);
 
     assert.ok(logs.length > 0);
     const joined = logs.join('\n');
+    assert.match(joined, new RegExp(`Device removed\\. workspace_id=\\S+ device_id=${removed} workspace_deleted=`));
     for (const secret of [web.device_token, phoneOwner.device_token, transfer, session.code, 'B'.repeat(43)]) {
       assert.equal(joined.includes(secret), false);
     }

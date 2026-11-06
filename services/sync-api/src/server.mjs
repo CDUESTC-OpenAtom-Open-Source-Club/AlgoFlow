@@ -147,7 +147,8 @@ export function createSyncServer({
       const deviceId = segment === 'current' ? auth.device_id : segment;
       const result = deviceId === null ? { removed: false } : directory.removeDevice(auth.workspace_id, deviceId);
       if (!result.removed) return send(response, 404, rejected('DEVICE_NOT_FOUND'));
-      console.log(`[AlgoFlow] Device removed. workspace_id=${safeLogValue(auth.workspace_id)} workspace_deleted=${result.workspace_deleted}`);
+      // Restoring a backup re-applies removals from this line (deploy/README.md).
+      console.log(`[AlgoFlow] Device removed. workspace_id=${safeLogValue(auth.workspace_id)} device_id=${safeLogValue(deviceId)} workspace_deleted=${result.workspace_deleted}`);
       return send(response, 200, { status: 'deleted', workspace_deleted: result.workspace_deleted });
     }
     if (request.method === 'DELETE' && path === '/v1/workspaces/current') {
