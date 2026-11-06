@@ -356,6 +356,15 @@ export function queueUpsert(state, draft) {
   state.operations.push(operation);
 }
 
+/**
+ * After the cloud workspace is deleted no server holds the synced drafts, so
+ * they become local-only again, like the phone's `deleteCloudData`.
+ * @param {import('./types').WorkspaceState} state
+ */
+export function markSyncedDraftsLocal(state) {
+  state.drafts = state.drafts.map((draft) => draft.sync_status === 'synced' ? { ...draft, sync_status: 'local_only' } : draft);
+}
+
 /** @param {string | null} [clientId] @returns {import('./types').WorkspaceState} */
 function initialState(clientId = null) {
   const resolvedClientId = clientId ?? `web-${crypto.randomUUID()}`;

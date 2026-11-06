@@ -1750,6 +1750,9 @@ test('sync messages keep LAN advice out of release builds', () => {
   }
   assert.match(syncMessageText('SYNC_NETWORK_2300007', true), /sync-api/);
   assert.match(syncMessageText('SYNC_HTTP_429_RATE_LIMITED', false), /频繁/);
+  const quota = syncMessageText('SYNC_HTTP_507_WORKSPACE_QUOTA_EXCEEDED', false);
+  assert.match(quota, /空间已满/);
+  assert.doesNotMatch(quota, /SYNC_|稍后重试/);
   assert.equal(syncMessageText('已同步', false), '已同步');
 });
 

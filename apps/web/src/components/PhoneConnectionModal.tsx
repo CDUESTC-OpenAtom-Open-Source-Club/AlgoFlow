@@ -4,14 +4,22 @@ import {
   createPairingSession,
   getPairingSession,
   isLoopbackEndpoint,
+  pairingErrorText,
   type PairingSession,
 } from '../pairing-client.mjs';
+import { AI_ENTRY, HOSTED, PRIVACY_URL } from '../site-config.mjs';
+import type { DeviceDeleteResult, DeviceList } from '../types';
+import { DeviceListSection } from './DeviceListSection';
 import { PairingQrCode } from './PairingQrCode';
 
 const POLL_INTERVAL_MS = 2000;
 
 function formatCode(code: string): string {
   return `${code.slice(0, 4)} ${code.slice(4, 8)}`;
+}
+
+function hostOf(url: string): string {
+  try { return new URL(url).host; } catch { return url; }
 }
 
 export interface PhoneConnectionConfig {
@@ -37,6 +45,12 @@ interface PhoneConnectionModalProps {
   onTokenRejected: (token: string) => void;
   /** The phone already had a workspace; switch this browser to `token`. */
   onTransfer: (token: string) => Promise<void>;
+  listDevices: () => Promise<DeviceList>;
+  removeDevice: (deviceId: string) => Promise<DeviceDeleteResult>;
+  /** Retires this browser's token; local drafts stay. */
+  onDisconnect: () => Promise<void>;
+  /** Deletes the workspace on the server for every device; local drafts stay. */
+  onDeleteCloud: () => Promise<void>;
 }
 
 export function PhoneConnectionModal({
@@ -51,6 +65,10 @@ export function PhoneConnectionModal({
   ensureToken,
   onTokenRejected,
   onTransfer,
+  listDevices,
+  removeDevice,
+  onDisconnect,
+  onDeleteCloud,
 }: PhoneConnectionModalProps) {
   const [route, setRoute] = useState<'lan' | 'relay'>(config.route);
   const [syncUrl, setSyncUrl] = useState(config.syncBaseUrl);
@@ -68,6 +86,8 @@ export function PhoneConnectionModal({
   const [loading, setLoading] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  // Shown on the off card after this computer left the workspace.
+  const [leftNotice, setLeftNotice] = useState('');
 
   useEffect(() => {
     if (!open) return;
@@ -89,7 +109,9 @@ export function PhoneConnectionModal({
         computer_name: config.computerName,
         route: config.route,
         sync_api: config.syncBaseUrl,
-        ai_gateway: config.aiBaseUrl,
+        // Without AI entries there is no gateway to hand to the phone; the
+        // hosted default `/ai-api` is not even an absolute URL.
+        ...(AI_ENTRY ? { ai_gateway: config.aiBaseUrl } : {}),
       };
       let token = await ensureToken();
       let created;
@@ -97,8 +119,10 @@ export function PhoneConnectionModal({
         created = await createPairingSession(config.syncBaseUrl, request, token);
       } catch (error) {
         // A restarted local sync-api no longer knows the token: replace it once.
+        // The hosted build turns 手机远程 off instead and asks for consent again.
         if (!(error instanceof Error) || error.message !== 'AUTH_REQUIRED') throw error;
         onTokenRejected(token);
+        if (HOSTED) return;
         token = await ensureToken();
         created = await createPairingSession(config.syncBaseUrl, request, token);
       }
@@ -110,9 +134,7 @@ export function PhoneConnectionModal({
     } catch (error) {
       setSession(null);
       setSessionState(null);
-      setPairingError(error instanceof Error && error.message === 'INVALID_REQUEST'
-        ? '端点配置无效，请检查 Sync API 与 AI Gateway 地址'
-        : `无法连接同步服务 ${config.syncBaseUrl}，请先启动 sync-api`);
+      setPairingError(pairingErrorText(error, config.syncBaseUrl, HOSTED));
     } finally {
       setLoading(false);
     }
@@ -120,8 +142,16 @@ export function PhoneConnectionModal({
 
   useEffect(() => {
     if (!open || !config.enabled) return;
+    setLeftNotice('');
     void startSession();
   }, [open, config.enabled, startSession]);
+
+  // A session made with a retired token can no longer be polled.
+  useEffect(() => {
+    if (config.enabled) return;
+    setSession(null);
+    setSessionState(null);
+  }, [config.enabled]);
 
   // Polling continues after the modal closes, so a phone that claims the code
   // later still hands over its transfer_token.
@@ -152,7 +182,8 @@ export function PhoneConnectionModal({
   if (!open) return null;
 
   const timerText = `${String(Math.floor(remainingSec / 60)).padStart(2, '0')}:${String(remainingSec % 60).padStart(2, '0')}`;
-  const loopback = isLoopbackEndpoint(config.syncBaseUrl);
+  const host = hostOf(config.syncBaseUrl);
+  const loopback = !HOSTED && isLoopbackEndpoint(config.syncBaseUrl);
   const statusLabel = loading ? '正在生成配对码'
     : pairingError ? '同步服务不可用'
     : effectiveState === 'claimed' ? '手机已配对'
@@ -170,6 +201,16 @@ export function PhoneConnectionModal({
     } catch {
       setCopyState('failed');
     }
+  }
+
+  async function handleDisconnect() {
+    await onDisconnect();
+    setLeftNotice('已断开这台电脑，本地草稿仍然保留。');
+  }
+
+  async function handleDeleteCloud() {
+    await onDeleteCloud();
+    setLeftNotice('云端数据已删除，所有设备已断开；这台电脑上的草稿仍然保留。');
   }
 
   function handleApplyEndpoints() {
@@ -199,13 +240,22 @@ export function PhoneConnectionModal({
         {!config.enabled ? (
           <div className="pebrel-off-card">
             <h3>开启手机远程同步</h3>
-            <p>开启后由同步服务生成 10 分钟内有效、只能使用一次的配对二维码与 8 位配对码。OpenHarmony 手机端凭它加入这台电脑的同步工作区，并取得自己的设备令牌；配对码本身不能用来读取草稿。</p>
+            {leftNotice && <p role="status">{leftNotice}</p>}
+            {HOSTED ? (
+              <p>
+                开启后，这台电脑会在 <strong>{host}</strong> 上建立同步工作区并上传草稿；服务器上的草稿不是端到端加密的。
+                手机扫码加入后，两端都能读写已同步的草稿。配对码 10 分钟内有效、只能使用一次，本身不能用来读取草稿。
+                {PRIVACY_URL && <> 详见<a href={PRIVACY_URL} target="_blank" rel="noreferrer">隐私政策</a>。</>}
+              </p>
+            ) : (
+              <p>开启后由同步服务生成 10 分钟内有效、只能使用一次的配对二维码与 8 位配对码。OpenHarmony 手机端凭它加入这台电脑的同步工作区，并取得自己的设备令牌；配对码本身不能用来读取草稿。</p>
+            )}
             <button
               type="button"
               className="sync-button"
               onClick={() => onSaveConfig({ ...config, enabled: true })}
             >
-              开启手机远程
+              {HOSTED ? '同意并开启' : '开启手机远程'}
             </button>
           </div>
         ) : (
@@ -219,8 +269,13 @@ export function PhoneConnectionModal({
                     {statusLabel}
                   </span>
                 </div>
-                <p className="pebrel-desc">选择网络拓扑后，在手机端扫描右侧二维码，或输入电脑地址与 8 位配对码完成配对。</p>
+                <p className="pebrel-desc">
+                  {HOSTED
+                    ? '在手机端扫描右侧二维码，或输入服务器地址与 8 位配对码完成配对。'
+                    : '选择网络拓扑后，在手机端扫描右侧二维码，或输入电脑地址与 8 位配对码完成配对。'}
+                </p>
 
+                {HOSTED ? <HostedSteps host={host} /> : <>
                 <div className="pebrel-segmented" role="tablist" aria-label="连接通道">
                   <button
                     type="button"
@@ -269,6 +324,7 @@ export function PhoneConnectionModal({
                     </div>
                   </li>
                 </ol>
+                </>}
 
                 {pairingError && <p className="pebrel-warning" role="alert">{pairingError}</p>}
                 {!pairingError && loopback && (
@@ -328,24 +384,37 @@ export function PhoneConnectionModal({
               </div>
             </div>
 
+            {session && (
+              <DeviceListSection
+                host={host}
+                refreshKey={`${session.pairing_id}:${effectiveState ?? ''}`}
+                listDevices={listDevices}
+                removeDevice={removeDevice}
+                onDisconnect={handleDisconnect}
+                onDeleteCloud={handleDeleteCloud}
+              />
+            )}
+
             <div className="pebrel-section">
               <div className="pebrel-section-head">
-                <h4>同步端点与主机设置</h4>
+                <h4>{HOSTED ? '同步' : '同步端点与主机设置'}</h4>
                 <div className="pebrel-head-actions">
                   <button type="button" className="outline-button" onClick={onSyncNow}>
                     立即同步
                   </button>
-                  <button
-                    type="button"
-                    className="outline-button"
-                    onClick={() => onSaveConfig({ ...config, enabled: false })}
-                  >
-                    关闭远程
-                  </button>
+                  {!HOSTED && (
+                    <button
+                      type="button"
+                      className="outline-button"
+                      onClick={() => onSaveConfig({ ...config, enabled: false })}
+                    >
+                      关闭远程
+                    </button>
+                  )}
                 </div>
               </div>
 
-              <div className="pebrel-form-grid">
+              {!HOSTED && <div className="pebrel-form-grid">
                 <label className="pebrel-field">
                   <span>电脑名称 (Computer Name)</span>
                   <input
@@ -375,11 +444,40 @@ export function PhoneConnectionModal({
                     更新配对与端点
                   </button>
                 </div>
-              </div>
+              </div>}
             </div>
           </>
         )}
       </div>
     </div>
+  );
+}
+
+// The public server has one address and no LAN or hdc setup.
+function HostedSteps({ host }: { host: string }) {
+  return (
+    <ol className="pebrel-steps">
+      <li>
+        <span className="step-num">1</span>
+        <div>
+          <strong>在手机端打开「设置 → 连接电脑」扫码</strong>
+          <p>也可以输入服务器地址 {host} 和右侧的 8 位配对码，或粘贴「复制配对信息」的内容。</p>
+        </div>
+      </li>
+      <li>
+        <span className="step-num">2</span>
+        <div>
+          <strong>在手机上确认服务器地址</strong>
+          <p>手机会显示 {host}，确认草稿同步到这里后才完成配对。</p>
+        </div>
+      </li>
+      <li>
+        <span className="step-num">3</span>
+        <div>
+          <strong>手机完成首次同步</strong>
+          <p>配对码 10 分钟内有效、只能使用一次。如果手机已经在别的工作区，这台电脑会改用手机的工作区，本地草稿会合并上传。</p>
+        </div>
+      </li>
+    </ol>
   );
 }

@@ -12,3 +12,6 @@
 **/.test
 /.appanalyzer
 /docs
+
+# Local Vite env overrides may hold deployment values
+.env*.local
