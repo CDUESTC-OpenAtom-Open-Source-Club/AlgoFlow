@@ -16,6 +16,7 @@
 - 已备案的域名，A 记录指向服务器。
 - Node 24：SQLite 存储用的是内置的 `node:sqlite`，换 Node 大版本前先在服务器上跑 sync-api 测试。
 - 云服务商安全组和系统防火墙只开放 SSH、80、443。
+- 80 和 443 没有被其他程序占用：`sudo ss -tlnp | grep -E ':(80|443) '` 应该只有 nginx，或者没有输出。比如 frps 的 `vhostHttpsPort = 443` 会占住 443，要先改成别的端口。
 
 | 路径 | 内容 | 所有者 |
 |---|---|---|
@@ -50,7 +51,8 @@ git checkout <发布标签或提交>
 node --test services/sync-api/test/*.test.mjs
 ```
 
-服务器访问 GitHub 慢时，可以在本机 `git bundle create algoflow.bundle main` 后上传，再 `git clone algoflow.bundle /opt/algoflow`。
+- 已经装了 nginx（比如来自 nginx.org 的源）时，从 `apt install` 里去掉 nginx，否则会顺带升级它。
+- 服务器访问 GitHub 慢时，可以在本机 `git bundle create algoflow.bundle main` 后上传，再 `git clone algoflow.bundle /opt/algoflow`。
 
 ## 2. 网页
 
@@ -64,6 +66,13 @@ cd /opt/algoflow
 
 - 页脚用网站备案号，不带 `-数字A` 后缀；带后缀的是 APP 备案号，填在 AGC。
 - 构建开关见 `apps/web/README.md`。服务器内存小于 1 GB 时，可以在本机构建后把 `dist/` 上传到 `/var/www/algoflow/`，同样排除 `privacy.html`。
+
+本机是 Windows、没有 `rsync` 时，在本机的 `apps/web` 里用同样的命令构建，再这样上传：
+
+```sh
+tar -C dist -cf - . | ssh <用户>@<服务器> \
+  'cd /var/www/algoflow && find . -mindepth 1 ! -name privacy.html -delete && tar --no-same-owner --no-same-permissions -xf -'
+```
 
 ## 3. 隐私政策
 
@@ -111,7 +120,13 @@ sudo systemctl restart systemd-journald
 
 ## 5. 证书和 Nginx
 
-完整配置引用的证书文件要先存在，所以首次申请证书时先用一个只回应验证请求的临时配置：
+完整配置引用的证书文件要先存在，所以首次申请证书时先用一个只回应验证请求的临时配置。
+
+下面的命令按 Ubuntu 自带的 nginx 写。nginx 来自 nginx.org 的源时（`/etc/nginx/nginx.conf` 里是 `user nginx;`），有三处要改：
+
+- 默认站点是 `/etc/nginx/conf.d/default.conf`，没有 `sites-enabled`。把 `rm` 那一行换成 `sudo mv /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf.disabled`。
+- 日志轮转配置里的 `create 0640 www-data adm` 改成 `create 0640 nginx adm`。
+- 系统的 `/etc/logrotate.d/nginx` 默认是 `rotate 52`，最后一条 `sed` 改成 `s/rotate 52/rotate 6/`。
 
 ```sh
 sudo install -d /var/www/certbot /var/log/nginx/algoflow
@@ -126,7 +141,14 @@ sudo rm /etc/nginx/conf.d/algoflow-acme.conf
 sed "s/example\.com/$domain/g" deploy/nginx.conf.example \
   | sudo tee /etc/nginx/conf.d/algoflow.conf >/dev/null
 sudo nginx -t && sudo systemctl reload nginx
-sudo certbot renew --dry-run
+sudo certbot renew --dry-run    # 在非交互的 ssh 命令里运行要加 --no-random-sleep-on-renew，否则会先随机等待最多 8 分钟
+```
+
+nginx 1.19.4 以上（`nginx -v`）可以打开配置里注释掉的 TLS 兜底：用其他域名或 IP 访问 443 时直接拒绝握手，不返回 AlgoFlow 的证书。把上面安装配置的命令换成：
+
+```sh
+sed -e "s/example\.com/$domain/g" -e '/^# server {$/,/^# }$/s/^# //' deploy/nginx.conf.example \
+  | sudo tee /etc/nginx/conf.d/algoflow.conf >/dev/null
 ```
 
 用云服务商签发的证书时，跳过 certbot，把证书放到 `/etc/nginx/ssl/` 并改 `ssl_certificate` 两行，记得在到期前更换。
@@ -164,6 +186,9 @@ sudo ufw enable
 ```
 
 云服务商的安全组同样只放行这三个端口。sync-api 只监听 127.0.0.1，防火墙是第二道保护。
+
+- 服务器上还有其他对外服务（比如 frps 的 7000）时，`ufw enable` 之前要先放行它们的端口，否则会立即断开。也可以不开 ufw，只靠安全组。
+- 安全组里的 SSH 只放行自己的 IP 时，家庭宽带的 IP 变了就连不上，要去控制台更新规则，或者用云服务商网页上的远程连接。
 
 ## 7. 上线检查
 
