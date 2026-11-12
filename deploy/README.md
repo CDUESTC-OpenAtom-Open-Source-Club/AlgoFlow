@@ -66,8 +66,9 @@ cd /opt/algoflow
 
 - 页脚用网站备案号，不带 `-数字A` 后缀；带后缀的是 APP 备案号，填在 AGC。
 - 构建开关见 `apps/web/README.md`。服务器内存小于 1 GB 时，可以在本机构建后把 `dist/` 上传到 `/var/www/algoflow/`，同样排除 `privacy.html`。
+- 构建后检查隐私政策地址：`` grep -oh '[^`"]*privacy\.html' dist/assets/*.js | sort -u `` 应该只输出 `/privacy.html`。
 
-本机是 Windows、没有 `rsync` 时，在本机的 `apps/web` 里用同样的命令构建，再这样上传：
+本机是 Windows、没有 `rsync` 时，在本机的 `apps/web` 里用同样的命令构建。在 Git Bash 里构建要在命令前加 `MSYS_NO_PATHCONV=1`，否则 Git Bash 会把 `/privacy.html` 改成 `C:/Program Files/Git/privacy.html`，构建不报错，链接却打不开。构建后这样上传：
 
 ```sh
 tar -C dist -cf - . | ssh <用户>@<服务器> \
@@ -202,7 +203,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://$domain/ai-api/   # 404
 curl -m 5 http://<服务器 IP>:8787/healthz                # 必须连不上
 ```
 
-再用浏览器打开网页：页脚有备案号和隐私政策链接；「手机远程」开启前有上传说明，开启后能扫码配对，设备列表显示「这台电脑」和手机。
+再用浏览器打开网页：页脚有备案号，隐私政策链接能打开；「手机远程」开启前有上传说明，开启后能扫码配对，设备列表显示「这台电脑」和手机。
 
 ## 备份
 
