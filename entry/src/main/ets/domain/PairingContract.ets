@@ -77,13 +77,13 @@ export function parsePairingInvitation(text: string, httpsOnly: boolean = false)
   const record = parsed as Record<string, Object>;
   if (Object.keys(record).some((key: string) => !INVITATION_FIELDS.includes(key)) ||
     record['type'] !== PAIRING_INVITATION_TYPE) {
-    result.error = '配对信息版本不受支持（type 应为 algoflow-pair-v1）';
+    result.error = '配对信息版本不受支持，请确认网页和应用都是最新版本';
     return result;
   }
   const syncApi = typeof record['sync_api'] === 'string' ? record['sync_api'] as string : '';
   const code = typeof record['code'] === 'string' ? record['code'] as string : '';
   if (!isPairingEndpoint(syncApi)) {
-    result.error = '配对信息中的 sync_api 必须是 http(s) 地址';
+    result.error = '配对信息里的服务器地址无效';
     return result;
   }
   if (httpsOnly && !syncApi.startsWith('https://')) {
@@ -215,7 +215,7 @@ export function pairingErrorMessage(code: PairingErrorCode, lanHints: boolean = 
   }
   if (code === PairingErrorCode.INVALID_REQUEST) return '配对请求格式无效';
   if (code === PairingErrorCode.TOKEN_STORAGE) return '无法在本机保存设备令牌，未完成配对，请重试';
-  return '电脑端返回的配对结果无效，请确认双方版本一致';
+  return '服务器返回的配对结果无效，请确认网页和应用都是最新版本';
 }
 
 export function isPairingEndpoint(value: string): boolean {

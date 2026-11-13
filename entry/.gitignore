@@ -4,3 +4,5 @@
 /build
 /.cxx
 /.test
+/privacy.local.json
+/src/main/resources/rawfile/privacy.html

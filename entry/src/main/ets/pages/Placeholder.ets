@@ -1,14 +1,16 @@
 import { DeviceActionStatus, DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel';
 import { AIMode, Draft, draftRenderKey, IdeaSegment, SyncStatus } from '../domain/Models';
 import { IDECapability, IDERecord, IDEState, ReviewKind } from '../domain/IDEAIModels';
-import { SyncOperation } from '../domain/SyncModels';
+import { SyncEntityType, SyncOperation, SyncOperationType } from '../domain/SyncModels';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { ResourceIcon, ResourceIconName } from '../components/ResourceIcon';
-import { goBack, openEditor, openHome, PLACEHOLDER_DETAIL_KEY, PLACEHOLDER_DRAFT_ID_KEY, PLACEHOLDER_TITLE_KEY } from '../navigation/AppRoutes';
+import { goBack, openEditor, openHome, openPrivacyPolicy, PLACEHOLDER_DETAIL_KEY, PLACEHOLDER_DRAFT_ID_KEY,
+  PLACEHOLDER_TITLE_KEY } from '../navigation/AppRoutes';
 import { AI_ENTRY, DEBUG, SYNC_ENTRY } from 'BuildProfile';
 import { manualPairingInvitation, PairingError, PairingErrorCode, PairingInvitation, PairingRoute, pairingConsentMessage,
   pairingErrorMessage, parsePairingInvitation, serverAuthority } from '../domain/PairingContract';
 import { syncMessageText } from '../platform/PhoneSyncService';
+import { cardStatusLabel } from '../platform/CardSnapshot';
 import { canScanPairingCode, scanPairingCode } from '../platform/PairingScanner';
 
 enum HubTab {
@@ -245,7 +247,7 @@ struct Placeholder {
     await this.hubReload;
     if (!this.ready || this.syncing) return;
     this.syncing = true;
-    this.feedbackMessage = '正在执行增量同步 (push -> pull)...';
+    this.feedbackMessage = '正在同步…';
     try {
       const result = await this.viewModel.synchronize();
       this.refreshWorkspaceData();
@@ -282,7 +284,7 @@ struct Placeholder {
     }
     this.syncBaseUrl = this.viewModel.getSyncBaseUrl();
     this.aiBaseUrl = this.viewModel.getAIBaseUrl();
-    this.feedbackMessage = '端点配置已写入 RDB sync_state';
+    this.feedbackMessage = '同步设置已保存';
   }
 
   private resetDefaultEndpoints(): void {
@@ -368,7 +370,7 @@ struct Placeholder {
     try {
       text = await scanPairingCode(getContext(this));
     } catch (error) {
-      this.feedbackMessage = '无法打开扫码，请改用「8 位配对码」或「粘贴配对信息」';
+      this.feedbackMessage = '无法打开扫码，请改用「配对码」或「粘贴」';
       return;
     }
     if (text.length === 0) return;
@@ -402,20 +404,11 @@ struct Placeholder {
     await this.pairWith(parsed.invitation);
   }
 
-  private statusLabel(status: SyncStatus): string {
-    if (status === SyncStatus.SYNCED) return 'SYNCED';
-    if (status === SyncStatus.SYNCING) return 'SYNCING';
-    if (status === SyncStatus.CONFLICT) return 'CONFLICT';
-    if (status === SyncStatus.FAILED) return 'FAILED';
-    return 'LOCAL';
-  }
-
-  private statusCnLabel(status: SyncStatus): string {
-    if (status === SyncStatus.SYNCED) return '已同步';
-    if (status === SyncStatus.SYNCING) return '同步中';
-    if (status === SyncStatus.CONFLICT) return '有冲突';
-    if (status === SyncStatus.FAILED) return '同步失败';
-    return '仅本地';
+  // Release queue rows name the draft instead of showing its id.
+  private pendingOperationTitle(op: SyncOperation): string {
+    const draft = op.entity_type === SyncEntityType.DRAFT ? this.viewModel.getDraft(op.entity_id) : undefined;
+    if (draft !== undefined && draft.title.trim().length > 0) return draft.title;
+    return op.operation_type === SyncOperationType.DELETE ? '已删除的草稿' : '未命名草稿';
   }
 
   private statusColor(status: SyncStatus): string {
@@ -475,7 +468,7 @@ struct Placeholder {
         Button() {
           Row({ space: 4 }) {
             ResourceIcon({ name: ResourceIconName.REFRESH, iconSize: 13, tint: '#55745F' })
-            Text(this.syncing ? 'SYNC...' : '同步').fontSize(10).fontWeight(FontWeight.Bold).fontColor('#55745F')
+            Text(this.syncing ? '同步中' : '同步').fontSize(10).fontWeight(FontWeight.Bold).fontColor('#55745F')
           }
         }.type(ButtonType.Normal).height(34).padding({ left: 10, right: 10 })
           .backgroundColor('#EEF6F3').borderRadius(10)
@@ -502,7 +495,7 @@ struct Placeholder {
         if (tab === HubTab.DRAFTS) this.title = '全部草稿';
         if (tab === HubTab.AI) this.title = 'AI 转换与审查';
         if (tab === HubTab.VERSIONS) this.title = '历史版本快照';
-        if (tab === HubTab.SYNC) this.title = '同步与操作队列';
+        if (tab === HubTab.SYNC) this.title = '同步';
         if (tab === HubTab.SETTINGS) this.title = '工作台设置';
       })
   }
@@ -612,7 +605,7 @@ struct Placeholder {
             Row({ space: 10 }) {
               Column({ space: 5 }) {
                 Row({ space: 6 }) {
-                  Text(this.statusLabel(draft.syncStatus)).fontSize(9).fontFamily('monospace').fontWeight(FontWeight.Bold)
+                  Text(cardStatusLabel(draft.syncStatus)).fontSize(9).fontFamily('monospace').fontWeight(FontWeight.Bold)
                     .fontColor(this.statusColor(draft.syncStatus))
                     .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                     .backgroundColor('#F8FAFC').borderRadius(4)
@@ -672,7 +665,7 @@ struct Placeholder {
                   .onClick(() => {
                     this.viewModel.deleteDraft(draft.id);
                     this.refreshWorkspaceData();
-                    this.feedbackMessage = SYNC_ENTRY ? '草稿已标记删除并排入同步墓碑队列' : '草稿已删除';
+                    this.feedbackMessage = SYNC_ENTRY ? '草稿已删除，同步后其他设备上也会删除' : '草稿已删除';
                   })
               }.width('100%')
             }
@@ -698,7 +691,7 @@ struct Placeholder {
               .fontSize(10).fontFamily('monospace').fontColor('#CBD5E1')
           }.width('100%')
 
-          Text(`当前草稿状态：${this.statusCnLabel(this.viewModel.getDraft(this.selectedDraftId)?.syncStatus ?? SyncStatus.LOCAL_ONLY)} · 思路片段 ${this.viewModel.getDraft(this.selectedDraftId)?.ideaSegments.length ?? 0} 条`)
+          Text(`当前草稿状态：${cardStatusLabel(this.viewModel.getDraft(this.selectedDraftId)?.syncStatus ?? SyncStatus.LOCAL_ONLY)} · 思路片段 ${this.viewModel.getDraft(this.selectedDraftId)?.ideaSegments.length ?? 0} 条`)
             .fontSize(11).fontColor('#94A3B8')
 
           Row({ space: 8 }) {
@@ -801,7 +794,7 @@ struct Placeholder {
         if (this.availableVersions.length === 0) {
           Column({ space: 6 }) {
             Text('v0 LOCAL DRAFT // 尚无已落盘历史版本').fontSize(10).fontFamily('monospace').fontColor('#D97706')
-            Text(SYNC_ENTRY ? '当前草稿处于 v0 初始态，完成首次同步或版本演进后将自动在 draft_source_history 表中记录不可变快照。'
+            Text(SYNC_ENTRY ? '还没有历史版本，修改或同步后这里会保留每个版本。'
               : '当前草稿还没有保存过版本，保存后会在本机记录不可变快照。')
               .fontSize(11).fontColor('#64748B').lineHeight(17)
           }.width('100%').padding(12).backgroundColor('#FAF3DC').borderRadius(12).alignItems(HorizontalAlign.Start)
@@ -857,19 +850,28 @@ struct Placeholder {
   @Builder
   SyncQueueView() {
     Column({ space: 12 }) {
-      // Telemetry Card
+      // Telemetry Card. Release shows only what the user can act on; the
+      // cursor, client id and full address are for debugging.
       Column({ space: 8 }) {
         Row() {
-          Text('SYNC TELEMETRY // 同步遥测').fontSize(10).fontFamily('monospace')
+          Text(DEBUG ? 'SYNC TELEMETRY // 同步遥测' : 'SYNC // 同步状态').fontSize(10).fontFamily('monospace')
             .fontWeight(FontWeight.Bold).fontColor('#9BE7A9')
           Blank()
-          Text(`CURSOR: ${this.syncCursor}`).fontSize(10).fontFamily('monospace').fontColor('#38BDF8')
+          if (DEBUG) {
+            Text(`CURSOR: ${this.syncCursor}`).fontSize(10).fontFamily('monospace').fontColor('#38BDF8')
+          }
         }.width('100%')
-        Text(`CLIENT_ID: ${this.clientId}`).fontSize(10).fontFamily('monospace').fontColor('#94A3B8')
-        Text(`SYNC_API : ${this.syncBaseUrl}`).fontSize(10).fontFamily('monospace').fontColor('#CBD5E1')
-        Text(`PENDING  : ${this.pendingOps.length} operations queued`).fontSize(10).fontFamily('monospace').fontColor('#FDE68A')
+        if (DEBUG) {
+          Text(`CLIENT_ID: ${this.clientId}`).fontSize(10).fontFamily('monospace').fontColor('#94A3B8')
+          Text(`SYNC_API : ${this.syncBaseUrl}`).fontSize(10).fontFamily('monospace').fontColor('#CBD5E1')
+          Text(`PENDING  : ${this.pendingOps.length} operations queued`).fontSize(10).fontFamily('monospace').fontColor('#FDE68A')
+        } else {
+          Text(`服务器：${this.deviceServer.length > 0 ? serverAuthority(this.deviceServer) : '尚未连接'}`)
+            .fontSize(11).fontColor('#CBD5E1')
+          Text(`待上传：${this.pendingOps.length} 项`).fontSize(11).fontColor('#FDE68A')
+        }
 
-        Button(this.syncing ? '正在执行增量同步...' : '立即执行 Push & Pull 同步')
+        Button(this.syncing ? '正在同步…' : '立即同步')
           .type(ButtonType.Normal).width('100%').height(36).fontSize(11).fontWeight(FontWeight.Bold)
           .fontColor('#07110A').backgroundColor('#30D158').borderRadius(8).margin({ top: 4 })
           .onClick(() => { this.runSyncNow(); })
@@ -877,28 +879,41 @@ struct Placeholder {
 
       // Pending Operations List
       Column({ space: 8 }) {
-        Text(`待上行操作队列 (${this.pendingOps.length})`).fontSize(13).fontWeight(FontWeight.Bold).fontColor('#0F172A')
+        Text(`待上传的修改 (${this.pendingOps.length})`).fontSize(13).fontWeight(FontWeight.Bold).fontColor('#0F172A')
         if (this.pendingOps.length === 0) {
           Column({ space: 4 }) {
             Text('QUEUE CLEAN // 队列已清空').fontSize(10).fontFamily('monospace').fontColor('#55745F')
-            Text('所有非空变更均已同步或尚无待推送操作。').fontSize(11).fontColor('#64748B')
+            Text('没有待上传的修改。').fontSize(11).fontColor('#64748B')
           }.width('100%').padding(14).backgroundColor('#FFFFFF')
             .border({ width: 1, color: '#E5E9F0' }).borderRadius(14).alignItems(HorizontalAlign.Start)
         } else {
           ForEach(this.pendingOps, (op: SyncOperation) => {
             Row({ space: 8 }) {
-              Column({ space: 3 }) {
-                Row({ space: 6 }) {
-                  Text(op.operation_type.toUpperCase()).fontSize(9).fontFamily('monospace').fontWeight(FontWeight.Bold)
-                    .fontColor('#D97706').padding({ left: 5, right: 5, top: 2, bottom: 2 })
-                    .backgroundColor('#FAF3DC').borderRadius(4)
-                  Text(op.entity_type).fontSize(10).fontFamily('monospace').fontColor('#475569')
-                  Text(`base:v${op.base_version}`).fontSize(10).fontFamily('monospace').fontColor('#94A3B8')
-                }
-                Text(`entity: ${op.entity_id}`).fontSize(10).fontFamily('monospace').fontColor('#0F172A')
-                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                Text(op.occurred_at).fontSize(9).fontFamily('monospace').fontColor('#94A3B8')
-              }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+              if (DEBUG) {
+                Column({ space: 3 }) {
+                  Row({ space: 6 }) {
+                    Text(op.operation_type.toUpperCase()).fontSize(9).fontFamily('monospace').fontWeight(FontWeight.Bold)
+                      .fontColor('#D97706').padding({ left: 5, right: 5, top: 2, bottom: 2 })
+                      .backgroundColor('#FAF3DC').borderRadius(4)
+                    Text(op.entity_type).fontSize(10).fontFamily('monospace').fontColor('#475569')
+                    Text(`base:v${op.base_version}`).fontSize(10).fontFamily('monospace').fontColor('#94A3B8')
+                  }
+                  Text(`entity: ${op.entity_id}`).fontSize(10).fontFamily('monospace').fontColor('#0F172A')
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  Text(op.occurred_at).fontSize(9).fontFamily('monospace').fontColor('#94A3B8')
+                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+              } else {
+                Column({ space: 3 }) {
+                  Row({ space: 6 }) {
+                    Text(op.operation_type === SyncOperationType.DELETE ? '删除' : '修改').fontSize(9).fontWeight(FontWeight.Bold)
+                      .fontColor('#D97706').padding({ left: 5, right: 5, top: 2, bottom: 2 })
+                      .backgroundColor('#FAF3DC').borderRadius(4)
+                    Text(this.pendingOperationTitle(op)).fontSize(11).fontColor('#0F172A').layoutWeight(1)
+                      .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  }.width('100%')
+                  Text(localTimeLabel(op.occurred_at)).fontSize(9).fontFamily('monospace').fontColor('#94A3B8')
+                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+              }
             }.width('100%').padding(12).backgroundColor('#FFFFFF')
               .border({ width: 1, color: '#E5E9F0' }).borderRadius(12)
           }, (op: SyncOperation) => op.operation_id)
@@ -1008,7 +1023,7 @@ struct Placeholder {
                   .fontColor('#FFFFFF').backgroundColor('#0F172A').borderRadius(10)
                   .enabled(!this.pairing)
                   .onClick(() => { this.applyScanPairing(); })
-                Text('扫码使用 HarmonyOS 系统扫码能力（ScanKit），也可从相册选择二维码图片。')
+                Text('使用系统扫码，也可从相册选择二维码图片。')
                   .fontSize(10).fontColor('#94A3B8')
               } else {
                 Text('当前设备不支持系统扫码，请使用「配对码」或「粘贴」。')
@@ -1048,13 +1063,14 @@ struct Placeholder {
             }.width('100%').alignItems(HorizontalAlign.Start)
           } else if (this.pairMode === 'paste') {
             Column({ space: 10 }) {
-              Text('粘贴电脑端「复制配对信息」的内容（与二维码内容相同）：')
+              Text(DEBUG ? '粘贴电脑端「复制配对信息」的内容（与二维码内容相同）：'
+                : '在网页「手机远程」窗口点「复制配对信息」，再粘贴到这里：')
                 .fontSize(11).fontColor('#64748B')
 
               TextInput({
                 text: this.pairInvitationText,
                 placeholder: DEBUG ? '{"type":"algoflow-pair-v1","sync_api":"http://192.168.x.x:8787","code":"00000000"}'
-                  : '{"type":"algoflow-pair-v1","sync_api":"https://…","code":"00000000"}'
+                  : '粘贴复制的配对信息'
               })
                 .width('100%').height(42).fontSize(11).fontFamily('monospace').fontColor('#0F172A')
                 .backgroundColor('#F8FAFC').border({ width: 1, color: '#E2E8F0' }).borderRadius(10)
@@ -1130,6 +1146,16 @@ struct Placeholder {
         }.width('100%').padding(16).backgroundColor('#0F172A').borderRadius(16).alignItems(HorizontalAlign.Start)
       }
 
+      Button() {
+        Row() {
+          Text('隐私政策').fontSize(12).fontWeight(FontWeight.Bold).fontColor('#0F172A')
+          Blank()
+          Text('查看').fontSize(10).fontColor('#55745F')
+        }.width('100%')
+      }.type(ButtonType.Normal).width('100%').height(44).padding({ left: 14, right: 14 })
+        .backgroundColor('#FFFFFF').border({ width: 1, color: '#E5E9F0' }).borderRadius(16)
+        .onClick(() => { openPrivacyPolicy(); })
+
       // Collapsible Geek Diagnostics & Contract Info
       Column({ space: 8 }) {
         Button() {
@@ -1144,7 +1170,7 @@ struct Placeholder {
 
         if (this.advancedExpanded) {
           Column({ space: 6 }) {
-            if (SYNC_ENTRY) {
+            if (SYNC_ENTRY && DEBUG) {
               Text(`SYNC API     : ${this.syncBaseUrl}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
             }
             if (AI_ENTRY) {
@@ -1155,7 +1181,7 @@ struct Placeholder {
               Text('AI RULE VER  : 1.0.0 (strict source_refs & range check)').fontSize(10).fontFamily('monospace').fontColor('#475569')
             }
             Text(`CLIENT ID    : ${this.clientId}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
-            if (SYNC_ENTRY) {
+            if (SYNC_ENTRY && DEBUG) {
               Text(`SYNC CURSOR  : ${this.syncCursor}`).fontSize(10).fontFamily('monospace').fontColor('#475569')
             }
             if (DEBUG) {
@@ -1239,7 +1265,7 @@ struct Placeholder {
           }
           this.TabChip('版本快照', 'SNAPS', HubTab.VERSIONS)
           if (SYNC_ENTRY) {
-            this.TabChip('同步队列', 'QUEUE', HubTab.SYNC)
+            this.TabChip('同步', 'QUEUE', HubTab.SYNC)
           }
           this.TabChip('设置', 'CONFIG', HubTab.SETTINGS)
         }.padding({ left: 20, right: 20 })
@@ -1279,4 +1305,12 @@ function deviceActionMessage(status: DeviceActionStatus, done: string): string {
   if (status === DeviceActionStatus.DONE) return done;
   if (status === DeviceActionStatus.NOT_PAIRED) return '这台手机还没有连接，无需操作';
   return '操作未完成，请检查网络后重试；这台手机仍保持连接';
+}
+
+// MM-DD HH:mm in the phone's time zone; queue timestamps are stored as UTC ISO strings.
+function localTimeLabel(iso: string): string {
+  const time = new Date(iso);
+  if (isNaN(time.getTime())) return iso;
+  const pad = (value: number): string => value.toString().padStart(2, '0');
+  return `${pad(time.getMonth() + 1)}-${pad(time.getDate())} ${pad(time.getHours())}:${pad(time.getMinutes())}`;
 }

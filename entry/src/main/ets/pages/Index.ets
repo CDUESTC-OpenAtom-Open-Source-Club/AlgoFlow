@@ -2,6 +2,7 @@ import { DraftWorkspaceViewModel } from '../application/DraftWorkspaceViewModel'
 import { AIArtifact, AIMode, AIResultStatus, CodeMapping, Draft, draftRenderKey, IdeaSegment, PseudocodeStep, SyncStatus } from '../domain/Models';
 import { RdbDraftRepository } from '../platform/RdbDraftRepository';
 import { SyncRunResult, SyncRunStatus, syncMessageText } from '../platform/PhoneSyncService';
+import { serverAuthority } from '../domain/PairingContract';
 import { publishCardSnapshot } from '../platform/CardSnapshot';
 import { AI_ENTRY, DEBUG, SYNC_ENTRY } from 'BuildProfile';
 import { IDECapability, IDERecord, IDEState, ReviewKind, SourceCursor } from '../domain/IDEAIModels';
@@ -135,6 +136,9 @@ struct Index {
   @State searchQuery: string = '';
   @State searchCount: number = 0;
   @State syncBaseUrl: string = 'http://127.0.0.1:8787';
+  // The server this phone is paired with, '' before pairing. The release drawer
+  // shows it instead of syncBaseUrl, which keeps its default until then.
+  @State pairedServer: string = '';
   @State syncMessage: string = '';
   @State aiBaseUrl: string = 'http://127.0.0.1:8788';
   @State aiLoading: boolean = false;
@@ -209,6 +213,7 @@ struct Index {
       if (configuredBaseUrl.length > 0) this.syncBaseUrl = configuredBaseUrl;
       if (routedDraftId !== undefined) AppStorage.setOrCreate<string>('routeDraftId', '');
       this.loadSelectedDraft();
+      if (SYNC_ENTRY) this.pairedServer = await this.viewModel.pairedSyncApi();
     } catch (error) {
       console.error(`[AlgoFlow] RDB initialization failed: ${error instanceof Error ? error.message : 'unknown'}`);
       this.syncStatus = SyncStatus.FAILED;
@@ -684,7 +689,7 @@ struct Index {
     const epoch = this.editEpoch;
     this.viewModel.setSyncBaseUrl(this.syncBaseUrl);
     this.syncStatus = SyncStatus.SYNCING;
-    this.syncMessage = '正在连接同步端点...';
+    this.syncMessage = '正在同步…';
     let result: SyncRunResult | undefined;
     try {
       result = await this.viewModel.synchronize();
@@ -695,8 +700,9 @@ struct Index {
       return;
     }
     if (result === undefined) {
+      // No sync repository, or a sync is still running.
       this.syncStatus = SyncStatus.LOCAL_ONLY;
-      this.syncMessage = '当前仓储未启用同步';
+      this.syncMessage = '同步未完成，请稍后再试';
       return;
     }
     if (result.status === SyncRunStatus.SYNCED) this.syncStatus = SyncStatus.SYNCED;
@@ -704,6 +710,8 @@ struct Index {
     else if (result.status === SyncRunStatus.FAILED) this.syncStatus = SyncStatus.FAILED;
     else this.syncStatus = SyncStatus.LOCAL_ONLY;
     this.syncMessage = syncMessageText(result.message, DEBUG);
+    // A rejected token is cleared during the run.
+    this.pairedServer = await this.viewModel.pairedSyncApi();
     this.drafts = this.viewModel.listDrafts();
     publishCardSnapshot(getContext(this), this.drafts, this.syncStatus);
     if (epoch !== this.editEpoch) return;
@@ -1768,7 +1776,11 @@ struct Index {
               this.DrawerSectionTitle('同步')
               Column({ space: 6 }) {
                 this.DrawerSummaryRow('同步', this.statusLabel(), this.statusColor())
-                this.DrawerSummaryRow('端点', this.syncBaseUrl, '#B8B8BD')
+                if (DEBUG) {
+                  this.DrawerSummaryRow('端点', this.syncBaseUrl, '#B8B8BD')
+                } else {
+                  this.DrawerSummaryRow('服务器', this.pairedServer.length > 0 ? serverAuthority(this.pairedServer) : '尚未连接', '#B8B8BD')
+                }
                 this.DrawerSummaryRow('版本', `v${this.viewModel.getDraft(this.selectedId)?.version ?? 0}`, '#B8B8BD')
                 Text(DEBUG ? '需自行提供端点，应用不含云端服务' : '在「设置 → 连接电脑」管理连接').fontSize(9).fontColor('#6E6E73')
                 if (this.syncMessage.length > 0) {

@@ -2,7 +2,8 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { util } from '@kit.ArkTS';
-import { CARD_REQUEST_KEY, encodeCardRequest, parseCardLaunch } from '../navigation/AppRoutes';
+import { CARD_REQUEST_KEY, encodeCardRequest, HOME_ROUTE, parseCardLaunch, PRIVACY_CONSENT_ROUTE } from '../navigation/AppRoutes';
+import { hasPrivacyConsent } from '../platform/PrivacyConsentStore';
 
 const DOMAIN = 0x0000;
 const TAG = 'AlgoFlow';
@@ -26,7 +27,10 @@ export default class EntryAbility extends UIAbility {
     // Main window is created, set main page for this ability
     hilog.info(DOMAIN, TAG, '[AlgoFlow] Ability onWindowStageCreate');
 
-    windowStage.loadContent('pages/Home', (err) => {
+    // Until the privacy policy is accepted the consent page comes first; it
+    // replaces itself with Home, which then handles any stored card request.
+    const page = hasPrivacyConsent(this.context) ? HOME_ROUTE : PRIVACY_CONSENT_ROUTE;
+    windowStage.loadContent(page, (err) => {
       if (err.code) {
         hilog.error(DOMAIN, TAG, '[AlgoFlow] Failed to load content. Cause: %{public}s', JSON.stringify(err));
         return;

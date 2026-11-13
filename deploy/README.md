@@ -2,7 +2,7 @@
 
 网页和同步接口（sync-api）由 Nginx 放在同一个 HTTPS 域名下：静态网页在 `/`，`/v1/` 和 `/healthz` 转发到只监听 `127.0.0.1:8787` 的 sync-api。`/ai-api` 不转发，1.1.0 不含 AI。
 
-本目录的文件只有占位符（`example.com`、`{{...}}`），部署时在服务器上替换；真实域名、备案号、邮箱和姓名不提交进仓库（`AGENTS.md` 7.2）。公共同步服务器尚未上线。
+本目录的文件只有占位符（`example.com`、`{{...}}`），部署时在服务器上替换；真实域名、备案号、邮箱和姓名不提交进仓库（`AGENTS.md` 7.2）。手机应用从 1.1.0 起联网，但安装包里没有服务器地址，地址只通过扫描网页上的配对二维码获得。
 
 | 文件 | 安装到 |
 |---|---|
@@ -92,6 +92,28 @@ grep -c '{{' /var/www/algoflow/privacy.html    # 应为 0
 
 - 模板按当前代码的数据流写成：存什么、保留多久、怎么删除，不是端到端加密。改动数据流的 PR 要同时改模板，部署前再对照代码核对一遍。
 - 手机应用里随包的隐私政策和 AGC 填的隐私政策网址（`https://<域名>/privacy.html`）要和这一份一致。
+
+### 手机应用随包的隐私政策
+
+手机应用的「隐私政策」页面和首次启动的同意页显示的是随包的 `privacy.html`。它在构建时由 `entry/hvigorfile.ts` 用同一份 `deploy/privacy.template.html` 生成，写到 `entry/src/main/resources/rawfile/privacy.html`。填进去的值来自本机的 `entry/privacy.local.json`。这两个文件都在 `entry/.gitignore` 里，不提交。
+
+在构建 release 包的电脑上，在仓库根目录用 Git Bash 执行一次：
+
+```sh
+read -r -p '运营者名称：' operator
+read -r -p '联系邮箱：' email
+read -r -p '域名：' domain
+read -r -p '生效日期（和服务器上的一致，如 2026年1月1日）：' effective
+OPERATOR_NAME="$operator" CONTACT_EMAIL="$email" DOMAIN="$domain" EFFECTIVE_DATE="$effective" node -e '
+const keys = ["OPERATOR_NAME", "CONTACT_EMAIL", "DOMAIN", "EFFECTIVE_DATE"];
+const values = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+require("fs").writeFileSync("entry/privacy.local.json", JSON.stringify(values, null, 2) + "\n");'
+```
+
+- 生效日期要和服务器上那份一致，在服务器上查：`grep -o '生效日期：[^<]*' /var/www/algoflow/privacy.html`。改了模板或这些值，服务器上的 `privacy.html` 要按上面的 `sed` 重新生成，两边一起更新。
+- 也可以直接用文本编辑器写这个文件，四个键名就是模板里的占位符名，值都是字符串。
+- release 构建在缺文件、缺字段或模板里还有没填的占位符时直接失败；Debug 构建把缺的值显示为「（未填写）」，照常构建。
+- 政策改动了收集的信息、用途或保存期限（模板第八节）时，把 `entry/src/main/ets/platform/PrivacyConsentStore.ets` 的 `PRIVACY_POLICY_VERSION` 加 1，已同意过的用户会再看到一次同意页。
 
 ## 4. sync-api
 

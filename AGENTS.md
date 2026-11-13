@@ -58,7 +58,7 @@ AlgoFlow 的主体是**手机与电脑同步的思路验证代码工作台**，�
 ```text
 OpenHarmony 原生手机端（ArkTS / ArkUI）
              │
-             ├── HTTP(S) push/pull ── sync-api 与 AI Gateway（当前为本机/局域网；云端部署待预研）
+             ├── HTTP(S) push/pull ── sync-api（本机/局域网，或 1.1.0 起的公网服务器）与 AI Gateway（本机/局域网；云端部署待预研）
              │
 浏览器桌面工作台（Web）
 ```
@@ -144,10 +144,10 @@ src/
 
 - Web 组件不得使用 `any` 绕过 TypeScript 检查；跨组件数据优先通过 `types.ts` 中的联合类型和记录类型约束。
 - 当前 Web 文档状态由 `BrowserWorkspaceRepository` 写入 `localStorage`；共享草稿、未解决冲突记录、每个浏览器客户端的离线操作队列和同步游标均可在刷新后恢复。客户端 ID 保存在标签页级 `sessionStorage`，并发验收必须使用两个独立打开的标签页，不能通过复制标签页复用同一客户端 ID。
-- 保存时通过 `queueUpsert` 生成或复用 `operation_id`，同一草稿未提交期间的重复保存还必须保留首次 `base_version`。`LocalSyncClient` 默认连接本机 `http://127.0.0.1:8787`，可通过 `VITE_SYNC_API_BASE` 覆盖；设备令牌按服务器地址存在 `localStorage`（`loadDeviceToken`），首次同步或打开「手机远程」时才通过 `POST /v1/workspaces` 申请。上线构建（`VITE_HOSTED=true`）同步地址取页面自身的 origin，并且只在用户在「手机远程」点「同意并开启」后才建工作区；未开启时不发任何同步请求，401 后关闭手机远程，等用户再次同意。网页的「断开这台电脑」「删除云端数据」与手机一致，只动服务器和令牌，本地草稿保留，删除后已同步草稿改回仅本地（`markSyncedDraftsLocal`）。生产 API 地址和云端部署仍未完成。
+- 保存时通过 `queueUpsert` 生成或复用 `operation_id`，同一草稿未提交期间的重复保存还必须保留首次 `base_version`。`LocalSyncClient` 默认连接本机 `http://127.0.0.1:8787`，可通过 `VITE_SYNC_API_BASE` 覆盖；设备令牌按服务器地址存在 `localStorage`（`loadDeviceToken`），首次同步或打开「手机远程」时才通过 `POST /v1/workspaces` 申请。上线构建（`VITE_HOSTED=true`）同步地址取页面自身的 origin，并且只在用户在「手机远程」点「同意并开启」后才建工作区；未开启时不发任何同步请求，401 后关闭手机远程，等用户再次同意。网页的「断开这台电脑」「删除云端数据」与手机一致，只动服务器和令牌，本地草稿保留，删除后已同步草稿改回仅本地（`markSyncedDraftsLocal`）。公网服务器 2026-11-06 按 `deploy/` 部署上线，域名只在服务器配置里，不写进仓库。
 - Web 已能将离线队列 push 到本地 sync-api、pull 服务端变更并应用到当前选中的草稿。保存未提交内容时，顶部操作会先写入队列再同步；409 冲突必须保留服务器版本和本地冲突副本，由用户选择采用服务器版本或继续提交冲突副本；pull 的 `next_cursor` 只能在整批变更应用成功后持久化。
 - OpenHarmony 端已使用 `RdbDraftRepository` 作为 `DraftRepository`/同步仓储适配器，并通过 `HttpSyncClient` 和 `PhoneSyncService` 接入同一 `/v1/sync/operations`、`/v1/sync/changes` 契约。两端首个工作草稿统一使用 `draft-local`；空白的本地占位草稿不会上传，历史遗留的空占位操作会在启动迁移时移除但不删除草稿数据。
-- sync-api 默认进程内存储，设置 `SYNC_DB_PATH` 后存入 SQLite；目前仍只用于局域网联调，公网部署示例在 `deploy/`，服务器尚未上线；该链路可以验收手机与 Web 的普通 HTTP 双向同步，但不得描述为生产云同步或 OpenHarmony 分布式能力已完成。真机不能使用 `127.0.0.1`，应配置运行 sync-api 电脑的局域网地址。
+- sync-api 默认进程内存储，设置 `SYNC_DB_PATH` 后存入 SQLite；本机和局域网联调用同一套代码，公网服务器按 `deploy/` 部署，2026-11-06 上线，上线构建的网页和 1.1.0 上架包通过它同步；该链路是普通 HTTP(S) 双向同步，不得描述为 OpenHarmony 分布式能力。真机不能使用 `127.0.0.1`，应配置运行 sync-api 电脑的局域网地址。
 - 手机配对：Web「手机远程」向 sync-api `POST /v1/pairing/sessions` 申请 8 位配对码，用 `uqr`（MIT，精确版本）渲染标准二维码，内容为 `{type:"algoflow-pair-v1", sync_api, code}`；手机扫码、手输或粘贴后 `POST /v1/pairing/claims`，由服务端校验后返回 `sync_api`、可选的 `ai_gateway` 和设备令牌，手机才写入端点并首次同步。配对码 10 分钟有效、一次性，刷新会作废旧码，失败认领按 IP 分钟限流，日志不记录配对码和令牌。契约见 `sync.schema.json#/$defs/pairing*` 与 `vectors/pairing-invitations.json`，三端测试共用同一组向量。配对不是账号认证，二维码里也没有令牌。
 - sync-api 鉴权（issue #72）：除 `POST /v1/workspaces`、`POST /v1/pairing/claims` 和 `GET /healthz` 外，`/v1` 接口都要 `Authorization: Bearer <设备令牌>`，无效返回 401 `AUTH_REQUIRED`，没有关闭鉴权的模式。工作区只由令牌决定，每个工作区一份 `SyncStore`，epoch 和 `operation_id` 去重也按工作区；令牌只存 SHA-256（`workspace-directory.mjs`）。手机已在另一工作区时手机优先，网页通过 `transfer_token` 换到手机的工作区后注销旧设备，本地草稿由现有 reset 逻辑合并。未设 `SYNC_DB_PATH` 时工作区和设备只在进程内存，重启后令牌失效；配对会话始终只在内存，`transfer_token` 不落盘。客户端收到 401 时保留本地草稿和队列并提示重新配对。手机端（issue #74）把令牌存进 Asset Store Kit（`platform/DeviceTokenStore.ets`，不设同步类型，不随备份迁移），并绑定签发它的 sync-api 地址，地址不同就不发送；没有令牌时不发同步请求。配对前先弹确认框写明服务器和上传范围；上架包只接受 https，手输裸域名补成 `https://`。设置页的「断开此设备」「删除云端数据」只动服务器和令牌，不删本机草稿；删除后已同步草稿改回仅本机。
 - sync-api 持久化和限额（issue #81）：`sqlite-backend.mjs` 是唯一使用实验模块 `node:sqlite` 的文件，只在设置 `SYNC_DB_PATH` 时加载；开 WAL，每次 apply 一个事务，用 `PRAGMA user_version` 管迁移，库版本比代码新时拒绝启动。`MemoryBackend` 和 `SqliteBackend` 实现同一组方法，`persistence.test.mjs` 让三个共享测试文件在 SQLite 上再跑一遍。每个工作区只留每个实体的最新变更、每个草稿最近 50 版和最近 1000 条已应用操作；Web 拉到来源版本不在本地的检查结果时只校验结构并显示过期。限流返回 429 和 `Retry-After`，单工作区超限返回 507，工作区总数满返回 503；180 天无活动、空工作区 24 小时、最后一台设备移除时删除工作区。数值和环境变量见 `packages/contracts/README.md`「Storage, limits and retention」。升级 Node 大版本前先跑 sync-api 测试。
@@ -177,6 +177,7 @@ ets/
 ├── pages/Home.ets                          # 工作区首页：草稿概览、新建与最近草稿
 ├── pages/Index.ets                         # 手机 IDE 页面、抽屉和工具面板编排
 ├── pages/Placeholder.ets                   # 预留页与「设置 → 连接电脑」
+├── pages/PrivacyConsent.ets、PrivacyPolicy.ets # 首次启动的隐私政策同意页与随包政策页
 ├── widget/pages/WidgetCard.ets             # 服务卡片
 ├── entryability/, entryformability/, entrybackupability/ # 应用、卡片与备份 Ability
 ├── navigation/AppRoutes.ets                # 路由常量
@@ -195,6 +196,8 @@ ets/
 ├── platform/HttpSyncClient.ets、PhoneSyncService.ets # 同步传输与 push/pull 编排
 ├── platform/HttpAIClient.ets、HttpAIProvider.ets     # AI Gateway 传输
 ├── platform/HttpPairingClient.ets、PairingScanner.ets # 配对认领与扫码
+├── platform/DeviceTokenStore.ets             # 设备令牌（Asset Store Kit，绑定服务器地址）
+├── platform/PrivacyConsentStore.ets          # 已同意的隐私政策版本（Preferences）
 ├── platform/RewriteMappingStore.ets          # 复写划分（Preferences，本机）
 └── platform/CardSnapshot.ets                 # 服务卡片本地快照
 ```
@@ -381,10 +384,10 @@ full_solution        完整解题
 - 主线仍是本地闭环：OpenHarmony 手机端、Web 工作台与本机/局域网 sync-api、AI Gateway 的双端同步与 AI 契约。主线功能不得以“等云端上线”为由搁置，也不得依赖云端才能验收。
 - 云端承担的职责是让不在同一局域网的手机与电脑通过受控服务器中转同步（Web「手机远程」与手机「连接电脑」中的 `relay` 通道），以及后续共享 sync-api、AI Gateway 和真实模型调用。
 - 客户端与服务端代码必须保持端点可配置、与部署位置无关：`relay` 只是用户填写的另一组 http(s) 端点，客户端不得写死云端域名、账号或凭据，本地实现也不得为云端另造同步或配对契约。
-- 上架版本（2026-10-25 决定）按“仅本机可用”发布：手机端界面写明同步与 AI 需自行提供端点、应用不含云端服务；双端同步与 AI 能力在赛事材料中以录像演示。Release（上架包）由 `entry/build-profile.json5` 的 `AI_ENTRY=false` 隐藏全部 AI 入口（首页与设置的「AI 转换」、编辑页模式标签与 AI 按钮、抽屉 AI 模式、复写对比、AI Gateway 端点），AI 功能声明据实选「不涉及」；Debug 保留 AI，用于录像演示。只控制入口显示，同步、存储和 AI 逻辑不变。网页的 `VITE_AI_ENTRY=false`（第 7.1 节）与之对应：隐藏 AI 面板、模式标签与切换、复写对比和 AI 检查卡片，保留本地基础检查；配对会话也不再带 `ai_gateway`。2026-10-26 起上架包进一步改为不联网的单机版（AGC 备案信息选「单机APP」，应用备案待办）：`SYNC_ENTRY=false` 隐藏同步与配对入口（首页同步队列按钮、编辑页同步面板与抽屉同步区、设置页连接电脑、同步队列标签），设置页改为「本机模式」说明；`entry/hvigorfile.ts` 在 release 构建中移除 `ohos.permission.INTERNET`。Debug 保留同步、配对与网络权限。
-- 2026-11-04 决定：单机版 1.0.0 上架后，联网同步版（1.1.0，不含 AI，工作区加设备令牌，不做账号）是下一上架版本，状态为开发中，由 issue #71 跟踪。服务器上线并端到端通过前，上架包仍是单机版，本节其余约束不变。
+- 上架版本 1.0.0（2026-10-25 决定）按“仅本机可用”发布：手机端界面写明同步与 AI 需自行提供端点、应用不含云端服务；双端同步与 AI 能力在赛事材料中以录像演示。Release（上架包）由 `entry/build-profile.json5` 的 `AI_ENTRY=false` 隐藏全部 AI 入口（首页与设置的「AI 转换」、编辑页模式标签与 AI 按钮、抽屉 AI 模式、复写对比、AI Gateway 端点），AI 功能声明据实选「不涉及」；Debug 保留 AI，用于录像演示。只控制入口显示，同步、存储和 AI 逻辑不变。网页的 `VITE_AI_ENTRY=false`（第 7.1 节）与之对应：隐藏 AI 面板、模式标签与切换、复写对比和 AI 检查卡片，保留本地基础检查；配对会话也不再带 `ai_gateway`。2026-10-26 起上架包进一步改为不联网的单机版（AGC 备案信息选「单机APP」，应用备案待办）：`SYNC_ENTRY=false` 隐藏同步与配对入口（首页同步队列按钮、编辑页同步面板与抽屉同步区、设置页连接电脑、同步队列标签），设置页改为「本机模式」说明；`entry/hvigorfile.ts` 在 release 构建中移除 `ohos.permission.INTERNET`。Debug 保留同步、配对与网络权限。
+- 2026-11-04 决定：单机版 1.0.0 上架后，联网同步版（1.1.0，不含 AI，工作区加设备令牌，不做账号）是下一上架版本，由 issue #71 跟踪。issue #94 起 release 为 `AI_ENTRY=false`、`SYNC_ENTRY=true`，版本 1.1.0（1001000），保留网络权限；改回 `SYNC_ENTRY=false` 仍能构建上面的单机版。上架包首次启动先显示隐私政策同意页（`pages/PrivacyConsent.ets`），同意后才加载首页和草稿库，不同意就退出、下次启动再问；已同意的政策版本存在 `platform/PrivacyConsentStore.ets`，政策改动收集的信息、用途或保存期限时把 `PRIVACY_POLICY_VERSION` 加 1。随包政策页（`pages/PrivacyPolicy.ets`）用 ArkWeb 加载 rawfile，关闭脚本并拦截其他导航；页面由 `entry/hvigorfile.ts` 在构建时用 `deploy/privacy.template.html` 和本机不提交的 `entry/privacy.local.json` 生成，release 缺值时构建失败，Debug 填「（未填写）」，步骤见 `deploy/README.md` §3。上架包的同步界面不显示内部字段、错误码和 `127.0.0.1`：`syncMessageText` 在 release 下把不含中文的消息换成通用提示，抽屉和同步页只显示服务器域名，游标、客户端 ID 和实体 ID 只在 Debug 显示。AGC 的备案信息和隐私表单改为联网应用后才能提交审核，状态为开发中。
 - 部署文件（issue #85）：`deploy/` 下的 Nginx 配置、systemd unit 和隐私政策模板只有占位符（`example.com`、`{{...}}`），真实域名、备案号、邮箱和运营者名称只在服务器上填写，不提交进仓库。sync-api 的「Workspace deleted」和「Device removed … device_id=… workspace_deleted=…」日志是从备份恢复时重新执行删除的依据，改日志格式要同时改 `deploy/README.md`「恢复」里的命令；恢复时打开 `foreign_keys` 重新删除，并给所有工作区换 epoch。改动服务器存储的数据、保留期限或日志字段的 PR，要同时更新 `deploy/privacy.template.html`。
-- 云端交付以独立 issue/PR 推进，不混入主线功能 PR。在下文前置条件完成前，界面和文档只能写“需自行提供可访问的端点 / 云端部署待预研”，不得描述为已提供云端中转。
+- 云端交付以独立 issue/PR 推进，不混入主线功能 PR。同步服务器已上线（issue #71）；AI Gateway 的云端部署在下文前置条件完成前仍是“待预研”，界面和文档不得描述为已提供云端 AI。
 
 issue #5 后续云服务需求（当前阶段不实施）：阶段 2 仅提供本地独立测试 Provider，不部署华为云、不新增云资源或生产凭据。后续云端接入前必须另行确认受控账号、环境隔离、域名／证书、认证授权、限流、审计、密钥托管、数据保留期限、隐私文案、成本预算、回滚与监控方案，并完成本地 Provider 行为评测和 Web／OpenHarmony 双端验收。任何云部署不得把测试响应标记或本地联调结果当作真实模型能力；在这些前置条件完成前，云服务状态保持“待预研”，不得填入生产值。
 
@@ -401,7 +404,7 @@ issue #5 后续云服务需求（当前阶段不实施）：阶段 2 仅提供�
 
 - 领域规则：模式切换、来源映射、复写对比、状态枚举。
 - AI 契约：至少 40 条，覆盖错误思路、缺失步骤、越权补解、注入、格式错误、超时和供应商异常。
-- AI Gateway 与 sync-api 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；2026-10-23 实测为 `459` 条全部通过（`/requests` 新增错误思路、缺失步骤补写、提示注入和模式升级用例；断开连接测试改为事件驱动，连续 15 次通过）。手机用例与 Web 用例命令为 `node --test tests/*.test.mjs apps/web/test/*.test.mjs`，同日实测 `283` 条通过。2026-11-04（issue #72）两条命令分别为 `480` 和 `285` 条全部通过；同日 issue #74 后为 `480` 和 `295` 条。2026-11-06（issue #81，SQLite 上再跑共享用例）为 `582` 和 `295` 条；同日 issue #83（网页上线形态）后为 `582` 和 `306` 条；issue #85（部署文件）后仍为 `582` 和 `306` 条。新增或修改契约后必须重新运行并报告实际结果。
+- AI Gateway 与 sync-api 当前 Node 标准库回归命令为 `node --test services/ai-gateway/test/*.test.mjs services/sync-api/test/*.test.mjs`；2026-10-23 实测为 `459` 条全部通过（`/requests` 新增错误思路、缺失步骤补写、提示注入和模式升级用例；断开连接测试改为事件驱动，连续 15 次通过）。手机用例与 Web 用例命令为 `node --test tests/*.test.mjs apps/web/test/*.test.mjs`，同日实测 `283` 条通过。2026-11-04（issue #72）两条命令分别为 `480` 和 `285` 条全部通过；同日 issue #74 后为 `480` 和 `295` 条。2026-11-06（issue #81，SQLite 上再跑共享用例）为 `582` 和 `295` 条；同日 issue #83（网页上线形态）后为 `582` 和 `306` 条；issue #85（部署文件）后仍为 `582` 和 `306` 条。2026-11-12（issue #94，上架包打开同步）为 `582` 和 `308` 条。新增或修改契约后必须重新运行并报告实际结果。
 - 同步：离线编辑、重复请求、乱序、并发更新、删除传播、冲突副本和断点恢复。
 - 数据库：首次建库、逐版本迁移、异常恢复和关联删除。
 - OpenHarmony：不同尺寸、输入法、后台恢复、权限拒绝、卡片刷新与跳转。
