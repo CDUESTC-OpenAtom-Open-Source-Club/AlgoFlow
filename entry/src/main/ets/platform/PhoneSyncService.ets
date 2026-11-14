@@ -291,21 +291,24 @@ export class PhoneSyncService {
 }
 
 // Turns the sync client's internal codes into text the user can act on; the
-// local draft and queue are untouched by a failed run. lanHints keeps the
-// Debug-only advice about running sync-api yourself.
-export function syncMessageText(message: string, lanHints: boolean): string {
+// local draft and queue are untouched by a failed run. debug keeps the
+// advice about running sync-api yourself and shows unknown codes as they are.
+export function syncMessageText(message: string, debug: boolean): string {
   if (message.startsWith('SYNC_NETWORK_')) {
-    return lanHints ? '连不上同步端点：需自行运行 sync-api 并在「设置 → 连接电脑」配对，草稿已保留在本机'
+    return debug ? '连不上同步端点：需自行运行 sync-api 并在「设置 → 连接电脑」配对，草稿已保留在本机'
       : '连不上同步服务，请检查网络后重试；草稿已保留在本机';
   }
   if (message.startsWith('SYNC_HTTP_429')) return '同步请求过于频繁，请稍后再试；草稿已保留在本机';
   // Retrying does not help here; the workspace has to shrink first.
   if (message.startsWith('SYNC_HTTP_507')) return '云端空间已满，新的修改没有上传：删除不需要的草稿后再同步；草稿已保留在本机';
-  if (message.startsWith('SYNC_HTTP_5')) return '同步端点暂时出错，草稿已保留在本机，稍后重试';
+  if (message.startsWith('SYNC_HTTP_5')) return '同步服务器暂时出错，草稿已保留在本机，稍后重试';
   if (message.startsWith('SYNC_HTTP_') || message.startsWith('SYNC_CONTRACT_') || message === 'SYNC_INVALID_RESPONSE') {
-    return lanHints ? '同步端点返回了无法识别的内容，请确认地址指向本应用的 sync-api 同步服务'
+    return debug ? '同步端点返回了无法识别的内容，请确认地址指向本应用的 sync-api 同步服务'
       : '同步服务返回了无法识别的内容，草稿已保留在本机，请稍后重试';
   }
+  // Rejection codes from the server and exception text from the platform are
+  // not meant for users; every message written for them is Chinese.
+  if (!debug && !/[\u4e00-\u9fff]/.test(message)) return '同步没有完成，草稿已保留在本机，请稍后重试';
   return message;
 }
 

@@ -3,6 +3,8 @@ import router from '@ohos.router';
 export const HOME_ROUTE: string = 'pages/Home';
 export const EDITOR_ROUTE: string = 'pages/Index';
 export const PLACEHOLDER_ROUTE: string = 'pages/Placeholder';
+export const PRIVACY_CONSENT_ROUTE: string = 'pages/PrivacyConsent';
+export const PRIVACY_POLICY_ROUTE: string = 'pages/PrivacyPolicy';
 
 export const PLACEHOLDER_TITLE_KEY: string = 'placeholderTitle';
 export const PLACEHOLDER_DETAIL_KEY: string = 'placeholderDetail';
@@ -100,4 +102,13 @@ export async function openPlaceholder(title: string, detail: string, draftId: st
 
 export async function goBack(): Promise<void> {
   await router.back();
+}
+
+export async function openPrivacyPolicy(): Promise<void> {
+  await router.pushUrl({ url: PRIVACY_POLICY_ROUTE });
+}
+
+// After consent the consent page is replaced, so back from Home leaves the app.
+export async function enterAfterConsent(): Promise<void> {
+  await router.replaceUrl({ url: HOME_ROUTE });
 }

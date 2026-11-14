@@ -30,7 +30,7 @@ $env:VITE_PRIVACY_URL = '<隐私政策地址>'
 npm run build -- --mode hosted
 ```
 
-`--mode hosted` 读取 `.env.hosted`（只含 `VITE_HOSTED=true` 和 `VITE_AI_ENTRY=false`）。备案号和隐私政策地址属于部署值，构建时传入，不写进仓库；`.env*.local` 已被忽略。公共同步服务器尚未上线，上线构建目前只在本机用 `node test/acceptance-server.mjs` 做同域验证，不代表已提供云同步。
+`--mode hosted` 读取 `.env.hosted`（只含 `VITE_HOSTED=true` 和 `VITE_AI_ENTRY=false`）。备案号和隐私政策地址属于部署值，构建时传入，不写进仓库；`.env*.local` 已被忽略。公共同步服务器 2026-11-06 已按 `deploy/README.md` 上线。本机可用 `node test/acceptance-server.mjs` 在同一个源上提供上线构建和 `/v1`，做同域验证。
 
 AI 请求默认使用同源 `/ai-api` 路径。开发时由 Vite 代理到本机 Gateway；可用 `ALGFLOW_AI_GATEWAY_TARGET` 指向受控的本地联调地址。测试 Provider 必须同时显式设置 `VITE_AI_ALLOW_TEST_DATA=true`，响应会以“测试数据”标记并写入独立本地缓存。生产配置不会读取测试分区，也不会回退到测试 Provider；生产反向代理和真实模型接入仍需单独配置。
 

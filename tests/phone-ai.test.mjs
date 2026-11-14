@@ -1756,6 +1756,40 @@ test('sync messages keep LAN advice out of release builds', () => {
   assert.equal(syncMessageText('已同步', false), '已同步');
 });
 
+test('release sync messages never show raw codes or exception text', () => {
+  const { syncMessageText } = load('platform/PhoneSyncService');
+  for (const message of ['DEVICE_TOKEN_STORAGE_FAILED', 'AI_ARTIFACT_INVALID', 'RDB error: database is locked', 'STALE_BASE_VERSION']) {
+    const text = syncMessageText(message, false);
+    assert.match(text, /草稿已保留在本机/, message);
+    assert.ok(!text.includes(message), message);
+    assert.equal(syncMessageText(message, true), message);
+  }
+  for (const message of ['同步完成', '已保留服务器版本和本地冲突副本', '服务器未返回已提交版本，本地修改已保留']) {
+    assert.equal(syncMessageText(message, false), message);
+  }
+});
+
+test('privacy consent is needed until the current policy version is accepted', async () => {
+  const { hasPrivacyConsent, savePrivacyConsent, PRIVACY_POLICY_VERSION } = load('platform/PrivacyConsentStore');
+  cardKit.prefs.delete('privacy_agreed_version');
+  assert.equal(hasPrivacyConsent({}), false);
+  await savePrivacyConsent({});
+  assert.equal(cardKit.prefs.get('privacy_agreed_version'), PRIVACY_POLICY_VERSION);
+  assert.equal(hasPrivacyConsent({}), true);
+  // Agreeing to an older policy is not consent to the current one.
+  cardKit.prefs.set('privacy_agreed_version', PRIVACY_POLICY_VERSION - 1);
+  assert.equal(hasPrivacyConsent({}), false);
+  const readSync = cardPreferences.getPreferencesSync;
+  cardPreferences.getPreferencesSync = () => { throw new Error('preferences unavailable'); };
+  try {
+    cardKit.prefs.set('privacy_agreed_version', PRIVACY_POLICY_VERSION);
+    assert.equal(hasPrivacyConsent({}), false);
+  } finally {
+    cardPreferences.getPreferencesSync = readSync;
+    cardKit.prefs.delete('privacy_agreed_version');
+  }
+});
+
 test('disconnect and delete keep the token on network failure and drop it on 401', async () => {
   for (const [reply, expected, cleared] of [[{ code: 2300007 }, 'failed', 0], [rejectedWith(500, 'INTERNAL'), 'failed', 0],
     [rejectedWith(401, 'AUTH_REQUIRED'), 'done', 1], [{ responseCode: 200, result: '{"status":"deleted"}' }, 'done', 1]]) {

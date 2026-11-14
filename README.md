@@ -24,10 +24,10 @@ AlgoFlow 是面向算法学习者的思路验证代码工作台：在 OpenHarmon
 
 如实说明，避免误解：
 
-- **应用市场版本为不联网单机版**：草稿只保存在手机本机，上架包（Release）不显示同步和 AI 入口、不申请网络权限；双端同步与 AI 只在 Debug 包中启用，需用户自行提供可访问的 sync-api / AI Gateway 端点，不含云端服务。
+- **上架版本**：应用市场当前的 1.0.0 是不联网单机版，草稿只保存在手机本机。仓库里的 1.1.0 上架包（Release）打开同步：在网页「手机远程」扫码配对后，草稿经公网同步服务器在手机和电脑之间同步；首次启动需同意随包的隐私政策。1.1.0 不含 AI，尚未通过应用市场审核。AI 只在 Debug 包中启用，需用户自行提供可访问的 AI Gateway 端点，不含云端 AI 服务。
 - **AI 演示**：仓库自带的演示 Provider 只回显思路；演示视频中，开发者在本机为 AI Gateway 接入了真实大模型完成忠实转换（该适配脚本未放入仓库），不是应用提供的云端服务。
 - **验证范围**：手机端在 HarmonyOS 模拟器（Mate 70 Pro，API 20）上完成本地验证，尚未做真机验证。
-- **同步**：普通 HTTP push/pull，sync-api 默认进程内存储，设置 `SYNC_DB_PATH` 后存入 SQLite，目前用于局域网联调；`deploy/` 里有公网部署示例，但公共同步服务器尚未上线。不是 OpenHarmony 分布式能力，也不是生产云同步。
+- **同步**：普通 HTTP(S) push/pull。按 `deploy/` 部署的公网同步服务器 2026-11-06 上线，网页上线构建和 1.1.0 上架包通过它同步；本机和局域网联调用同一套 sync-api（默认进程内存储，设置 `SYNC_DB_PATH` 后存入 SQLite）。工作区凭设备令牌隔离，不是账号体系；服务器上的草稿不是端到端加密。不是 OpenHarmony 分布式能力。
 - **扫码配对**使用 HarmonyOS Scan Kit（系统扫码界面，不申请相机权限），属于 HarmonyOS 专有能力；不支持的设备可手输或粘贴配对码。
 
 ## 仓库结构
@@ -93,7 +93,7 @@ Node 手机端测试运行真实 ArkTS 源码加 SDK 替身，不等于设备验
 - [`CONTEXT.md`](CONTEXT.md)：产品术语
 - [`packages/contracts/README.md`](packages/contracts/README.md)：数据契约与同步语义
 - [`docs/WEB_UI_GUIDE.md`](docs/WEB_UI_GUIDE.md)：Web / ArkUI 视觉规范
-- [`deploy/README.md`](deploy/README.md)：公网部署示例（Nginx、systemd、备份恢复、隐私政策模板），服务器尚未上线
+- [`deploy/README.md`](deploy/README.md)：公网部署（Nginx、systemd、备份恢复、隐私政策模板和手机随包政策）
 
 ## 许可证
 

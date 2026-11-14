@@ -2,6 +2,8 @@
   "src": [
     "pages/Home",
     "pages/Index",
-    "pages/Placeholder"
+    "pages/Placeholder",
+    "pages/PrivacyConsent",
+    "pages/PrivacyPolicy"
   ]
 }

@@ -119,7 +119,7 @@ struct Home {
     if (this.expandedDraftId === draftId) {
       this.expandedDraftId = '';
     }
-    this.message = SYNC_ENTRY ? '草稿已删除，仍保留同步墓碑' : '草稿已删除';
+    this.message = SYNC_ENTRY ? '草稿已删除，同步后其他设备上也会删除' : '草稿已删除';
   }
 
   private toggleDraftActions(draftId: string): void {
@@ -241,7 +241,7 @@ struct Home {
       ResourceIcon({ name: ResourceIconName.QUERY, iconSize: 18, tint: '#5E645D' })
     }.type(ButtonType.Normal).width(36).height(36)
       .backgroundColor('#FFFFFF').border({ width: 1, color: '#E5E2D9' }).borderRadius(18)
-      .onClick(() => { this.openReservedPage('同步与队列', '查看本地待同步操作队列、同步游标与草稿同步状态。'); });
+      .onClick(() => { this.openReservedPage('同步', '查看待上传的修改和草稿同步状态。'); });
   }
 
   @Builder
